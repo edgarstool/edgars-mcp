@@ -1,3 +1,3 @@
 @echo off
 setlocal
-"C:\Users\Windows10-JS\AppData\Local\Python\pythoncore-3.14-64\python.exe" "%~dp0server_http.py"
+"C:\Users\EdgarsTool\AppData\Local\Programs\Python\Python313\python.exe" "%~dp0server_http.py"

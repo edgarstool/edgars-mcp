@@ -13,11 +13,14 @@ import os
 import subprocess
 import tempfile
 import urllib.parse
+import shutil
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-CODEX_CMD = r"C:\Users\Windows10-JS\AppData\Roaming\npm\codex.cmd"
-CODEX_DEFAULT_WORKDIR = r"C:\Users\Windows10-JS"
-AGENT_TIMEOUT_SECONDS = int(os.getenv("MCP_AGENT_TIMEOUT_SECONDS", "90"))
+CODEX_CMD = r"C:\Users\EdgarsTool\AppData\Roaming\npm\codex.cmd"
+CODEX_DEFAULT_WORKDIR = r"C:\Users\EdgarsTool"
+CLAUDE_CMD = shutil.which("claude") or "claude"
+GEMINI_CMD = shutil.which("gemini") or "gemini"
+AGENT_TIMEOUT_SECONDS = int(os.getenv("MCP_AGENT_TIMEOUT_SECONDS", "300"))
 
 PORT = 8765
 PROTOCOL_VERSION = "2025-11-25"
@@ -87,6 +90,31 @@ TOOLS = [
                     "type": "string",
                     "description": (
                         f"Working directory for Claude Code to operate in "
+                        f"(default: {CODEX_DEFAULT_WORKDIR})"
+                    ),
+                },
+            },
+            "required": ["task"],
+        },
+    },
+    {
+        "name": "gemini_agent",
+        "description": (
+            "Delegates a task to the Gemini CLI agent on the local machine. "
+            "Use this when the caller expects a Gemini-backed agent. Returns Gemini's final response, "
+            "or a clear install message when Gemini CLI is not available."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "The task or prompt to send to Gemini.",
+                },
+                "working_dir": {
+                    "type": "string",
+                    "description": (
+                        f"Working directory for Gemini to operate in "
                         f"(default: {CODEX_DEFAULT_WORKDIR})"
                     ),
                 },
@@ -191,6 +219,9 @@ def handle_tools_call(req_id, params: dict) -> dict:
     if name == "claude_code_agent":
         return handle_claude_code_agent(req_id, arguments)
 
+    if name == "gemini_agent":
+        return handle_gemini_agent(req_id, arguments)
+
     return make_response(req_id, {
         "content": [{"type": "text", "text": f"Unknown tool: {name}"}],
         "isError": True,
@@ -220,7 +251,7 @@ def handle_codex_agent(req_id, arguments: dict) -> dict:
                 "/c",
                 CODEX_CMD,
                 "exec",
-                "--full-auto",       # 自動承認、sandbox=workspace-write
+                "--dangerously-bypass-approvals-and-sandbox",
                 "--ephemeral",       # セッションファイルを残さない
                 "--skip-git-repo-check",
                 "-C", working_dir,
@@ -263,6 +294,52 @@ def handle_codex_agent(req_id, arguments: dict) -> dict:
     })
 
 
+def handle_gemini_agent(req_id, arguments: dict) -> dict:
+    task = arguments.get("task", "").strip()
+    working_dir = arguments.get("working_dir", CODEX_DEFAULT_WORKDIR)
+
+    if not task:
+        return make_response(req_id, {
+            "content": [{"type": "text", "text": "Error: task is required"}],
+            "isError": True,
+        })
+
+    if shutil.which("gemini") is None:
+        return make_response(req_id, {
+            "content": [{"type": "text", "text": "Error: gemini command not found. Install Gemini CLI and ensure it is on PATH."}],
+            "isError": True,
+        })
+
+    log(f"gemini_agent: task={task!r} workdir={working_dir!r}")
+
+    try:
+        result = run_agent_command(
+            [GEMINI_CMD, "-p", task],
+            cwd=working_dir,
+        )
+        log(f"gemini_agent: exit_code={result.returncode}")
+
+        output, is_error = finalize_agent_output(
+            result,
+            fallback_label="Gemini",
+        )
+
+    except subprocess.TimeoutExpired:
+        output = f"gemini_agent timed out after {AGENT_TIMEOUT_SECONDS} seconds"
+        is_error = True
+    except FileNotFoundError:
+        output = "Error: gemini command not found. Install Gemini CLI and ensure it is on PATH."
+        is_error = True
+    except Exception as exc:
+        output = f"Failed to run Gemini: {exc}"
+        is_error = True
+
+    return make_response(req_id, {
+        "content": [{"type": "text", "text": output}],
+        "isError": is_error,
+    })
+
+
 def handle_claude_code_agent(req_id, arguments: dict) -> dict:
     task = arguments.get("task", "").strip()
     working_dir = arguments.get("working_dir", CODEX_DEFAULT_WORKDIR)
@@ -277,7 +354,7 @@ def handle_claude_code_agent(req_id, arguments: dict) -> dict:
 
     try:
         result = run_agent_command(
-            ["claude", "-p", task, "--output-format", "text"],
+            [CLAUDE_CMD, "-p", task, "--output-format", "text", "--permission-mode", "bypassPermissions"],
             cwd=working_dir,
         )
         log(f"claude_code_agent: exit_code={result.returncode}")

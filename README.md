@@ -280,6 +280,26 @@ https://mcp.whoasked.vip/mcp
 
 透過 Cloudflare Tunnel 對外。本機重開機後需手動重啟 cloudflared。
 
+### Hermes stdio proxy
+
+Hermes 這類只會啟動 stdio MCP server 的 client，可改啟動：
+
+```powershell
+python .\hermes_stdio_proxy.py
+```
+
+預設會轉送到 `http://127.0.0.1:8765/mcp`。如果 HTTP endpoint 不在本機預設位置，可設定 `HERMES_HANDCRAFT_MCP_URL`。
+
+### Package webhook
+
+給 TrackTW / 包裹通知使用的 webhook URL：
+
+```text
+https://mcp.whoasked.vip/webhook/package
+```
+
+這條不是 MCP endpoint。對方要「接 MCP」時給 `/mcp`；對方要「包裹 webhook」時給 `/webhook/package`。
+
 ---
 
 ## 相關連結

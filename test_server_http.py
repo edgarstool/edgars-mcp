@@ -1,7 +1,10 @@
 """Unit tests and smoke checks for server_http helpers."""
 
 import subprocess
+import tempfile
 import unittest
+import zipfile
+from pathlib import Path
 from unittest.mock import patch
 
 import server_http
@@ -22,6 +25,7 @@ from server_http import (
     handle_claude_code_agent,
     handle_tools_call,
     handle_tools_list,
+    handle_tracktw_package_status,
     list_jobs,
     update_job,
     validate_http_startup_config,
@@ -167,6 +171,70 @@ class DiscordWebhookTests(unittest.TestCase):
 
         self.assertEqual(400, status)
         self.assertFalse(response["ok"])
+
+
+class TrackTWTests(unittest.TestCase):
+    def test_tracktw_schema_is_registered(self):
+        listed_tools = handle_tools_list(req_id=1, params={})["result"]["tools"]
+        names = {tool["name"] for tool in listed_tools}
+
+        self.assertIn("tracktw_carriers", names)
+        self.assertIn("tracktw_package_status", names)
+
+    def test_tracktw_package_status_formats_timeline_and_eta(self):
+        tracking_data = {
+            "tracking_number": "ABC123",
+            "package_history": [
+                {"time": 1714543200, "status": "已收件"},
+                {"time": 1714629600, "status": "配送中"},
+            ],
+        }
+
+        with patch.object(server_http, "_tracktw_find_carrier", return_value={"id": "blackcat", "name": "黑貓宅急便"}), \
+             patch.object(server_http, "_tracktw_import_package", return_value="pkg-1"), \
+             patch.object(server_http, "_tracktw_track_package", return_value=tracking_data):
+            response = handle_tracktw_package_status(
+                req_id=1,
+                arguments={"carrier_name": "黑貓", "tracking_number": "abc123"},
+            )
+
+        self.assertFalse(tool_is_error(response))
+        text = tool_text(response)
+        self.assertIn("目前階段：配送中", text)
+        self.assertIn("預估到貨：今天或明天", text)
+        self.assertIn("1. 2024-05-01 14:00｜已收件｜已收件", text)
+        self.assertIn("2. 2024-05-02 14:00｜配送中｜配送中", text)
+
+    def test_tracktw_package_status_exports_xlsx_report(self):
+        tracking_data = {
+            "tracking_number": "ABC123",
+            "package_history": [
+                {"time": 1714543200, "status": "已收件", "location": "台北"},
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(server_http, "_tracktw_find_carrier", return_value={"id": "blackcat", "name": "黑貓宅急便"}), \
+                 patch.object(server_http, "_tracktw_import_package", return_value="pkg-1"), \
+                 patch.object(server_http, "_tracktw_track_package", return_value=tracking_data):
+                response = handle_tracktw_package_status(
+                    req_id=1,
+                    arguments={
+                        "carrier_name": "黑貓",
+                        "tracking_number": "abc123",
+                        "export_report": True,
+                        "report_format": "xlsx",
+                        "output_dir": tmpdir,
+                    },
+                )
+
+            self.assertFalse(tool_is_error(response))
+            files = list(Path(tmpdir).glob("*.xlsx"))
+            self.assertEqual(1, len(files))
+            with zipfile.ZipFile(files[0]) as zf:
+                names = set(zf.namelist())
+            self.assertIn("xl/worksheets/sheet1.xml", names)
+            self.assertIn("xl/worksheets/sheet2.xml", names)
 
 
 class ClaudeCodeAgentSmokeTests(unittest.TestCase):

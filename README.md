@@ -4,7 +4,7 @@ Edgar 的本地 MCP（Model Context Protocol）Server。
 
 讓任何支援 MCP 的 AI（Claude、OpenClaw 等）能透過 HTTP 直接操作本機電腦，包含：檔案系統、Git、系統指令、瀏覽器、Obsidian Vault、Linear、Notion、AI 代理委派、免費圖片生成。
 
-**目前工具數量：54 個**
+**目前工具數量：56 個**
 
 ---
 
@@ -79,7 +79,7 @@ Token 由 Doppler 管理（`MCP_API_TOKEN`）。
 
 ---
 
-## 工具總覽（54 個）
+## 工具總覽（56 個）
 
 ### 🤖 AI 代理（7）
 
@@ -152,6 +152,32 @@ Token 由 Doppler 管理（`MCP_API_TOKEN`）。
 | 工具 | 說明 |
 |------|------|
 | `web_search` | 用 Perplexity AI 搜尋，回傳含引用來源的結果 |
+
+---
+
+### 📦 TrackTW 物流（2）
+
+| 工具 | 說明 |
+|------|------|
+| `tracktw_carriers` | 列出或搜尋 TrackTW 支援的物流商 / 店家關鍵字 |
+| `tracktw_package_status` | 用物流商 / 店家 + 單號查貨態，回傳完整時間軸、目前階段、到貨推估，可匯出 CSV / Excel |
+
+範例：
+
+```json
+{
+  "carrier_name": "黑貓",
+  "tracking_number": "1234567890",
+  "export_report": true,
+  "report_format": "xlsx"
+}
+```
+
+報告預設輸出到：
+
+```text
+C:\Users\EdgarsTool\Projects\mcp-handcraft\reports
+```
 
 ---
 
@@ -267,6 +293,7 @@ doppler run -- python -m unittest test_server_http.py -v
 | `OPENAI_API_KEY` | 備用 |
 | `LINEAR_API_KEY` | Linear issue 管理 |
 | `NOTION_API_KEY` | Notion 讀取 |
+| `TRACKTW_API_KEY` | TrackTW 物流查詢 |
 | `MCP_AGENT_TIMEOUT_SECONDS` | Agent 等待上限（預設 300 秒） |
 | `MCP_BASE_URL` | 公開 URL（預設 https://mcp.whoasked.vip） |
 

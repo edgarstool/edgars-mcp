@@ -23,6 +23,7 @@ import platform
 import re
 import string
 import datetime
+from dataclasses import dataclass
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -38,12 +39,30 @@ handle_mmx_search_query     = hmsq
 handle_mmx_text_chat        = hmc
 handle_mmx_quota_show       = hmq
 
+# ── Secrets（由 Doppler 注入）─────────────────────────────────────────────────
+def load_mcp_api_token() -> str:
+    return os.getenv("MCP_API_TOKEN", "").strip()
+
+
+def load_base_url() -> str:
+    return os.getenv("MCP_BASE_URL", "https://mcp.whoasked.vip").strip()
+
+
+@dataclass(frozen=True)
+class HandcraftServerConfig:
+    mcp_api_token: str
+    base_url: str
+
+
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
-# ── Secrets（由 Doppler 注入）─────────────────────────────────────────────────
+    def __init__(self, server_address, RequestHandlerClass, config: HandcraftServerConfig):
+        super().__init__(server_address, RequestHandlerClass)
+        self.config = config
+
+
 NOTION_API_KEY      = os.getenv("NOTION_API_KEY", "")
-API_TOKEN           = os.getenv("MCP_API_TOKEN", "")
 PERPLEXITY_API_KEY  = os.getenv("PERPLEXITY_API_KEY", "")
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
 LINEAR_API_KEY      = os.getenv("LINEAR_API_KEY", "")
@@ -69,12 +88,13 @@ SERVER_INFO = {
 
 JOBS_LOCK = threading.Lock()
 JOBS: dict[str, dict] = {}
+DISCORD_WEBHOOK_EVENTS_LOCK = threading.Lock()
+DISCORD_WEBHOOK_EVENTS: list[dict] = []
+MAX_DISCORD_WEBHOOK_EVENTS = int(os.getenv("MCP_DISCORD_WEBHOOK_EVENT_LIMIT", "100"))
 
 # ── OAuth 2.0 一次性授權碼（記憶體暫存，重啟後清空）──────────────────────────
 OAUTH_CODES_LOCK = threading.Lock()
 OAUTH_CODES: dict[str, dict] = {}
-BASE_URL = os.getenv("MCP_BASE_URL", "https://mcp.whoasked.vip")
-
 TOOLS = [
     {
         "name": "echo",
@@ -1644,6 +1664,43 @@ def dispatch(msg: dict):
         return make_error(req_id, -32603, f"Internal error: {exc}")
 
 
+def handle_discord_webhook_payload(payload: dict) -> tuple[int, dict]:
+    if not isinstance(payload, dict):
+        return 400, {"ok": False, "error": "Discord webhook payload must be a JSON object"}
+
+    if payload.get("type") == 1:
+        return 200, {"type": 1}
+
+    event = {
+        "event_id": str(payload.get("id") or uuid.uuid4()),
+        "received_at": datetime.datetime.now(datetime.UTC).isoformat(),
+        "type": payload.get("type"),
+        "guild_id": payload.get("guild_id"),
+        "channel_id": payload.get("channel_id"),
+        "author": (
+            (payload.get("author") or {}).get("username")
+            or (payload.get("member") or {}).get("user", {}).get("username")
+        ),
+        "content": payload.get("content"),
+        "raw": payload,
+    }
+    with DISCORD_WEBHOOK_EVENTS_LOCK:
+        DISCORD_WEBHOOK_EVENTS.append(event)
+        if len(DISCORD_WEBHOOK_EVENTS) > MAX_DISCORD_WEBHOOK_EVENTS:
+            del DISCORD_WEBHOOK_EVENTS[:-MAX_DISCORD_WEBHOOK_EVENTS]
+
+    log(
+        "Discord webhook received: "
+        f"event_id={event['event_id']} type={event['type']} channel_id={event['channel_id']}"
+    )
+    return 200, {
+        "ok": True,
+        "source": "discord",
+        "event_id": event["event_id"],
+        "stored_events": len(DISCORD_WEBHOOK_EVENTS),
+    }
+
+
 # ─── HTTP Handler ─────────────────────────────────────────────────────────────
 
 class MCPHTTPHandler(BaseHTTPRequestHandler):
@@ -1690,11 +1747,12 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _handle_oauth_metadata(self) -> None:
+        base_url = self.server.config.base_url
         self._send_oauth_json({
-            "issuer": BASE_URL,
-            "authorization_endpoint": f"{BASE_URL}/authorize",
-            "token_endpoint": f"{BASE_URL}/token",
-            "registration_endpoint": f"{BASE_URL}/register",
+            "issuer": base_url,
+            "authorization_endpoint": f"{base_url}/authorize",
+            "token_endpoint": f"{base_url}/token",
+            "registration_endpoint": f"{base_url}/register",
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code"],
             "code_challenge_methods_supported": ["S256", "plain"],
@@ -1703,9 +1761,10 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         })
 
     def _handle_resource_metadata(self) -> None:
+        base_url = self.server.config.base_url
         self._send_oauth_json({
-            "resource": BASE_URL,
-            "authorization_servers": [BASE_URL],
+            "resource": base_url,
+            "authorization_servers": [base_url],
         })
 
     def _handle_authorize(self, query_string: str) -> None:
@@ -1763,7 +1822,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 return
             entry["used"] = True
 
-        access_token = API_TOKEN if API_TOKEN else "handcraft-dev-token"
+        access_token = self.server.config.mcp_api_token or "handcraft-dev-token"
         log("OAuth /token → issued access_token")
         self._send_oauth_json({
             "access_token": access_token,
@@ -1796,6 +1855,9 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         if parsed_path == "/register":
             self._handle_register()
             return
+        if parsed_path == "/webhook/discord":
+            self._handle_discord_webhook()
+            return
         if parsed_path != "/mcp":
             self.send_response(404)
             self.end_headers()
@@ -1803,7 +1865,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         # ── Bearer token 驗證 ─────────────────────────────────────────────────
         auth = self.headers.get("Authorization", "")
-        if API_TOKEN:  # Token 已設定時，header 必須存在且正確
+        api_token = self.server.config.mcp_api_token
+        if api_token:  # Token 已設定時，header 必須存在且正確
             if not auth:
                 log("401 Unauthorized: missing token")
                 self.send_response(401)
@@ -1812,7 +1875,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b"Unauthorized")
                 return
             token = auth.removeprefix("Bearer ").strip()
-            if token != API_TOKEN:
+            if token != api_token:
                 log(f"401 Unauthorized: invalid token")
                 self.send_response(401)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -1859,6 +1922,18 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         self._send_json(response)
 
     # ── 回應輔助 ──────────────────────────────────────────────────────────────
+    def _handle_discord_webhook(self) -> None:
+        content_length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            self._send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, status=400)
+            return
+
+        status, response = handle_discord_webhook_payload(payload)
+        self._send_json(response, status=status)
+
     def _send_json(self, obj: dict, status: int = 200) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         log(f"SEND → {body.decode('utf-8')}")
@@ -1889,8 +1964,33 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
 # ─── 主程式 ───────────────────────────────────────────────────────────────────
 
+def validate_mcp_api_token(raw_token: str | None) -> str:
+    api_token = (raw_token or "").strip()
+    if not api_token:
+        raise RuntimeError("MCP_API_TOKEN must be set to a non-empty value before starting the HTTP server")
+    return api_token
+
+
+def validate_base_url(raw_url: str | None) -> str:
+    base_url = (raw_url or "").strip()
+    return base_url or "https://mcp.whoasked.vip"
+
+
+def validate_http_startup_config() -> HandcraftServerConfig:
+    return HandcraftServerConfig(
+        mcp_api_token=validate_mcp_api_token(load_mcp_api_token()),
+        base_url=validate_base_url(load_base_url()),
+    )
+
+
 def main() -> None:
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), MCPHTTPHandler)
+    try:
+        config = validate_http_startup_config()
+    except RuntimeError as exc:
+        log(f"Startup aborted: {exc}")
+        raise SystemExit(1) from None
+
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), MCPHTTPHandler, config=config)
     log(f"handcraft-mcp HTTP server starting")
     log(f"Protocol : {PROTOCOL_VERSION}")
     log(f"Endpoint : POST http://localhost:{PORT}/mcp")

@@ -2,14 +2,21 @@
 
 import subprocess
 import unittest
+from unittest.mock import patch
 
 import server_http
 from server_http import (
     JOBS,
     JOBS_LOCK,
+    DISCORD_WEBHOOK_EVENTS,
+    DISCORD_WEBHOOK_EVENTS_LOCK,
+    HandcraftServerConfig,
+    MCPHTTPHandler,
+    ThreadingHTTPServer,
     TOOLS,
     cleanup_expired_jobs,
     create_job,
+    handle_discord_webhook_payload,
     handle_agent_job_cleanup,
     handle_agent_job_list,
     handle_claude_code_agent,
@@ -17,6 +24,8 @@ from server_http import (
     handle_tools_list,
     list_jobs,
     update_job,
+    validate_http_startup_config,
+    validate_mcp_api_token,
 )
 
 
@@ -79,6 +88,85 @@ class ServerHttpJobApiTests(unittest.TestCase):
         response = handle_agent_job_cleanup(req_id=1, arguments={})
         text = response["result"]["content"][0]["text"]
         self.assertIn("Expired jobs removed: 1", text)
+
+
+class HttpStartupConfigTests(unittest.TestCase):
+    def test_mcp_api_token_requires_present_value(self):
+        for raw_token in (None, "", "   ", "\t\r\n"):
+            with self.subTest(raw_token=raw_token):
+                with self.assertRaisesRegex(RuntimeError, "MCP_API_TOKEN must be set"):
+                    validate_mcp_api_token(raw_token)
+
+    def test_mcp_api_token_trims_configured_value(self):
+        self.assertEqual("secret-token", validate_mcp_api_token("  secret-token  "))
+
+    def test_http_startup_config_reads_environment_into_config_object(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "MCP_API_TOKEN": "  secret-token  ",
+                "MCP_BASE_URL": "  https://mcp.example.test  ",
+            },
+        ):
+            config = validate_http_startup_config()
+
+        self.assertEqual(
+            HandcraftServerConfig(
+                mcp_api_token="secret-token",
+                base_url="https://mcp.example.test",
+            ),
+            config,
+        )
+
+    def test_http_servers_keep_separate_auth_config(self):
+        first_config = HandcraftServerConfig(mcp_api_token="first-token", base_url="https://first.example")
+        second_config = HandcraftServerConfig(mcp_api_token="second-token", base_url="https://second.example")
+        first_server = ThreadingHTTPServer(("127.0.0.1", 0), MCPHTTPHandler, config=first_config)
+        second_server = ThreadingHTTPServer(("127.0.0.1", 0), MCPHTTPHandler, config=second_config)
+        try:
+            self.assertEqual("first-token", first_server.config.mcp_api_token)
+            self.assertEqual("second-token", second_server.config.mcp_api_token)
+            self.assertEqual("https://first.example", first_server.config.base_url)
+            self.assertEqual("https://second.example", second_server.config.base_url)
+        finally:
+            first_server.server_close()
+            second_server.server_close()
+
+
+class DiscordWebhookTests(unittest.TestCase):
+    def setUp(self):
+        with DISCORD_WEBHOOK_EVENTS_LOCK:
+            DISCORD_WEBHOOK_EVENTS.clear()
+
+    def test_discord_ping_returns_pong(self):
+        status, response = handle_discord_webhook_payload({"type": 1})
+
+        self.assertEqual(200, status)
+        self.assertEqual({"type": 1}, response)
+
+    def test_discord_message_payload_is_stored(self):
+        status, response = handle_discord_webhook_payload({
+            "id": "msg-1",
+            "channel_id": "channel-1",
+            "guild_id": "guild-1",
+            "author": {"username": "edgar"},
+            "content": "hello webhook",
+        })
+
+        self.assertEqual(200, status)
+        self.assertTrue(response["ok"])
+        self.assertEqual("discord", response["source"])
+        self.assertEqual("msg-1", response["event_id"])
+
+        with DISCORD_WEBHOOK_EVENTS_LOCK:
+            self.assertEqual(1, len(DISCORD_WEBHOOK_EVENTS))
+            self.assertEqual("hello webhook", DISCORD_WEBHOOK_EVENTS[0]["content"])
+
+    def test_discord_payload_must_be_object(self):
+        status, response = handle_discord_webhook_payload(["not", "an", "object"])
+
+        self.assertEqual(400, status)
+        self.assertFalse(response["ok"])
 
 
 class ClaudeCodeAgentSmokeTests(unittest.TestCase):

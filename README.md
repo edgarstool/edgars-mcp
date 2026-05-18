@@ -14,6 +14,11 @@
   給 HTTP 方式的 MCP client 使用。
   適合 MCP Inspector、瀏覽器測試、或其他會用 `POST /mcp` 連進來的 client。
 
+- `hermes_stdio_proxy.py`
+  給 Hermes 這類只會啟動 stdio MCP server 的 client 使用。
+  它不另外實作 tool，只把 stdio JSON-RPC 轉送到 `server_http.py` 的 `POST /mcp`。
+  因為它綁定的是本 repo 的 handcraft HTTP MCP endpoint，所以放在 `mcp-handcraft`。
+
 ## 現況提醒
 
 - `server.py` 是本地 `stdio` 入口
@@ -37,3 +42,25 @@ claude auth login
 - `server_http.py` 目前預設會在 `90` 秒內等 agent 回覆。
 - 這是為了避免 Cloudflare Tunnel 一類的 HTTP 代理先超時，外面只看到空白或中斷。
 - 若要改長一點，可設定環境變數 `MCP_AGENT_TIMEOUT_SECONDS`。
+
+## Hermes stdio proxy
+
+先啟動 HTTP 版：
+
+```powershell
+.\run_http.cmd
+```
+
+Hermes 端可改成啟動：
+
+```powershell
+python .\hermes_stdio_proxy.py
+```
+
+預設會轉送到 `http://127.0.0.1:8765/mcp`。如果 HTTP endpoint 不在本機預設位置，可設定：
+
+```powershell
+$env:HERMES_HANDCRAFT_MCP_URL = "https://mcp.whoasked.vip/mcp"
+```
+
+若 endpoint 需要 bearer token，設定 `HERMES_HANDCRAFT_MCP_TOKEN`；本檔不保存 token，也不要把 runtime log、`.screenshots/`、`__pycache__/` 或圖片檔 commit 進 repo。

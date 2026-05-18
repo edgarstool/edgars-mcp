@@ -1,2 +1,12 @@
 __pycache__/
 *.pyc
+*.log
+.screenshots/
+reports/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.svg
+*.ico

@@ -246,6 +246,30 @@ curl -X POST https://mcp.whoasked.vip/mcp \
 
 正常回應包含 `"serverInfo": { "name": "handcraft-mcp" }`。
 
+### Hermes stdio proxy
+
+Use `hermes_stdio_proxy.py` when Hermes needs a stdio MCP command but the handcraft MCP service is running through `server_http.py`.
+
+```powershell
+python .\hermes_stdio_proxy.py
+```
+
+The proxy defaults to `http://127.0.0.1:8765/mcp`; override with `HERMES_HANDCRAFT_MCP_URL` only when needed.
+
+### Webhook URL quick reference
+
+Do not collapse these into one URL during review:
+
+- MCP endpoint: `https://mcp.whoasked.vip/mcp`
+- Discord webhook: `https://mcp.whoasked.vip/webhook/discord`
+- Package / TrackTW webhook: `https://mcp.whoasked.vip/webhook/package`
+
+Local package webhook test:
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8765/webhook/package -H "Content-Type: application/json" -d "{\"tracking_number\":\"TEST123\"}"
+```
+
 ---
 
 ## 11. 常見問題

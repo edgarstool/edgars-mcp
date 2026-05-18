@@ -3,7 +3,9 @@
 協議版本: 2025-11-25
 依賴: 僅 Python 標準庫 (http.server, json, urllib.parse)
 
-端點: POST /mcp
+端點:
+- POST /mcp
+- POST /webhook/package
 回應模式: 單次 JSON（不開 SSE stream，Phase 2 基礎版）
 """
 
@@ -23,6 +25,8 @@ import platform
 import re
 import string
 import datetime
+import zipfile
+from html import escape as html_escape
 from dataclasses import dataclass
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -66,8 +70,10 @@ NOTION_API_KEY      = os.getenv("NOTION_API_KEY", "")
 PERPLEXITY_API_KEY  = os.getenv("PERPLEXITY_API_KEY", "")
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
 LINEAR_API_KEY      = os.getenv("LINEAR_API_KEY", "")
+TRACKTW_API_KEY     = os.getenv("TRACKTW_API_KEY", "")
 
 SCREENSHOTS_DIR = Path(r"C:\Users\EdgarsTool\Projects\mcp-handcraft\.screenshots")
+REPORTS_DIR     = Path(r"C:\Users\EdgarsTool\Projects\mcp-handcraft\reports")
 VAULT_ROOT      = Path(r"D:\Edgar'sObsidianVault")
 
 CODEX_CMD = r"C:\Users\EdgarsTool\AppData\Roaming\npm\codex.cmd"
@@ -79,6 +85,8 @@ AGENT_TIMEOUT_SECONDS = int(os.getenv("MCP_AGENT_TIMEOUT_SECONDS", "300"))
 
 PORT = 8765
 PROTOCOL_VERSION = "2025-11-25"
+MCP_PATH = "/mcp"
+PACKAGE_WEBHOOK_PATH = "/webhook/package"
 DEFAULT_JOB_RETENTION_SECONDS = int(os.getenv("MCP_JOB_RETENTION_SECONDS", "3600"))
 
 SERVER_INFO = {
@@ -91,6 +99,7 @@ JOBS: dict[str, dict] = {}
 DISCORD_WEBHOOK_EVENTS_LOCK = threading.Lock()
 DISCORD_WEBHOOK_EVENTS: list[dict] = []
 MAX_DISCORD_WEBHOOK_EVENTS = int(os.getenv("MCP_DISCORD_WEBHOOK_EVENT_LIMIT", "100"))
+TRACKTW_BASE_URL = os.getenv("TRACKTW_BASE_URL", "https://track.tw/api/v1").rstrip("/")
 
 # ── OAuth 2.0 一次性授權碼（記憶體暫存，重啟後清空）──────────────────────────
 OAUTH_CODES_LOCK = threading.Lock()
@@ -823,6 +832,58 @@ TOOLS = [
             },
         },
     },
+    # ── TrackTW 物流查詢 ─────────────────────────────────────────────────────
+    {
+        "name": "tracktw_carriers",
+        "description": "List available TrackTW logistics carriers. Use this when a store/carrier keyword cannot be resolved.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Optional carrier/store keyword filter, e.g. 黑貓, 7-Eleven, 全家.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max carriers to return (default 50, max 200).",
+                },
+            },
+        },
+    },
+    {
+        "name": "tracktw_package_status",
+        "description": (
+            "Query TrackTW by logistics carrier/store keyword and tracking number. "
+            "Returns the full timeline from first event to the current stage, "
+            "a current-stage summary, delivery ETA judgement, and can export a CSV/XLSX report."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "carrier_name": {
+                    "type": "string",
+                    "description": "Logistics carrier or store keyword, e.g. 黑貓, 7-Eleven, 全家.",
+                },
+                "tracking_number": {
+                    "type": "string",
+                    "description": "Package tracking number.",
+                },
+                "export_report": {
+                    "type": "boolean",
+                    "description": "When true, write a spreadsheet report file (default false).",
+                },
+                "report_format": {
+                    "type": "string",
+                    "description": "Report format: xlsx, csv, or both (default xlsx).",
+                },
+                "output_dir": {
+                    "type": "string",
+                    "description": f"Directory for report files (default: {REPORTS_DIR}).",
+                },
+            },
+            "required": ["carrier_name", "tracking_number"],
+        },
+    },
     # ── 免費圖片生成（Pollinations.AI，不需 API key）─────────────────────────
     {
         "name": "image_generate_free",
@@ -921,6 +982,14 @@ def make_tool_text_response(text: str, *, is_error: bool = False) -> dict:
     return {
         "content": [{"type": "text", "text": text}],
         "isError": is_error,
+    }
+
+
+def make_webhook_response(event_type: str, accepted: bool = True) -> dict:
+    return {
+        "ok": accepted,
+        "type": event_type,
+        "service": "handcraft-package-webhook",
     }
 
 
@@ -1410,6 +1479,12 @@ def handle_tools_call(req_id, params: dict) -> dict:
     if name == "vault_create_from_template": return handle_vault_create_from_template(req_id, arguments)
     if name == "vault_sort_inbox":           return handle_vault_sort_inbox(req_id, arguments)
 
+    # ── TrackTW
+    if name == "tracktw_carriers":
+        return handle_tracktw_carriers(req_id, arguments)
+    if name == "tracktw_package_status":
+        return handle_tracktw_package_status(req_id, arguments)
+
     # ── 免費圖片生成
     if name == "image_generate_free":
         return handle_image_generate_free(req_id, arguments)
@@ -1858,7 +1933,10 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         if parsed_path == "/webhook/discord":
             self._handle_discord_webhook()
             return
-        if parsed_path != "/mcp":
+        if parsed_path == PACKAGE_WEBHOOK_PATH:
+            self._handle_package_webhook()
+            return
+        if parsed_path != MCP_PATH:
             self.send_response(404)
             self.end_headers()
             return
@@ -1920,6 +1998,42 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return
 
         self._send_json(response)
+
+    def _handle_package_webhook(self) -> None:
+        content_length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(content_length)
+        raw_text = raw.decode("utf-8", errors="replace")
+        log(f"PACKAGE WEBHOOK RECV ← {raw_text}")
+
+        if raw:
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                self._send_json(
+                    {
+                        **make_webhook_response("package", accepted=False),
+                        "error": f"Invalid JSON: {exc}",
+                    },
+                    status=400,
+                )
+                return
+        else:
+            payload = {}
+
+        if not isinstance(payload, dict):
+            self._send_json(
+                {
+                    **make_webhook_response("package", accepted=False),
+                    "error": "Invalid payload: expected JSON object",
+                },
+                status=400,
+            )
+            return
+
+        self._send_json({
+            **make_webhook_response("package"),
+            "received": True,
+        })
 
     # ── 回應輔助 ──────────────────────────────────────────────────────────────
     def _handle_discord_webhook(self) -> None:
@@ -1993,7 +2107,8 @@ def main() -> None:
     server = ThreadingHTTPServer(("0.0.0.0", PORT), MCPHTTPHandler, config=config)
     log(f"handcraft-mcp HTTP server starting")
     log(f"Protocol : {PROTOCOL_VERSION}")
-    log(f"Endpoint : POST http://localhost:{PORT}/mcp")
+    log(f"Endpoint : POST http://localhost:{PORT}{MCP_PATH}")
+    log(f"Webhook : POST http://localhost:{PORT}{PACKAGE_WEBHOOK_PATH}")
     log(f"Allowed origins: {ALLOWED_HOSTNAMES}")
     try:
         server.serve_forever()
@@ -3044,6 +3159,423 @@ def handle_vault_sort_inbox(req_id, arguments: dict) -> dict:
     lines.append(summary)
 
     return make_response(req_id, make_tool_text_response("\n".join(lines)))
+
+
+# ─── TrackTW Logistics Handlers ───────────────────────────────────────────────
+
+def _tracktw_key() -> str:
+    key = TRACKTW_API_KEY or os.getenv("TRACKTW_API_KEY", "")
+    key = key.strip()
+    if not key:
+        raise ValueError("TRACKTW_API_KEY not set. Add it to Doppler project handcraft-mcp / prd.")
+    return key
+
+
+def _tracktw_request(method: str, path: str, payload: dict | None = None, params: dict | None = None) -> dict | list:
+    url = f"{TRACKTW_BASE_URL}{path}"
+    if params:
+        query = urllib.parse.urlencode(params)
+        url = f"{url}?{query}"
+
+    body = None
+    headers = {
+        "Authorization": f"Bearer {_tracktw_key()}",
+        "Accept": "application/json",
+        "User-Agent": "handcraft-mcp/0.1",
+    }
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        error_text = exc.read().decode("utf-8", errors="replace")
+        raise ValueError(f"TrackTW API error {exc.code}: {error_text}") from exc
+
+    return json.loads(raw) if raw else {}
+
+
+def _tracktw_get_carriers() -> list[dict]:
+    data = _tracktw_request("GET", "/carrier/available")
+    if not isinstance(data, list):
+        raise ValueError(f"Unexpected carrier response: {data}")
+    return data
+
+
+def _norm_text(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _tracktw_find_carrier(carrier_name: str, carriers: list[dict] | None = None) -> dict:
+    query = _norm_text(carrier_name)
+    if not query:
+        raise ValueError("carrier_name is required")
+
+    carriers = carriers or _tracktw_get_carriers()
+    exact = []
+    partial = []
+    for carrier in carriers:
+        name = _norm_text(carrier.get("name"))
+        carrier_id = _norm_text(carrier.get("id"))
+        if query in {name, carrier_id}:
+            exact.append(carrier)
+        elif query in name or query in carrier_id:
+            partial.append(carrier)
+
+    matches = exact or partial
+    if not matches:
+        examples = ", ".join(str(c.get("name", "")) for c in carriers[:20])
+        raise ValueError(f"找不到物流商/店家：{carrier_name}。可用 tracktw_carriers 查看，例如：{examples}")
+
+    return matches[0]
+
+
+def _tracktw_import_package(carrier_id: str, tracking_number: str) -> str:
+    tracking_number = tracking_number.strip().upper()
+    data = _tracktw_request("POST", "/package/import", {
+        "carrier_id": carrier_id,
+        "tracking_number": [tracking_number],
+        "notify_state": "inactive",
+    })
+    if not isinstance(data, dict):
+        raise ValueError(f"Unexpected import response: {data}")
+
+    package_uuid = data.get(tracking_number)
+    if not package_uuid:
+        package_uuid = data.get(tracking_number.upper())
+    if not package_uuid:
+        raise ValueError(f"TrackTW 匯入包裹失敗，回傳：{data}")
+    return str(package_uuid)
+
+
+def _tracktw_track_package(package_uuid: str) -> dict:
+    data = _tracktw_request("GET", f"/package/tracking/{package_uuid}")
+    if not isinstance(data, dict):
+        raise ValueError(f"Unexpected tracking response: {data}")
+    return data
+
+
+def _tracking_dt(timestamp: object) -> datetime.datetime | None:
+    try:
+        ts = int(timestamp)
+    except (TypeError, ValueError):
+        return None
+    if ts <= 0:
+        return None
+    return datetime.datetime.fromtimestamp(ts, tz=datetime.timezone(datetime.timedelta(hours=8)))
+
+
+def _status_text(event: dict) -> str:
+    parts = []
+    for key in ("status", "location", "description", "message"):
+        value = str(event.get(key) or "").strip()
+        if value and value not in parts:
+            parts.append(value)
+    return " / ".join(parts) or "狀態未提供"
+
+
+def _normalize_history(tracking_data: dict) -> list[dict]:
+    raw_history = tracking_data.get("package_history") or tracking_data.get("history") or []
+    if not isinstance(raw_history, list):
+        raw_history = []
+
+    events = []
+    for item in raw_history:
+        if not isinstance(item, dict):
+            continue
+        dt = _tracking_dt(item.get("time") or item.get("timestamp"))
+        events.append({
+            "time": dt.isoformat() if dt else "",
+            "time_display": dt.strftime("%Y-%m-%d %H:%M") if dt else "",
+            "stage": _infer_stage(_status_text(item)),
+            "status": str(item.get("status") or "").strip(),
+            "location": str(item.get("location") or "").strip(),
+            "detail": _status_text(item),
+            "raw": item,
+            "_sort": dt.timestamp() if dt else 0,
+        })
+
+    events.sort(key=lambda event: event["_sort"])
+    for event in events:
+        event.pop("_sort", None)
+    return events
+
+
+def _infer_stage(text: str) -> str:
+    lower = text.lower()
+    stage_rules = [
+        ("已送達", ["已送達", "配達", "delivered", "取貨完成", "已領取", "簽收"]),
+        ("配送中", ["配送中", "派送", "配達中", "out for delivery", "delivering"]),
+        ("已到門市/待取", ["到店", "到達門市", "待取", "可取", "arrived at store", "ready for pickup"]),
+        ("運送中", ["運送", "轉運", "運輸", "發往", "離開", "transit", "departed", "transport"]),
+        ("已到站/集散", ["到達", "抵達", "集散", "營業所", "hub", "facility", "站所"]),
+        ("已收件", ["收件", "攬收", "寄件", "已受理", "accepted", "picked up", "received"]),
+        ("異常", ["異常", "失敗", "退回", "延誤", "exception", "failed", "return"]),
+    ]
+    for stage, keywords in stage_rules:
+        if any(keyword in lower for keyword in keywords):
+            return stage
+    return "未知階段"
+
+
+def _eta_judgement(events: list[dict]) -> dict:
+    if not events:
+        return {
+            "eta": "無法判斷",
+            "confidence": "低",
+            "reason": "TrackTW 目前沒有貨態紀錄。",
+        }
+
+    latest = events[-1]
+    stage = latest["stage"]
+    latest_time = latest.get("time_display") or "最近一筆"
+    if stage == "已送達":
+        return {"eta": "已送達", "confidence": "高", "reason": f"最新狀態顯示 {latest_time} 已完成配送/取貨。"}
+    if stage in {"配送中", "已到門市/待取"}:
+        return {"eta": "今天或明天", "confidence": "中高", "reason": "貨物已進入末端配送或待取階段。"}
+    if stage == "已到站/集散":
+        return {"eta": "約 1-2 天內", "confidence": "中", "reason": "貨物已到達站所/集散節點，通常接近末端配送。"}
+    if stage == "運送中":
+        return {"eta": "約 1-3 天內", "confidence": "中", "reason": "貨物仍在跨站運送中，需等下一個站點更新。"}
+    if stage == "已收件":
+        return {"eta": "約 2-4 天內", "confidence": "中", "reason": "物流已收件，但尚未進入末端配送。"}
+    if stage == "異常":
+        return {"eta": "需人工確認", "confidence": "低", "reason": "最新狀態含異常/退回/失敗訊號。"}
+    return {"eta": "無法判斷", "confidence": "低", "reason": "最新狀態缺少可判斷配送階段的關鍵字。"}
+
+
+def _build_tracking_report(carrier_input: str, tracking_number: str, carrier: dict, data: dict) -> dict:
+    events = _normalize_history(data)
+    current = events[-1] if events else {
+        "time": "",
+        "time_display": "",
+        "stage": "尚無紀錄",
+        "status": "",
+        "location": "",
+        "detail": "目前無貨態紀錄",
+    }
+    eta = _eta_judgement(events)
+    return {
+        "carrier_input": carrier_input,
+        "carrier": {
+            "id": carrier.get("id", ""),
+            "name": carrier.get("name", ""),
+        },
+        "tracking_number": str(data.get("tracking_number") or tracking_number).strip().upper(),
+        "package_uuid": str(data.get("id") or data.get("uuid") or ""),
+        "current_stage": current["stage"],
+        "current_status": current["detail"],
+        "current_time": current["time_display"],
+        "eta": eta,
+        "history": events,
+    }
+
+
+def _format_tracking_report(report: dict, report_files: list[Path] | None = None) -> str:
+    carrier_name = report["carrier"].get("name") or report["carrier_input"]
+    lines = [
+        "TrackTW 物流查詢結果",
+        f"物流商/店家：{carrier_name}",
+        f"單號：{report['tracking_number']}",
+        f"目前階段：{report['current_stage']}",
+        f"目前狀態：{report['current_status']}",
+        f"最新時間：{report['current_time'] or '無'}",
+        f"預估到貨：{report['eta']['eta']}（信心：{report['eta']['confidence']}）",
+        f"判斷原因：{report['eta']['reason']}",
+        "",
+        "貨態時間軸：",
+    ]
+    if report["history"]:
+        for idx, event in enumerate(report["history"], start=1):
+            when = event["time_display"] or "時間未提供"
+            lines.append(f"{idx}. {when}｜{event['stage']}｜{event['detail']}")
+    else:
+        lines.append("- 目前無貨態紀錄")
+
+    if report_files:
+        lines += ["", "報告檔案："]
+        lines += [f"- {path}" for path in report_files]
+    return "\n".join(lines)
+
+
+def _safe_report_name(carrier_name: str, tracking_number: str, suffix: str) -> str:
+    raw = f"tracktw_{carrier_name}_{tracking_number}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.{suffix}"
+    return re.sub(r'[\\/:*?"<>|\s]+', "_", raw)
+
+
+def _write_tracktw_csv(report: dict, output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / _safe_report_name(report["carrier"].get("name") or report["carrier_input"], report["tracking_number"], "csv")
+    rows = [
+        ["項目", "內容"],
+        ["物流商/店家", report["carrier"].get("name") or report["carrier_input"]],
+        ["單號", report["tracking_number"]],
+        ["目前階段", report["current_stage"]],
+        ["目前狀態", report["current_status"]],
+        ["最新時間", report["current_time"]],
+        ["預估到貨", report["eta"]["eta"]],
+        ["信心", report["eta"]["confidence"]],
+        ["判斷原因", report["eta"]["reason"]],
+        [],
+        ["序號", "時間", "階段", "狀態", "地點", "詳細內容"],
+    ]
+    for idx, event in enumerate(report["history"], start=1):
+        rows.append([idx, event["time_display"], event["stage"], event["status"], event["location"], event["detail"]])
+
+    def csv_cell(value: object) -> str:
+        text = str(value)
+        if any(ch in text for ch in [",", '"', "\n", "\r"]):
+            text = '"' + text.replace('"', '""') + '"'
+        return text
+
+    content = "\ufeff" + "\r\n".join(",".join(csv_cell(cell) for cell in row) for row in rows)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def _xlsx_col(col_idx: int) -> str:
+    letters = ""
+    while col_idx:
+        col_idx, rem = divmod(col_idx - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
+def _xlsx_sheet_xml(rows: list[list[object]]) -> str:
+    xml_rows = []
+    for row_idx, row in enumerate(rows, start=1):
+        cells = []
+        for col_idx, value in enumerate(row, start=1):
+            ref = f"{_xlsx_col(col_idx)}{row_idx}"
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                cells.append(f'<c r="{ref}"><v>{value}</v></c>')
+            else:
+                text = html_escape(str(value or ""), quote=False)
+                cells.append(f'<c r="{ref}" t="inlineStr"><is><t>{text}</t></is></c>')
+        xml_rows.append(f'<row r="{row_idx}">{"".join(cells)}</row>')
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<sheetViews><sheetView workbookViewId="0"/></sheetViews>'
+        f'<sheetData>{"".join(xml_rows)}</sheetData>'
+        '</worksheet>'
+    )
+
+
+def _write_tracktw_xlsx(report: dict, output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / _safe_report_name(report["carrier"].get("name") or report["carrier_input"], report["tracking_number"], "xlsx")
+    summary_rows = [
+        ["TrackTW 物流報告", ""],
+        ["物流商/店家", report["carrier"].get("name") or report["carrier_input"]],
+        ["物流商 ID", report["carrier"].get("id")],
+        ["單號", report["tracking_number"]],
+        ["目前階段", report["current_stage"]],
+        ["目前狀態", report["current_status"]],
+        ["最新時間", report["current_time"]],
+        ["預估到貨", report["eta"]["eta"]],
+        ["信心", report["eta"]["confidence"]],
+        ["判斷原因", report["eta"]["reason"]],
+    ]
+    history_rows = [["序號", "時間", "階段", "狀態", "地點", "詳細內容"]]
+    for idx, event in enumerate(report["history"], start=1):
+        history_rows.append([idx, event["time_display"], event["stage"], event["status"], event["location"], event["detail"]])
+
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>""")
+        zf.writestr("_rels/.rels", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>""")
+        zf.writestr("xl/workbook.xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheets>
+<sheet name="Summary" sheetId="1" r:id="rId1"/>
+<sheet name="History" sheetId="2" r:id="rId2"/>
+</sheets>
+</workbook>""")
+        zf.writestr("xl/_rels/workbook.xml.rels", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+</Relationships>""")
+        zf.writestr("xl/worksheets/sheet1.xml", _xlsx_sheet_xml(summary_rows))
+        zf.writestr("xl/worksheets/sheet2.xml", _xlsx_sheet_xml(history_rows))
+    return path
+
+
+def _write_tracktw_reports(report: dict, report_format: str, output_dir: str | None) -> list[Path]:
+    output_path = Path(output_dir).expanduser() if output_dir else REPORTS_DIR
+    fmt = (report_format or "xlsx").strip().lower()
+    if fmt not in {"xlsx", "csv", "both"}:
+        raise ValueError("report_format must be xlsx, csv, or both")
+
+    paths = []
+    if fmt in {"xlsx", "both"}:
+        paths.append(_write_tracktw_xlsx(report, output_path))
+    if fmt in {"csv", "both"}:
+        paths.append(_write_tracktw_csv(report, output_path))
+    return paths
+
+
+def handle_tracktw_carriers(req_id, arguments: dict) -> dict:
+    query = _norm_text(arguments.get("query", ""))
+    limit = min(max(int(arguments.get("limit", 50)), 1), 200)
+    try:
+        carriers = _tracktw_get_carriers()
+        if query:
+            carriers = [
+                carrier for carrier in carriers
+                if query in _norm_text(carrier.get("name")) or query in _norm_text(carrier.get("id"))
+            ]
+        carriers = carriers[:limit]
+        if not carriers:
+            return make_response(req_id, make_tool_text_response("TrackTW 沒有找到符合的物流商。"))
+        lines = ["TrackTW 可用物流商："]
+        for carrier in carriers:
+            lines.append(f"- {carrier.get('name', '')} ({carrier.get('id', '')})")
+        return make_response(req_id, make_tool_text_response("\n".join(lines)))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(f"Error: {e}", is_error=True))
+
+
+def handle_tracktw_package_status(req_id, arguments: dict) -> dict:
+    carrier_name = str(arguments.get("carrier_name") or "").strip()
+    tracking_number = str(arguments.get("tracking_number") or "").strip()
+    if not carrier_name:
+        return make_response(req_id, make_tool_text_response("Error: carrier_name is required", is_error=True))
+    if not tracking_number:
+        return make_response(req_id, make_tool_text_response("Error: tracking_number is required", is_error=True))
+
+    try:
+        carrier = _tracktw_find_carrier(carrier_name)
+        package_uuid = _tracktw_import_package(str(carrier["id"]), tracking_number)
+        data = _tracktw_track_package(package_uuid)
+        report = _build_tracking_report(carrier_name, tracking_number, carrier, data)
+        if not report.get("package_uuid"):
+            report["package_uuid"] = package_uuid
+
+        report_files = []
+        if bool(arguments.get("export_report", False)):
+            report_files = _write_tracktw_reports(
+                report,
+                str(arguments.get("report_format") or "xlsx"),
+                arguments.get("output_dir"),
+            )
+
+        return make_response(req_id, make_tool_text_response(_format_tracking_report(report, report_files)))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(f"Error: {e}", is_error=True))
 
 
 # ─── Free Image Generation (Pollinations.AI) ─────────────────────────────────

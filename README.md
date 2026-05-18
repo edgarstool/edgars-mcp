@@ -298,7 +298,15 @@ python .\hermes_stdio_proxy.py
 https://mcp.whoasked.vip/webhook/package
 ```
 
+本機對應 endpoint 是：
+
+```text
+http://127.0.0.1:8765/webhook/package
+```
+
 這條不是 MCP endpoint。對方要「接 MCP」時給 `/mcp`；對方要「包裹 webhook」時給 `/webhook/package`。
+
+若 endpoint 需要 bearer token，設定 `HERMES_HANDCRAFT_MCP_TOKEN`；本檔不保存 token，也不要把 runtime log、`.screenshots/`、`__pycache__/` 或圖片檔 commit 進 repo。
 
 ---
 

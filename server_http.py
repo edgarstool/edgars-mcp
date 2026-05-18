@@ -3,7 +3,9 @@
 協議版本: 2025-11-25
 依賴: 僅 Python 標準庫 (http.server, json, urllib.parse)
 
-端點: POST /mcp
+端點:
+- POST /mcp
+- POST /webhook/package
 回應模式: 單次 JSON（不開 SSE stream，Phase 2 基礎版）
 """
 
@@ -21,6 +23,8 @@ AGENT_TIMEOUT_SECONDS = int(os.getenv("MCP_AGENT_TIMEOUT_SECONDS", "90"))
 
 PORT = 8765
 PROTOCOL_VERSION = "2025-11-25"
+MCP_PATH = "/mcp"
+PACKAGE_WEBHOOK_PATH = "/webhook/package"
 
 SERVER_INFO = {
     "name": "handcraft-mcp",
@@ -114,6 +118,14 @@ def make_response(req_id, result: dict) -> dict:
 
 def make_error(req_id, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+
+
+def make_webhook_response(event_type: str, accepted: bool = True) -> dict:
+    return {
+        "ok": accepted,
+        "type": event_type,
+        "service": "handcraft-package-webhook",
+    }
 
 
 def run_agent_command(command: list[str], cwd: str) -> subprocess.CompletedProcess:
@@ -344,7 +356,11 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     # ── 主要端點 ──────────────────────────────────────────────────────────────
     def do_POST(self):
-        if self.path != "/mcp":
+        if self.path == PACKAGE_WEBHOOK_PATH:
+            self._handle_package_webhook()
+            return
+
+        if self.path != MCP_PATH:
             self.send_response(404)
             self.end_headers()
             return
@@ -387,6 +403,42 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         self._send_json(response)
 
+    def _handle_package_webhook(self) -> None:
+        content_length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(content_length)
+        raw_text = raw.decode("utf-8", errors="replace")
+        log(f"PACKAGE WEBHOOK RECV ← {raw_text}")
+
+        if raw:
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                self._send_json(
+                    {
+                        **make_webhook_response("package", accepted=False),
+                        "error": f"Invalid JSON: {exc}",
+                    },
+                    status=400,
+                )
+                return
+        else:
+            payload = {}
+
+        if not isinstance(payload, dict):
+            self._send_json(
+                {
+                    **make_webhook_response("package", accepted=False),
+                    "error": "Invalid payload: expected JSON object",
+                },
+                status=400,
+            )
+            return
+
+        self._send_json({
+            **make_webhook_response("package"),
+            "received": True,
+        })
+
     # ── 回應輔助 ──────────────────────────────────────────────────────────────
     def _send_json(self, obj: dict, status: int = 200) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -422,7 +474,8 @@ def main() -> None:
     server = HTTPServer(("0.0.0.0", PORT), MCPHTTPHandler)
     log(f"handcraft-mcp HTTP server starting")
     log(f"Protocol : {PROTOCOL_VERSION}")
-    log(f"Endpoint : POST http://localhost:{PORT}/mcp")
+    log(f"Endpoint : POST http://localhost:{PORT}{MCP_PATH}")
+    log(f"Webhook : POST http://localhost:{PORT}{PACKAGE_WEBHOOK_PATH}")
     log(f"Allowed origins: {ALLOWED_HOSTNAMES}")
     try:
         server.serve_forever()

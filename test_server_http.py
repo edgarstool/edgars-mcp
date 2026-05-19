@@ -186,7 +186,7 @@ class TrackTWTests(unittest.TestCase):
             "tracking_number": "ABC123",
             "package_history": [
                 {"time": 1714543200, "status": "已收件"},
-                {"time": 1714629600, "status": "配送中"},
+                {"time": 1714629600, "status": "司機配送中", "checkpoint_status": "配送中"},
             ],
         }
 
@@ -201,9 +201,45 @@ class TrackTWTests(unittest.TestCase):
         self.assertFalse(tool_is_error(response))
         text = tool_text(response)
         self.assertIn("目前階段：配送中", text)
+        self.assertIn("目前 checkpoint：配送中", text)
+        self.assertIn("current_event_time：2024-05-02 14:00", text)
         self.assertIn("預估到貨：今天或明天", text)
-        self.assertIn("1. 2024-05-01 14:00｜已收件｜已收件", text)
-        self.assertIn("2. 2024-05-02 14:00｜配送中｜配送中", text)
+        self.assertIn("貨態時間軸（from_status -> to_status）：", text)
+        self.assertIn("1. 2024-05-01 14:00｜初始 (初始) -> 已收件 (已收件)｜stage_changed｜已收件", text)
+        self.assertIn("2. 2024-05-02 14:00｜已收件 (已收件) -> 司機配送中 (配送中)｜stage_changed｜司機配送中", text)
+
+    def test_tracktw_package_status_preserves_transition_fields(self):
+        tracking_data = {
+            "tracking_number": "ABC123",
+            "package_history": [
+                {"time": 1714543200, "status": "門市已收件", "checkpoint_status": "已收件"},
+                {"time": 1714629600, "status": "已抵達物流中心", "checkpoint_status": "已到站/集散"},
+                {"time": 1714716000, "status": "配送中", "checkpoint_status": "配送中"},
+            ],
+        }
+
+        report = server_http._build_tracking_report(
+            "7-Eleven",
+            "abc123",
+            {"id": "seven-eleven", "name": "7-Eleven"},
+            tracking_data,
+        )
+
+        self.assertEqual("配送中", report["current_stage"])
+        self.assertEqual("配送中", report["current_status"])
+        self.assertEqual("配送中", report["current_checkpoint_status"])
+        self.assertEqual("2024-05-03T14:00:00+08:00", report["current_event_time"])
+        self.assertEqual(
+            {
+                "from_status": "已抵達物流中心",
+                "from_checkpoint_status": "已到站/集散",
+                "to_status": "配送中",
+                "to_checkpoint_status": "配送中",
+                "current_event_time": "2024-05-03T14:00:00+08:00",
+                "stage_changed": True,
+            },
+            report["latest_transition"],
+        )
 
     def test_tracktw_package_status_exports_xlsx_report(self):
         tracking_data = {

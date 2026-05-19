@@ -160,7 +160,7 @@ Token 由 Doppler 管理（`MCP_API_TOKEN`）。
 | 工具 | 說明 |
 |------|------|
 | `tracktw_carriers` | 列出或搜尋 TrackTW 支援的物流商 / 店家關鍵字 |
-| `tracktw_package_status` | 用物流商 / 店家 + 單號查貨態，回傳完整時間軸、目前階段、到貨推估，可匯出 CSV / Excel |
+| `tracktw_package_status` | 用物流商 / 店家 + 單號查貨態，回傳目前階段、`from_status -> to_status` 時間軸、`current_event_time`、到貨推估，可匯出 CSV / Excel |
 
 範例：
 

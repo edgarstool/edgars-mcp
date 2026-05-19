@@ -854,8 +854,8 @@ TOOLS = [
         "name": "tracktw_package_status",
         "description": (
             "Query TrackTW by logistics carrier/store keyword and tracking number. "
-            "Returns the full timeline from first event to the current stage, "
-            "a current-stage summary, delivery ETA judgement, and can export a CSV/XLSX report."
+            "Returns the current stage, transition-oriented timeline, "
+            "estimated arrival wording, and can export a CSV/XLSX report."
         ),
         "inputSchema": {
             "type": "object",
@@ -3277,6 +3277,26 @@ def _status_text(event: dict) -> str:
     return " / ".join(parts) or "狀態未提供"
 
 
+def _first_text(event: dict, keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = str(event.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _checkpoint_status_text(event: dict, status_text: str) -> str:
+    checkpoint = _first_text(event, (
+        "checkpoint_status",
+        "checkpointStatus",
+        "current_checkpoint_status",
+        "checkpoint",
+        "substatus",
+        "status_code",
+    ))
+    return checkpoint or _infer_stage(status_text)
+
+
 def _normalize_history(tracking_data: dict) -> list[dict]:
     raw_history = tracking_data.get("package_history") or tracking_data.get("history") or []
     if not isinstance(raw_history, list):
@@ -3287,20 +3307,41 @@ def _normalize_history(tracking_data: dict) -> list[dict]:
         if not isinstance(item, dict):
             continue
         dt = _tracking_dt(item.get("time") or item.get("timestamp"))
+        status_text = _status_text(item)
+        to_status = _first_text(item, ("status", "description", "message")) or status_text
+        to_checkpoint_status = _checkpoint_status_text(item, status_text)
         events.append({
             "time": dt.isoformat() if dt else "",
             "time_display": dt.strftime("%Y-%m-%d %H:%M") if dt else "",
-            "stage": _infer_stage(_status_text(item)),
+            "current_event_time": dt.isoformat() if dt else "",
+            "current_event_time_display": dt.strftime("%Y-%m-%d %H:%M") if dt else "",
+            "stage": to_checkpoint_status,
+            "from_status": "",
+            "from_checkpoint_status": "",
+            "to_status": to_status,
+            "to_checkpoint_status": to_checkpoint_status,
+            "stage_changed": False,
             "status": str(item.get("status") or "").strip(),
             "location": str(item.get("location") or "").strip(),
-            "detail": _status_text(item),
+            "detail": status_text,
             "raw": item,
             "_sort": dt.timestamp() if dt else 0,
         })
 
     events.sort(key=lambda event: event["_sort"])
+    previous: dict | None = None
     for event in events:
+        if previous:
+            event["from_status"] = previous["to_status"]
+            event["from_checkpoint_status"] = previous["to_checkpoint_status"]
+            event["stage_changed"] = (
+                event["from_checkpoint_status"] != event["to_checkpoint_status"]
+                or event["from_status"] != event["to_status"]
+            )
+        else:
+            event["stage_changed"] = bool(event["to_status"] or event["to_checkpoint_status"])
         event.pop("_sort", None)
+        previous = event
     return events
 
 
@@ -3352,7 +3393,14 @@ def _build_tracking_report(carrier_input: str, tracking_number: str, carrier: di
     current = events[-1] if events else {
         "time": "",
         "time_display": "",
+        "current_event_time": "",
+        "current_event_time_display": "",
         "stage": "尚無紀錄",
+        "from_status": "",
+        "from_checkpoint_status": "",
+        "to_status": "",
+        "to_checkpoint_status": "尚無紀錄",
+        "stage_changed": False,
         "status": "",
         "location": "",
         "detail": "目前無貨態紀錄",
@@ -3367,8 +3415,18 @@ def _build_tracking_report(carrier_input: str, tracking_number: str, carrier: di
         "tracking_number": str(data.get("tracking_number") or tracking_number).strip().upper(),
         "package_uuid": str(data.get("id") or data.get("uuid") or ""),
         "current_stage": current["stage"],
-        "current_status": current["detail"],
-        "current_time": current["time_display"],
+        "current_status": current["to_status"],
+        "current_checkpoint_status": current["to_checkpoint_status"],
+        "current_event_time": current["current_event_time"],
+        "current_event_time_display": current["current_event_time_display"],
+        "latest_transition": {
+            "from_status": current["from_status"],
+            "from_checkpoint_status": current["from_checkpoint_status"],
+            "to_status": current["to_status"],
+            "to_checkpoint_status": current["to_checkpoint_status"],
+            "current_event_time": current["current_event_time"],
+            "stage_changed": current["stage_changed"],
+        },
         "eta": eta,
         "history": events,
     }
@@ -3382,16 +3440,23 @@ def _format_tracking_report(report: dict, report_files: list[Path] | None = None
         f"單號：{report['tracking_number']}",
         f"目前階段：{report['current_stage']}",
         f"目前狀態：{report['current_status']}",
-        f"最新時間：{report['current_time'] or '無'}",
+        f"目前 checkpoint：{report['current_checkpoint_status']}",
+        f"current_event_time：{report['current_event_time_display'] or report['current_event_time'] or '無'}",
         f"預估到貨：{report['eta']['eta']}（信心：{report['eta']['confidence']}）",
         f"判斷原因：{report['eta']['reason']}",
         "",
-        "貨態時間軸：",
+        "貨態時間軸（from_status -> to_status）：",
     ]
     if report["history"]:
         for idx, event in enumerate(report["history"], start=1):
-            when = event["time_display"] or "時間未提供"
-            lines.append(f"{idx}. {when}｜{event['stage']}｜{event['detail']}")
+            when = event["current_event_time_display"] or event["current_event_time"] or "時間未提供"
+            from_status = event["from_status"] or "初始"
+            from_checkpoint = event["from_checkpoint_status"] or "初始"
+            changed = "stage_changed" if event["stage_changed"] else "stage_same"
+            lines.append(
+                f"{idx}. {when}｜{from_status} ({from_checkpoint}) -> "
+                f"{event['to_status']} ({event['to_checkpoint_status']})｜{changed}｜{event['detail']}"
+            )
     else:
         lines.append("- 目前無貨態紀錄")
 
@@ -3415,15 +3480,26 @@ def _write_tracktw_csv(report: dict, output_dir: Path) -> Path:
         ["單號", report["tracking_number"]],
         ["目前階段", report["current_stage"]],
         ["目前狀態", report["current_status"]],
-        ["最新時間", report["current_time"]],
+        ["目前 checkpoint", report["current_checkpoint_status"]],
+        ["current_event_time", report["current_event_time_display"] or report["current_event_time"]],
         ["預估到貨", report["eta"]["eta"]],
         ["信心", report["eta"]["confidence"]],
         ["判斷原因", report["eta"]["reason"]],
         [],
-        ["序號", "時間", "階段", "狀態", "地點", "詳細內容"],
+        ["序號", "current_event_time", "from_status", "from_checkpoint_status", "to_status", "to_checkpoint_status", "stage_changed", "地點", "詳細內容"],
     ]
     for idx, event in enumerate(report["history"], start=1):
-        rows.append([idx, event["time_display"], event["stage"], event["status"], event["location"], event["detail"]])
+        rows.append([
+            idx,
+            event["current_event_time_display"] or event["current_event_time"],
+            event["from_status"],
+            event["from_checkpoint_status"],
+            event["to_status"],
+            event["to_checkpoint_status"],
+            event["stage_changed"],
+            event["location"],
+            event["detail"],
+        ])
 
     def csv_cell(value: object) -> str:
         text = str(value)
@@ -3475,14 +3551,25 @@ def _write_tracktw_xlsx(report: dict, output_dir: Path) -> Path:
         ["單號", report["tracking_number"]],
         ["目前階段", report["current_stage"]],
         ["目前狀態", report["current_status"]],
-        ["最新時間", report["current_time"]],
+        ["目前 checkpoint", report["current_checkpoint_status"]],
+        ["current_event_time", report["current_event_time_display"] or report["current_event_time"]],
         ["預估到貨", report["eta"]["eta"]],
         ["信心", report["eta"]["confidence"]],
         ["判斷原因", report["eta"]["reason"]],
     ]
-    history_rows = [["序號", "時間", "階段", "狀態", "地點", "詳細內容"]]
+    history_rows = [["序號", "current_event_time", "from_status", "from_checkpoint_status", "to_status", "to_checkpoint_status", "stage_changed", "地點", "詳細內容"]]
     for idx, event in enumerate(report["history"], start=1):
-        history_rows.append([idx, event["time_display"], event["stage"], event["status"], event["location"], event["detail"]])
+        history_rows.append([
+            idx,
+            event["current_event_time_display"] or event["current_event_time"],
+            event["from_status"],
+            event["from_checkpoint_status"],
+            event["to_status"],
+            event["to_checkpoint_status"],
+            event["stage_changed"],
+            event["location"],
+            event["detail"],
+        ])
 
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("[Content_Types].xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

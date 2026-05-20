@@ -98,6 +98,61 @@ class ServerHttpJobApiTests(unittest.TestCase):
 
 
 class HttpStartupConfigTests(unittest.TestCase):
+    def test_main_starts_when_mcp_api_token_is_configured(self):
+        created_servers = []
+
+        class FakeServer:
+            def __init__(self, server_address, handler_class, config):
+                self.server_address = server_address
+                self.handler_class = handler_class
+                self.config = config
+                self.served = False
+                self.closed = False
+                created_servers.append(self)
+
+            def serve_forever(self):
+                self.served = True
+
+            def server_close(self):
+                self.closed = True
+
+        with patch.dict(
+            "os.environ",
+            {
+                "MCP_API_TOKEN": "  secret-token  ",
+                "MCP_BASE_URL": "  https://mcp.example.test  ",
+            },
+            clear=True,
+        ), patch("server_http.ThreadingHTTPServer", FakeServer):
+            server_http.main()
+
+        self.assertEqual(1, len(created_servers))
+        server = created_servers[0]
+        self.assertEqual(("0.0.0.0", server_http.PORT), server.server_address)
+        self.assertIs(server_http.MCPHTTPHandler, server.handler_class)
+        self.assertEqual("secret-token", server.config.mcp_api_token)
+        self.assertEqual("https://mcp.example.test", server.config.base_url)
+        self.assertTrue(server.served)
+        self.assertTrue(server.closed)
+
+    def test_main_fails_fast_when_mcp_api_token_is_missing_or_blank(self):
+        cases = {
+            "unset": {},
+            "empty": {"MCP_API_TOKEN": ""},
+            "whitespace": {"MCP_API_TOKEN": "   \t\r\n"},
+        }
+
+        for label, environment in cases.items():
+            with self.subTest(label=label):
+                with patch.dict("os.environ", environment, clear=True), patch(
+                    "server_http.ThreadingHTTPServer"
+                ) as server_class:
+                    with self.assertRaises(SystemExit) as raised:
+                        server_http.main()
+
+                self.assertEqual(1, raised.exception.code)
+                server_class.assert_not_called()
+
     def test_mcp_api_token_requires_present_value(self):
         for raw_token in (None, "", "   ", "\t\r\n"):
             with self.subTest(raw_token=raw_token):

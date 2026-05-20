@@ -87,6 +87,7 @@ AGENT_TIMEOUT_SECONDS = int(os.getenv("MCP_AGENT_TIMEOUT_SECONDS", "300"))
 PORT = 8765
 PROTOCOL_VERSION = "2025-11-25"
 MCP_PATH = "/mcp"
+HEALTH_PATH = "/health"
 PACKAGE_WEBHOOK_PATH = "/webhook/package"
 LINEAR_WEBHOOK_PATH = "/webhook/linear"
 DEFAULT_JOB_RETENTION_SECONDS = int(os.getenv("MCP_JOB_RETENTION_SECONDS", "3600"))
@@ -1792,6 +1793,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self._handle_resource_metadata()
         elif path == "/authorize":
             self._handle_authorize(parsed.query)
+        elif path == HEALTH_PATH:
+            self._handle_health()
         elif path == "/mcp":
             body = json.dumps({
                 "server": SERVER_INFO,
@@ -1842,6 +1845,32 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         self._send_oauth_json({
             "resource": base_url,
             "authorization_servers": [base_url],
+        })
+
+    def _handle_health(self) -> None:
+        base_url = self.server.config.base_url.rstrip("/")
+        self._send_oauth_json({
+            "ok": True,
+            "server": SERVER_INFO,
+            "protocolVersion": PROTOCOL_VERSION,
+            "local": {
+                "host": "0.0.0.0",
+                "port": PORT,
+                "mcp_path": MCP_PATH,
+                "health_path": HEALTH_PATH,
+            },
+            "public": {
+                "base_url": base_url,
+                "mcp_url": f"{base_url}{MCP_PATH}",
+            },
+            "auth": {
+                "mcp_api_token_configured": bool(self.server.config.mcp_api_token),
+            },
+            "webhooks": [
+                PACKAGE_WEBHOOK_PATH,
+                LINEAR_WEBHOOK_PATH,
+                "/webhook/discord",
+            ],
         })
 
     def _handle_authorize(self, query_string: str) -> None:
@@ -2101,7 +2130,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     def _add_cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers",
                          "Content-Type, Authorization, Accept, Mcp-Session-Id")
 
@@ -2148,6 +2177,7 @@ def main() -> None:
     server = ThreadingHTTPServer(("0.0.0.0", PORT), MCPHTTPHandler, config=config)
     log(f"handcraft-mcp HTTP server starting")
     log(f"Protocol : {PROTOCOL_VERSION}")
+    log(f"Health  : GET  http://localhost:{PORT}{HEALTH_PATH}")
     log(f"Endpoint : POST http://localhost:{PORT}{MCP_PATH}")
     log(f"Webhook : POST http://localhost:{PORT}{PACKAGE_WEBHOOK_PATH}")
     log(f"Webhook : POST http://localhost:{PORT}{LINEAR_WEBHOOK_PATH}")

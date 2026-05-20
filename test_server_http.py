@@ -1,6 +1,8 @@
 """Unit tests and smoke checks for server_http helpers."""
 
 import json
+import threading
+import urllib.request
 import subprocess
 import tempfile
 import unittest
@@ -136,6 +138,30 @@ class HttpStartupConfigTests(unittest.TestCase):
         finally:
             first_server.server_close()
             second_server.server_close()
+
+    def test_health_endpoint_reports_explicit_runtime_status(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MCPHTTPHandler, config=config)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(200, response.status)
+            self.assertTrue(payload["ok"])
+            self.assertEqual("/mcp", payload["local"]["mcp_path"])
+            self.assertEqual("/health", payload["local"]["health_path"])
+            self.assertEqual("https://mcp.example.test/mcp", payload["public"]["mcp_url"])
+            self.assertTrue(payload["auth"]["mcp_api_token_configured"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
 
 class CacheTraceRotationScriptTests(unittest.TestCase):

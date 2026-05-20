@@ -41,6 +41,24 @@ cd C:\Users\EdgarsTool\Projects\mcp-handcraft
 run_http.cmd
 ```
 
+### 恢復完整 public MCP path（:8765 + cloudflared + /mcp）
+```powershell
+cd C:\Users\EdgarsTool\Projects\mcp-handcraft
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-HandcraftStack.ps1
+```
+
+這個腳本會：
+- 確認 `http://127.0.0.1:8765/health`
+- 若本機 HTTP server 沒活著，用 Doppler 啟動 `server_http.py`
+- 確認或啟動 `cloudflared`
+- 檢查 `https://mcp.whoasked.vip/mcp` 是否回 200
+
+### 只做健康檢查
+```powershell
+cd C:\Users\EdgarsTool\Projects\mcp-handcraft
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftHealth.ps1
+```
+
 ### 啟動 stdio server（本機 MCP client 用）
 ```cmd
 run.cmd
@@ -53,6 +71,8 @@ run.cmd
 ```bash
 # 確認 port 8765 是否被監聽
 netstat -ano | findstr :8765
+# 確認服務健康
+curl.exe http://127.0.0.1:8765/health
 ```
 
 ---

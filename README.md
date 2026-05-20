@@ -16,7 +16,10 @@ mcp-handcraft/
 ├── server.py           ← stdio 入口（供本地 stdio client 使用）
 ├── mmx_handlers.py     ← MiniMax 媒體生成 handlers
 ├── run.cmd             ← 啟動 stdio server
-├── run_http.cmd        ← 啟動 HTTP server（不用 Doppler）
+├── run_http.cmd        ← 啟動 HTTP server（透過 Doppler 注入 secrets）
+├── scripts/
+│   ├── Start-HandcraftStack.ps1 ← 啟動/驗證 :8765 + cloudflared + public /mcp
+│   └── Test-HandcraftHealth.ps1 ← 明確健康檢查
 └── test_server_http.py ← smoke test
 ```
 
@@ -24,32 +27,35 @@ mcp-handcraft/
 
 ## 啟動方式
 
-### 正常啟動（透過 Doppler 注入 secrets）
+### 一鍵恢復本機 + tunnel + public MCP
 
 ```powershell
 cd C:\Users\EdgarsTool\Projects\mcp-handcraft
-doppler run -- python server_http.py
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-HandcraftStack.ps1
 ```
 
-### 背景啟動
+這會先確認 `http://127.0.0.1:8765/health`，必要時用 Doppler 啟動 `server_http.py`；再確認 `cloudflared` 程序；最後檢查 `https://mcp.whoasked.vip/mcp` 是否回 200。
+
+### 只啟動 HTTP server（透過 Doppler 注入 secrets）
 
 ```powershell
-Start-Process powershell -ArgumentList '-NoProfile','-Command',
-  'cd "C:\Users\EdgarsTool\Projects\mcp-handcraft"; doppler run -- python server_http.py' -WindowStyle Minimized
+cd C:\Users\EdgarsTool\Projects\mcp-handcraft
+.\run_http.cmd
 ```
 
 ### 確認運作中
 
 ```powershell
-Get-NetTCPConnection -LocalPort 8765
-# 或
-Invoke-RestMethod http://localhost:8765/health
+netstat -ano | Select-String ':8765'
+Invoke-RestMethod http://127.0.0.1:8765/health
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftHealth.ps1
 ```
 
 ### 停止
 
 ```powershell
-Stop-Process -Id (Get-NetTCPConnection -LocalPort 8765).OwningProcess -Force
+netstat -ano | Select-String ':8765'
+Stop-Process -Id <OwningProcessId> -Force
 ```
 
 ---

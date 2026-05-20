@@ -306,6 +306,16 @@ http://127.0.0.1:8765/webhook/package
 
 這條不是 MCP endpoint。對方要「接 MCP」時給 `/mcp`；對方要「包裹 webhook」時給 `/webhook/package`。
 
+### Linear webhook
+
+給 Linear webhook 使用的 URL：
+
+```text
+https://mcp.whoasked.vip/webhook/linear
+```
+
+這條不是 MCP endpoint。對方要「接 Linear webhook」時給 `/webhook/linear`。
+
 若 endpoint 需要 bearer token，設定 `HERMES_HANDCRAFT_MCP_TOKEN`；本檔不保存 token，也不要把 runtime log、`.screenshots/`、`__pycache__/` 或圖片檔 commit 進 repo。
 
 ---

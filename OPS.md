@@ -263,11 +263,18 @@ Do not collapse these into one URL during review:
 - MCP endpoint: `https://mcp.whoasked.vip/mcp`
 - Discord webhook: `https://mcp.whoasked.vip/webhook/discord`
 - Package / TrackTW webhook: `https://mcp.whoasked.vip/webhook/package`
+- Linear webhook: `https://mcp.whoasked.vip/webhook/linear`
 
 Local package webhook test:
 
 ```powershell
 curl.exe -X POST http://127.0.0.1:8765/webhook/package -H "Content-Type: application/json" -d "{\"tracking_number\":\"TEST123\"}"
+```
+
+Local Linear webhook test:
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8765/webhook/linear -H "Content-Type: application/json" -d "{\"type\":\"Issue\",\"action\":\"create\"}"
 ```
 
 ---

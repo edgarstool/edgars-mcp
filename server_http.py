@@ -6,6 +6,7 @@
 端點:
 - POST /mcp
 - POST /webhook/package
+- POST /webhook/linear
 回應模式: 單次 JSON（不開 SSE stream，Phase 2 基礎版）
 """
 
@@ -83,6 +84,7 @@ PORT = 8765
 PROTOCOL_VERSION = "2025-11-25"
 MCP_PATH = "/mcp"
 PACKAGE_WEBHOOK_PATH = "/webhook/package"
+LINEAR_WEBHOOK_PATH = "/webhook/linear"
 DEFAULT_JOB_RETENTION_SECONDS = int(os.getenv("MCP_JOB_RETENTION_SECONDS", "3600"))
 
 SERVER_INFO = {
@@ -932,7 +934,7 @@ def make_webhook_response(event_type: str, accepted: bool = True) -> dict:
     return {
         "ok": accepted,
         "type": event_type,
-        "service": "handcraft-package-webhook",
+        "service": f"handcraft-{event_type}-webhook",
     }
 
 
@@ -1873,6 +1875,9 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         if parsed_path == PACKAGE_WEBHOOK_PATH:
             self._handle_package_webhook()
             return
+        if parsed_path == LINEAR_WEBHOOK_PATH:
+            self._handle_linear_webhook()
+            return
         if parsed_path != MCP_PATH:
             self.send_response(404)
             self.end_headers()
@@ -1972,6 +1977,42 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             "received": True,
         })
 
+    def _handle_linear_webhook(self) -> None:
+        content_length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(content_length)
+        raw_text = raw.decode("utf-8", errors="replace")
+        log(f"LINEAR WEBHOOK RECV ← {raw_text}")
+
+        if raw:
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                self._send_json(
+                    {
+                        **make_webhook_response("linear", accepted=False),
+                        "error": f"Invalid JSON: {exc}",
+                    },
+                    status=400,
+                )
+                return
+        else:
+            payload = {}
+
+        if not isinstance(payload, dict):
+            self._send_json(
+                {
+                    **make_webhook_response("linear", accepted=False),
+                    "error": "Invalid payload: expected JSON object",
+                },
+                status=400,
+            )
+            return
+
+        self._send_json({
+            **make_webhook_response("linear"),
+            "received": True,
+        })
+
     # ── 回應輔助 ──────────────────────────────────────────────────────────────
     def _handle_discord_webhook(self) -> None:
         content_length = int(self.headers.get("Content-Length", 0))
@@ -2046,6 +2087,7 @@ def main() -> None:
     log(f"Protocol : {PROTOCOL_VERSION}")
     log(f"Endpoint : POST http://localhost:{PORT}{MCP_PATH}")
     log(f"Webhook : POST http://localhost:{PORT}{PACKAGE_WEBHOOK_PATH}")
+    log(f"Webhook : POST http://localhost:{PORT}{LINEAR_WEBHOOK_PATH}")
     log(f"Allowed origins: {ALLOWED_HOSTNAMES}")
     try:
         server.serve_forever()

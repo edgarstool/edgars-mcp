@@ -103,6 +103,43 @@ DISCORD_WEBHOOK_EVENTS_LOCK = threading.Lock()
 DISCORD_WEBHOOK_EVENTS: list[dict] = []
 MAX_DISCORD_WEBHOOK_EVENTS = int(os.getenv("MCP_DISCORD_WEBHOOK_EVENT_LIMIT", "100"))
 TRACKTW_BASE_URL = os.getenv("TRACKTW_BASE_URL", "https://track.tw/api/v1").rstrip("/")
+TRACKTW_STATUS_MODEL_SOURCE = "Google Sheet: TrackTW / tracktw_active + tracktw_events"
+TRACKTW_ACTIVE_FIELDS = (
+    "enabled",
+    "label",
+    "carrier_keyword",
+    "tracking_number",
+    "tracktw_uuid",
+    "poll_profile",
+    "current_status",
+    "current_checkpoint_status",
+    "current_event_time",
+    "last_checked_at",
+    "next_check_after",
+    "last_notified_status",
+    "last_notified_at",
+    "picked_up_at",
+    "archive_after",
+    "record_state",
+    "notify_channel",
+    "notify_target",
+    "notes",
+)
+TRACKTW_EVENT_FIELDS = (
+    "event_at",
+    "label",
+    "carrier_keyword",
+    "tracking_number",
+    "from_status",
+    "from_checkpoint_status",
+    "to_status",
+    "to_checkpoint_status",
+    "current_event_time",
+    "action",
+    "notify_channel",
+    "notify_target",
+    "message",
+)
 
 # ── OAuth 2.0 一次性授權碼（記憶體暫存，重啟後清空）──────────────────────────
 OAUTH_CODES_LOCK = threading.Lock()
@@ -219,6 +256,23 @@ TOOLS = [
                 },
             },
             "required": ["task"],
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "string",
+                    "description": "Background job ID (only when async=true). Use agent_job_status to check result."
+                },
+                "output": {
+                    "type": "string",
+                    "description": "Claude Code's final response text, or error message if the call failed."
+                },
+                "exit_code": {
+                    "type": "integer",
+                    "description": "0 on success, non-zero on error."
+                }
+            }
         },
     },
     {
@@ -3331,10 +3385,23 @@ def _tracktw_track_package(package_uuid: str) -> dict:
 
 
 def _tracking_dt(timestamp: object) -> datetime.datetime | None:
-    try:
-        ts = int(timestamp)
-    except (TypeError, ValueError):
+    if isinstance(timestamp, datetime.datetime):
+        if timestamp.tzinfo:
+            return timestamp.astimezone(datetime.timezone(datetime.timedelta(hours=8)))
+        return timestamp.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+    text = str(timestamp or "").strip()
+    if not text:
         return None
+    try:
+        ts = int(text)
+    except (TypeError, ValueError):
+        try:
+            parsed = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo:
+            return parsed.astimezone(datetime.timezone(datetime.timedelta(hours=8)))
+        return parsed.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
     if ts <= 0:
         return None
     return datetime.datetime.fromtimestamp(ts, tz=datetime.timezone(datetime.timedelta(hours=8)))
@@ -3369,10 +3436,36 @@ def _checkpoint_status_text(event: dict, status_text: str) -> str:
     return checkpoint or _infer_stage(status_text)
 
 
+def _top_level_history_event(tracking_data: dict) -> dict | None:
+    current_status = _first_text(tracking_data, ("current_status", "status", "description", "message"))
+    if not current_status:
+        return None
+    event = {
+        "status": current_status,
+        "location": str(tracking_data.get("location") or "").strip(),
+        "description": _first_text(tracking_data, ("description", "message")),
+        "checkpoint_status": _first_text(
+            tracking_data,
+            ("current_checkpoint_status", "checkpoint_status", "checkpoint"),
+        ),
+        "time": (
+            tracking_data.get("current_event_time")
+            or tracking_data.get("event_at")
+            or tracking_data.get("time")
+            or tracking_data.get("timestamp")
+        ),
+    }
+    return event
+
+
 def _normalize_history(tracking_data: dict) -> list[dict]:
     raw_history = tracking_data.get("package_history") or tracking_data.get("history") or []
     if not isinstance(raw_history, list):
         raw_history = []
+    if not raw_history:
+        top_level_event = _top_level_history_event(tracking_data)
+        if top_level_event:
+            raw_history = [top_level_event]
 
     events = []
     for item in raw_history:
@@ -3388,6 +3481,8 @@ def _normalize_history(tracking_data: dict) -> list[dict]:
             "current_event_time": dt.isoformat() if dt else "",
             "current_event_time_display": dt.strftime("%Y-%m-%d %H:%M") if dt else "",
             "stage": to_checkpoint_status,
+            "current_status": to_status,
+            "current_checkpoint_status": to_checkpoint_status,
             "from_status": "",
             "from_checkpoint_status": "",
             "to_status": to_status,
@@ -3460,6 +3555,55 @@ def _eta_judgement(events: list[dict]) -> dict:
     return {"eta": "無法判斷", "confidence": "低", "reason": "最新狀態缺少可判斷配送階段的關鍵字。"}
 
 
+def _tracktw_active_row(
+    *,
+    label: str,
+    carrier_input: str,
+    tracking_number: str,
+    package_uuid: str,
+    current: dict,
+) -> dict:
+    return {
+        "enabled": True,
+        "label": label,
+        "carrier_keyword": carrier_input,
+        "tracking_number": tracking_number,
+        "tracktw_uuid": package_uuid,
+        "poll_profile": "",
+        "current_status": current["to_status"],
+        "current_checkpoint_status": current["to_checkpoint_status"],
+        "current_event_time": current["current_event_time"],
+        "last_checked_at": "",
+        "next_check_after": "",
+        "last_notified_status": "",
+        "last_notified_at": "",
+        "picked_up_at": "",
+        "archive_after": "",
+        "record_state": "active",
+        "notify_channel": "",
+        "notify_target": "",
+        "notes": "",
+    }
+
+
+def _tracktw_event_row(event: dict, *, label: str, carrier_input: str, tracking_number: str) -> dict:
+    return {
+        "event_at": event["current_event_time"],
+        "label": label,
+        "carrier_keyword": carrier_input,
+        "tracking_number": tracking_number,
+        "from_status": event["from_status"],
+        "from_checkpoint_status": event["from_checkpoint_status"],
+        "to_status": event["to_status"],
+        "to_checkpoint_status": event["to_checkpoint_status"],
+        "current_event_time": event["current_event_time"],
+        "action": "status_changed" if event["stage_changed"] else "status_observed",
+        "notify_channel": "",
+        "notify_target": "",
+        "message": event["detail"],
+    }
+
+
 def _build_tracking_report(carrier_input: str, tracking_number: str, carrier: dict, data: dict) -> dict:
     events = _normalize_history(data)
     current = events[-1] if events else {
@@ -3468,6 +3612,8 @@ def _build_tracking_report(carrier_input: str, tracking_number: str, carrier: di
         "current_event_time": "",
         "current_event_time_display": "",
         "stage": "尚無紀錄",
+        "current_status": "",
+        "current_checkpoint_status": "尚無紀錄",
         "from_status": "",
         "from_checkpoint_status": "",
         "to_status": "",
@@ -3477,20 +3623,40 @@ def _build_tracking_report(carrier_input: str, tracking_number: str, carrier: di
         "location": "",
         "detail": "目前無貨態紀錄",
     }
+    normalized_tracking_number = str(data.get("tracking_number") or tracking_number).strip().upper()
+    package_uuid = str(data.get("id") or data.get("uuid") or "")
+    label = carrier.get("name", "") or carrier_input
+    active_row = _tracktw_active_row(
+        label=label,
+        carrier_input=carrier_input,
+        tracking_number=normalized_tracking_number,
+        package_uuid=package_uuid,
+        current=current,
+    )
+    timeline = [
+        _tracktw_event_row(event, label=label, carrier_input=carrier_input, tracking_number=normalized_tracking_number)
+        for event in events
+    ]
     eta = _eta_judgement(events)
     return {
+        "status_model": {
+            "source": TRACKTW_STATUS_MODEL_SOURCE,
+            "active_fields": list(TRACKTW_ACTIVE_FIELDS),
+            "event_fields": list(TRACKTW_EVENT_FIELDS),
+        },
         "carrier_input": carrier_input,
         "carrier": {
             "id": carrier.get("id", ""),
             "name": carrier.get("name", ""),
         },
-        "tracking_number": str(data.get("tracking_number") or tracking_number).strip().upper(),
-        "package_uuid": str(data.get("id") or data.get("uuid") or ""),
+        "tracking_number": normalized_tracking_number,
+        "package_uuid": package_uuid,
         "current_stage": current["stage"],
         "current_status": current["to_status"],
         "current_checkpoint_status": current["to_checkpoint_status"],
         "current_event_time": current["current_event_time"],
         "current_event_time_display": current["current_event_time_display"],
+        "active_row": active_row,
         "latest_transition": {
             "from_status": current["from_status"],
             "from_checkpoint_status": current["from_checkpoint_status"],
@@ -3500,6 +3666,7 @@ def _build_tracking_report(carrier_input: str, tracking_number: str, carrier: di
             "stage_changed": current["stage_changed"],
         },
         "eta": eta,
+        "timeline": timeline,
         "history": events,
     }
 
@@ -3723,6 +3890,7 @@ def handle_tracktw_package_status(req_id, arguments: dict) -> dict:
         report = _build_tracking_report(carrier_name, tracking_number, carrier, data)
         if not report.get("package_uuid"):
             report["package_uuid"] = package_uuid
+            report["active_row"]["tracktw_uuid"] = package_uuid
 
         report_files = []
         if bool(arguments.get("export_report", False)):

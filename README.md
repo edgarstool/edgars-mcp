@@ -90,6 +90,7 @@ Authorization: Bearer <access_token>
 
 | 欄位 | 值 |
 |------|----|
+| 連接器名稱 | `edgars mcp` |
 | MCP 伺服器 URL | `https://mcp.whoasked.vip/mcp` |
 | 驗證 | `OAuth` |
 | Client ID | `handcraft-mcp` |
@@ -103,7 +104,7 @@ https://mcp.whoasked.vip/.well-known/oauth-authorization-server
 https://mcp.whoasked.vip/.well-known/oauth-protected-resource
 ```
 
-此 MCP 使用 Authorization Code + PKCE S256。為了相容不允許空白 Client Secret 的 AI UI，預設手動 client secret 是 `handcraft-mcp-client-secret`；正式環境可用 `MCP_OAUTH_CLIENT_SECRET` 覆蓋。Dynamic client registration 端點為 `/register`，會核發 `client_id` 與 `client_secret`。
+此 MCP 使用 Authorization Code + PKCE S256。對外顯示的 connector / `serverInfo.name` 是 `edgars mcp`；OAuth `client_id` 仍保留 `handcraft-mcp`，避免既有授權設定被破壞。為了相容不允許空白 Client Secret 的 AI UI，預設手動 client secret 是 `handcraft-mcp-client-secret`；正式環境可用 `MCP_OAUTH_CLIENT_SECRET` 覆蓋。Dynamic client registration 端點為 `/register`，會核發 `client_id` 與 `client_secret`。
 
 ---
 

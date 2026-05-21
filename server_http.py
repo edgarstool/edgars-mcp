@@ -96,8 +96,10 @@ PACKAGE_WEBHOOK_PATH = "/webhook/package"
 LINEAR_WEBHOOK_PATH = "/webhook/linear"
 DEFAULT_JOB_RETENTION_SECONDS = int(os.getenv("MCP_JOB_RETENTION_SECONDS", "3600"))
 
+CONNECTOR_DISPLAY_NAME = "edgars mcp"
+
 SERVER_INFO = {
-    "name": "handcraft-mcp",
+    "name": CONNECTOR_DISPLAY_NAME,
     "version": "0.1.0",
 }
 
@@ -1101,7 +1103,7 @@ def get_oauth_client(client_id: str) -> dict | None:
     if client_id == OAUTH_STATIC_CLIENT_ID:
         return {
             "client_id": OAUTH_STATIC_CLIENT_ID,
-            "client_name": "handcraft MCP",
+            "client_name": CONNECTOR_DISPLAY_NAME,
             "client_secret": OAUTH_STATIC_CLIENT_SECRET,
             "redirect_uris": [],
             "allow_dynamic_redirect": True,

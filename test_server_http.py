@@ -431,6 +431,9 @@ class OAuthFlowTests(unittest.TestCase):
                 self.assertIn("destructiveHint", annotations)
                 self.assertEqual([{"type": "oauth2", "scopes": ["mcp"]}], tool.get("securitySchemes"))
                 self.assertEqual(tool["securitySchemes"], tool.get("_meta", {}).get("securitySchemes"))
+                output_schema = tool.get("outputSchema")
+                self.assertIsInstance(output_schema, dict)
+                self.assertEqual("object", output_schema.get("type"))
 
 
 class CacheTraceRotationScriptTests(unittest.TestCase):

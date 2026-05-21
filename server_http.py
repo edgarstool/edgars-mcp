@@ -1077,6 +1077,29 @@ DESTRUCTIVE_TOOL_NAMES = {
     "linear_update_issue",
 }
 
+DEFAULT_TEXT_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "content": {
+            "type": "array",
+            "description": "MCP text content blocks returned by the tool.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "enum": ["text"]},
+                    "text": {"type": "string"},
+                },
+                "required": ["type", "text"],
+            },
+        },
+        "isError": {
+            "type": "boolean",
+            "description": "True when the tool returned an error payload.",
+        },
+    },
+    "required": ["content"],
+}
+
 
 def _tool_impact_annotations(tool_name: str) -> dict:
     read_only = tool_name in READ_ONLY_TOOL_NAMES
@@ -1094,6 +1117,7 @@ def _normalize_tool_descriptor(tool: dict) -> dict:
     descriptor.setdefault("title", name.replace("_", " ").title())
     descriptor.setdefault("annotations", _tool_impact_annotations(name))
     descriptor.setdefault("securitySchemes", [{"type": "oauth2", "scopes": [OAUTH_SCOPE]}])
+    descriptor.setdefault("outputSchema", DEFAULT_TEXT_OUTPUT_SCHEMA)
     meta = dict(descriptor.get("_meta") or {})
     meta.setdefault("securitySchemes", descriptor["securitySchemes"])
     descriptor["_meta"] = meta

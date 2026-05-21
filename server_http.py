@@ -155,6 +155,10 @@ OAUTH_ACCESS_TOKENS: dict[str, dict] = {}
 OAUTH_AUTH_CODE_TTL_SECONDS = int(os.getenv("MCP_OAUTH_AUTH_CODE_TTL_SECONDS", "600"))
 OAUTH_ACCESS_TOKEN_TTL_SECONDS = int(os.getenv("MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS", "7776000"))
 OAUTH_STATIC_CLIENT_ID = os.getenv("MCP_OAUTH_CLIENT_ID", "handcraft-mcp").strip() or "handcraft-mcp"
+OAUTH_STATIC_CLIENT_SECRET = (
+    os.getenv("MCP_OAUTH_CLIENT_SECRET", "handcraft-mcp-client-secret").strip()
+    or "handcraft-mcp-client-secret"
+)
 TOOLS = [
     {
         "name": "echo",
@@ -1098,9 +1102,10 @@ def get_oauth_client(client_id: str) -> dict | None:
         return {
             "client_id": OAUTH_STATIC_CLIENT_ID,
             "client_name": "handcraft MCP",
+            "client_secret": OAUTH_STATIC_CLIENT_SECRET,
             "redirect_uris": [],
             "allow_dynamic_redirect": True,
-            "token_endpoint_auth_method": "none",
+            "token_endpoint_auth_method": "client_secret_post",
         }
     return None
 
@@ -1126,6 +1131,36 @@ def pkce_verifier_matches(verifier: str, challenge: str, method: str) -> bool:
     except UnicodeEncodeError:
         return False
     return hmac.compare_digest(calculated, challenge)
+
+
+def parse_basic_client_credentials(auth_header: str) -> tuple[str, str] | None:
+    if not auth_header.startswith("Basic "):
+        return None
+    try:
+        raw = base64.b64decode(auth_header.removeprefix("Basic ").strip()).decode("utf-8")
+    except Exception:
+        return None
+    client_id, sep, client_secret = raw.partition(":")
+    if not sep:
+        return None
+    return urllib.parse.unquote_plus(client_id), urllib.parse.unquote_plus(client_secret)
+
+
+def oauth_client_secret_matches(client: dict, params: dict, auth_header: str) -> bool:
+    expected = str(client.get("client_secret") or "")
+    if not expected:
+        return True
+
+    basic_credentials = parse_basic_client_credentials(auth_header)
+    if basic_credentials:
+        basic_client_id, basic_secret = basic_credentials
+        return (
+            hmac.compare_digest(basic_client_id, str(client.get("client_id") or ""))
+            and hmac.compare_digest(basic_secret, expected)
+        )
+
+    supplied = str(params.get("client_secret") or "")
+    return hmac.compare_digest(supplied, expected)
 
 
 def issue_oauth_access_token(client_id: str, scope: str) -> tuple[str, int]:
@@ -2001,7 +2036,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code"],
             "code_challenge_methods_supported": ["S256"],
-            "token_endpoint_auth_methods_supported": ["none"],
+            "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
             "token_endpoint_auth_signing_alg_values_supported": [],
             "revocation_endpoint_auth_methods_supported": ["none"],
             "scopes_supported": ["mcp"],
@@ -2107,6 +2142,16 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         client_id = params.get("client_id", "")
         redirect_uri = params.get("redirect_uri", "")
         code_verifier = params.get("code_verifier", "")
+        basic_credentials = parse_basic_client_credentials(self.headers.get("Authorization", ""))
+        if basic_credentials and not client_id:
+            client_id = basic_credentials[0]
+        client = get_oauth_client(client_id)
+        if not client:
+            self._send_oauth_json({"error": "invalid_client"}, 401)
+            return
+        if not oauth_client_secret_matches(client, params, self.headers.get("Authorization", "")):
+            self._send_oauth_json({"error": "invalid_client", "error_description": "client_secret mismatch"}, 401)
+            return
         with OAUTH_CODES_LOCK:
             entry = OAUTH_CODES.get(code)
             if not entry or entry.get("used"):
@@ -2153,11 +2198,13 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return
 
         client_id = secrets.token_urlsafe(24)
+        client_secret = secrets.token_urlsafe(32)
         client = {
             "client_id": client_id,
+            "client_secret": client_secret,
             "client_name": str(meta.get("client_name") or "handcraft OAuth client"),
             "redirect_uris": redirect_uris,
-            "token_endpoint_auth_method": "none",
+            "token_endpoint_auth_method": "client_secret_post",
             "created_at": time.time(),
         }
         with OAUTH_CLIENTS_LOCK:
@@ -2165,12 +2212,13 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         self._send_oauth_json({
             "client_id": client_id,
+            "client_secret": client_secret,
             "client_id_issued_at": int(client["created_at"]),
             "client_secret_expires_at": 0,
             "redirect_uris": redirect_uris,
             "grant_types": ["authorization_code"],
             "response_types": ["code"],
-            "token_endpoint_auth_method": "none",
+            "token_endpoint_auth_method": "client_secret_post",
             "scope": "mcp",
         }, 201)
 

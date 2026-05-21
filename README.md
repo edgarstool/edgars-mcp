@@ -93,7 +93,7 @@ Authorization: Bearer <access_token>
 | MCP 伺服器 URL | `https://mcp.whoasked.vip/mcp` |
 | 驗證 | `OAuth` |
 | Client ID | `handcraft-mcp` |
-| Client Secret | 留空 |
+| Client Secret | `handcraft-mcp-client-secret` |
 | 傳輸 | 可串流 HTTP |
 
 OAuth discovery endpoints：
@@ -103,7 +103,7 @@ https://mcp.whoasked.vip/.well-known/oauth-authorization-server
 https://mcp.whoasked.vip/.well-known/oauth-protected-resource
 ```
 
-此 MCP 使用 public client，不需要 client secret；授權流程使用 Authorization Code + PKCE S256。Dynamic client registration 端點為 `/register`，手動填寫時可使用預設 public client id `handcraft-mcp`。
+此 MCP 使用 Authorization Code + PKCE S256。為了相容不允許空白 Client Secret 的 AI UI，預設手動 client secret 是 `handcraft-mcp-client-secret`；正式環境可用 `MCP_OAUTH_CLIENT_SECRET` 覆蓋。Dynamic client registration 端點為 `/register`，會核發 `client_id` 與 `client_secret`。
 
 ---
 
@@ -318,6 +318,7 @@ doppler run -- python -m unittest test_server_http.py -v
 |------|------|
 | `MCP_API_TOKEN` | Bearer Token 認證 |
 | `MCP_OAUTH_CLIENT_ID` | OAuth 預設 public client id（預設 `handcraft-mcp`） |
+| `MCP_OAUTH_CLIENT_SECRET` | OAuth 預設 client secret（預設 `handcraft-mcp-client-secret`） |
 | `MCP_OAUTH_AUTH_CODE_TTL_SECONDS` | OAuth 授權碼有效秒數（預設 600） |
 | `MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS` | OAuth access token 有效秒數（預設 7776000） |
 | `PERPLEXITY_API_KEY` | web_search 用 |

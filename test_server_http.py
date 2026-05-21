@@ -253,7 +253,9 @@ class OAuthFlowTests(unittest.TestCase):
 
             self.assertEqual(["authorization_code"], metadata["grant_types_supported"])
             self.assertEqual(["S256"], metadata["code_challenge_methods_supported"])
-            self.assertEqual(["none"], metadata["token_endpoint_auth_methods_supported"])
+            self.assertIn("client_secret_post", metadata["token_endpoint_auth_methods_supported"])
+            self.assertIn("client_secret_basic", metadata["token_endpoint_auth_methods_supported"])
+            self.assertIn("none", metadata["token_endpoint_auth_methods_supported"])
             self.assertEqual(f"https://mcp.example.test/authorize", metadata["authorization_endpoint"])
         finally:
             server.shutdown()
@@ -298,6 +300,7 @@ class OAuthFlowTests(unittest.TestCase):
             with urllib.request.urlopen(register_req, timeout=5) as response:
                 registered = json.loads(response.read().decode("utf-8"))
             client_id = registered["client_id"]
+            client_secret = registered["client_secret"]
 
             verifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"
             challenge = server_http.pkce_s256_challenge(verifier)
@@ -326,6 +329,7 @@ class OAuthFlowTests(unittest.TestCase):
                 "redirect_uri": redirect_uri,
                 "code": code,
                 "code_verifier": verifier,
+                "client_secret": client_secret,
             }).encode("utf-8")
             token_req = urllib.request.Request(
                 f"{base}/token",

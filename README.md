@@ -75,13 +75,35 @@ Stop-Process -Id <OwningProcessId> -Force
 
 ## 認證
 
-所有請求需帶 Bearer Token：
+HTTP MCP endpoint 支援兩種 bearer token：
+
+1. 正規 OAuth 2.0 Authorization Code + PKCE（給 ChatGPT / 自訂連接器使用）
+2. 靜態 `MCP_API_TOKEN`（給本機 smoke test / 既有自動化相容使用）
+
+所有 `/mcp` 請求需帶 Bearer Token：
 
 ```
-Authorization: Bearer <MCP_API_TOKEN>
+Authorization: Bearer <access_token>
 ```
 
-Token 由 Doppler 管理（`MCP_API_TOKEN`）。
+### ChatGPT 自訂連接器填寫
+
+| 欄位 | 值 |
+|------|----|
+| MCP 伺服器 URL | `https://mcp.whoasked.vip/mcp` |
+| 驗證 | `OAuth` |
+| Client ID | `handcraft-mcp` |
+| Client Secret | 留空 |
+| 傳輸 | 可串流 HTTP |
+
+OAuth discovery endpoints：
+
+```text
+https://mcp.whoasked.vip/.well-known/oauth-authorization-server
+https://mcp.whoasked.vip/.well-known/oauth-protected-resource
+```
+
+此 MCP 使用 public client，不需要 client secret；授權流程使用 Authorization Code + PKCE S256。Dynamic client registration 端點為 `/register`，手動填寫時可使用預設 public client id `handcraft-mcp`。
 
 ---
 
@@ -295,6 +317,9 @@ doppler run -- python -m unittest test_server_http.py -v
 | 變數 | 說明 |
 |------|------|
 | `MCP_API_TOKEN` | Bearer Token 認證 |
+| `MCP_OAUTH_CLIENT_ID` | OAuth 預設 public client id（預設 `handcraft-mcp`） |
+| `MCP_OAUTH_AUTH_CODE_TTL_SECONDS` | OAuth 授權碼有效秒數（預設 600） |
+| `MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS` | OAuth access token 有效秒數（預設 7776000） |
 | `PERPLEXITY_API_KEY` | web_search 用 |
 | `OPENAI_API_KEY` | 備用 |
 | `LINEAR_API_KEY` | Linear issue 管理 |

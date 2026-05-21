@@ -19,6 +19,10 @@ import threading
 import time
 import uuid
 import shutil
+import base64
+import hashlib
+import hmac
+import secrets
 import urllib.parse
 import urllib.request
 import fnmatch
@@ -144,6 +148,13 @@ TRACKTW_EVENT_FIELDS = (
 # ── OAuth 2.0 一次性授權碼（記憶體暫存，重啟後清空）──────────────────────────
 OAUTH_CODES_LOCK = threading.Lock()
 OAUTH_CODES: dict[str, dict] = {}
+OAUTH_CLIENTS_LOCK = threading.Lock()
+OAUTH_CLIENTS: dict[str, dict] = {}
+OAUTH_TOKENS_LOCK = threading.Lock()
+OAUTH_ACCESS_TOKENS: dict[str, dict] = {}
+OAUTH_AUTH_CODE_TTL_SECONDS = int(os.getenv("MCP_OAUTH_AUTH_CODE_TTL_SECONDS", "600"))
+OAUTH_ACCESS_TOKEN_TTL_SECONDS = int(os.getenv("MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS", "7776000"))
+OAUTH_STATIC_CLIENT_ID = os.getenv("MCP_OAUTH_CLIENT_ID", "handcraft-mcp").strip() or "handcraft-mcp"
 TOOLS = [
     {
         "name": "echo",
@@ -1050,6 +1061,106 @@ def make_webhook_response(event_type: str, accepted: bool = True) -> dict:
     }
 
 
+def parse_request_params(raw: bytes, content_type: str) -> dict:
+    if "application/json" in content_type:
+        try:
+            data = json.loads(raw.decode("utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {k: v[0] for k, v in urllib.parse.parse_qs(raw.decode("utf-8")).items()}
+
+
+def oauth_error(error: str, description: str = "") -> dict:
+    payload = {"error": error}
+    if description:
+        payload["error_description"] = description
+    return payload
+
+
+def is_safe_oauth_redirect_uri(redirect_uri: str) -> bool:
+    parsed = urllib.parse.urlparse(redirect_uri)
+    if parsed.scheme == "https" and parsed.netloc:
+        return True
+    if parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}:
+        return True
+    return False
+
+
+def get_oauth_client(client_id: str) -> dict | None:
+    if not client_id:
+        return None
+    with OAUTH_CLIENTS_LOCK:
+        client = OAUTH_CLIENTS.get(client_id)
+        if client:
+            return dict(client)
+    if client_id == OAUTH_STATIC_CLIENT_ID:
+        return {
+            "client_id": OAUTH_STATIC_CLIENT_ID,
+            "client_name": "handcraft MCP",
+            "redirect_uris": [],
+            "allow_dynamic_redirect": True,
+            "token_endpoint_auth_method": "none",
+        }
+    return None
+
+
+def oauth_redirect_uri_allowed(client: dict, redirect_uri: str) -> bool:
+    if not is_safe_oauth_redirect_uri(redirect_uri):
+        return False
+    if client.get("allow_dynamic_redirect"):
+        return True
+    return redirect_uri in set(client.get("redirect_uris") or [])
+
+
+def pkce_s256_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def pkce_verifier_matches(verifier: str, challenge: str, method: str) -> bool:
+    if method != "S256" or not verifier or not challenge:
+        return False
+    try:
+        calculated = pkce_s256_challenge(verifier)
+    except UnicodeEncodeError:
+        return False
+    return hmac.compare_digest(calculated, challenge)
+
+
+def issue_oauth_access_token(client_id: str, scope: str) -> tuple[str, int]:
+    token = secrets.token_urlsafe(48)
+    now = time.time()
+    with OAUTH_TOKENS_LOCK:
+        OAUTH_ACCESS_TOKENS[token] = {
+            "client_id": client_id,
+            "scope": scope or "mcp",
+            "issued_at": now,
+            "expires_at": now + OAUTH_ACCESS_TOKEN_TTL_SECONDS,
+        }
+    return token, OAUTH_ACCESS_TOKEN_TTL_SECONDS
+
+
+def oauth_access_token_is_valid(token: str) -> bool:
+    if not token:
+        return False
+    now = time.time()
+    with OAUTH_TOKENS_LOCK:
+        entry = OAUTH_ACCESS_TOKENS.get(token)
+        if not entry:
+            return False
+        if entry.get("expires_at", 0) < now:
+            OAUTH_ACCESS_TOKENS.pop(token, None)
+            return False
+        return True
+
+
+def bearer_token_is_authorized(token: str, static_token: str) -> bool:
+    if static_token and hmac.compare_digest(token, static_token):
+        return True
+    return oauth_access_token_is_valid(token)
+
+
 def run_agent_command(
     command: list[str],
     cwd: str,
@@ -1889,9 +2000,12 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             "registration_endpoint": f"{base_url}/register",
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code"],
-            "code_challenge_methods_supported": ["S256", "plain"],
+            "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none"],
+            "token_endpoint_auth_signing_alg_values_supported": [],
+            "revocation_endpoint_auth_methods_supported": ["none"],
             "scopes_supported": ["mcp"],
+            "subject_types_supported": ["public"],
         })
 
     def _handle_resource_metadata(self) -> None:
@@ -1899,6 +2013,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         self._send_oauth_json({
             "resource": base_url,
             "authorization_servers": [base_url],
+            "scopes_supported": ["mcp"],
+            "bearer_methods_supported": ["header"],
         })
 
     def _handle_health(self) -> None:
@@ -1919,6 +2035,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             },
             "auth": {
                 "mcp_api_token_configured": bool(self.server.config.mcp_api_token),
+                "oauth_public_client_id": OAUTH_STATIC_CLIENT_ID,
+                "oauth_active_tokens": len(OAUTH_ACCESS_TOKENS),
             },
             "webhooks": [
                 PACKAGE_WEBHOOK_PATH,
@@ -1929,19 +2047,40 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     def _handle_authorize(self, query_string: str) -> None:
         params = urllib.parse.parse_qs(query_string)
+        response_type = params.get("response_type", [""])[0]
+        client_id = params.get("client_id", [""])[0]
         redirect_uri = params.get("redirect_uri", [""])[0]
         state = params.get("state", [""])[0]
-        if not redirect_uri:
-            self.send_response(400)
-            self.end_headers()
+        scope = params.get("scope", ["mcp"])[0] or "mcp"
+        code_challenge = params.get("code_challenge", [""])[0]
+        code_challenge_method = params.get("code_challenge_method", [""])[0] or "S256"
+
+        client = get_oauth_client(client_id)
+        if response_type != "code":
+            self._send_oauth_json(oauth_error("unsupported_response_type", "response_type must be code"), 400)
             return
-        code = str(uuid.uuid4())
-        code_verifier_challenge = params.get("code_challenge", [""])[0]
+        if not client:
+            self._send_oauth_json(oauth_error("invalid_client", "unknown client_id"), 400)
+            return
+        if not redirect_uri or not oauth_redirect_uri_allowed(client, redirect_uri):
+            self._send_oauth_json(oauth_error("invalid_request", "redirect_uri is missing or not registered"), 400)
+            return
+        if code_challenge_method != "S256" or not code_challenge:
+            self._send_oauth_json(oauth_error("invalid_request", "PKCE S256 code_challenge is required"), 400)
+            return
+        if scope and "mcp" not in scope.split():
+            self._send_oauth_json(oauth_error("invalid_scope", "scope must include mcp"), 400)
+            return
+
+        code = secrets.token_urlsafe(32)
         with OAUTH_CODES_LOCK:
             OAUTH_CODES[code] = {
                 "created_at": time.time(),
                 "used": False,
-                "code_challenge": code_verifier_challenge,
+                "client_id": client_id,
+                "scope": scope,
+                "code_challenge": code_challenge,
+                "code_challenge_method": code_challenge_method,
                 "redirect_uri": redirect_uri,
             }
         sep = "&" if "?" in redirect_uri else "?"
@@ -1957,14 +2096,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
     def _handle_token(self) -> None:
         content_length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(content_length) if content_length > 0 else b""
-        ct = self.headers.get("Content-Type", "")
-        if "application/json" in ct:
-            try:
-                params: dict = json.loads(raw.decode("utf-8"))
-            except Exception:
-                params = {}
-        else:
-            params = {k: v[0] for k, v in urllib.parse.parse_qs(raw.decode("utf-8")).items()}
+        params = parse_request_params(raw, self.headers.get("Content-Type", ""))
 
         grant_type = params.get("grant_type", "")
         if grant_type != "authorization_code":
@@ -1972,38 +2104,74 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return
 
         code = params.get("code", "")
+        client_id = params.get("client_id", "")
+        redirect_uri = params.get("redirect_uri", "")
+        code_verifier = params.get("code_verifier", "")
         with OAUTH_CODES_LOCK:
             entry = OAUTH_CODES.get(code)
             if not entry or entry.get("used"):
                 self._send_oauth_json({"error": "invalid_grant"}, 400)
                 return
-            if time.time() - entry["created_at"] > 600:  # 10 分鐘過期
+            if time.time() - entry["created_at"] > OAUTH_AUTH_CODE_TTL_SECONDS:
                 self._send_oauth_json({"error": "invalid_grant", "error_description": "code expired"}, 400)
                 return
+            if client_id != entry.get("client_id"):
+                self._send_oauth_json({"error": "invalid_grant", "error_description": "client_id mismatch"}, 400)
+                return
+            if redirect_uri != entry.get("redirect_uri"):
+                self._send_oauth_json({"error": "invalid_grant", "error_description": "redirect_uri mismatch"}, 400)
+                return
+            if not pkce_verifier_matches(
+                code_verifier,
+                entry.get("code_challenge", ""),
+                entry.get("code_challenge_method", ""),
+            ):
+                self._send_oauth_json({"error": "invalid_grant", "error_description": "PKCE verification failed"}, 400)
+                return
             entry["used"] = True
+            scope = entry.get("scope", "mcp")
 
-        access_token = self.server.config.mcp_api_token or "handcraft-dev-token"
+        access_token, expires_in = issue_oauth_access_token(client_id, scope)
         log("OAuth /token → issued access_token")
         self._send_oauth_json({
             "access_token": access_token,
             "token_type": "Bearer",
-            "expires_in": 7776000,  # 90 天
+            "expires_in": expires_in,
+            "scope": scope,
         })
 
     def _handle_register(self) -> None:
         content_length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(content_length) if content_length > 0 else b""
-        try:
-            meta: dict = json.loads(raw.decode("utf-8"))
-        except Exception:
-            meta = {}
+        meta = parse_request_params(raw, self.headers.get("Content-Type", "application/json"))
+        redirect_uris = meta.get("redirect_uris", [])
+        if not isinstance(redirect_uris, list) or not redirect_uris:
+            self._send_oauth_json(oauth_error("invalid_client_metadata", "redirect_uris must be a non-empty list"), 400)
+            return
+        if not all(isinstance(uri, str) and is_safe_oauth_redirect_uri(uri) for uri in redirect_uris):
+            self._send_oauth_json(oauth_error("invalid_client_metadata", "redirect_uris must be HTTPS or localhost HTTP"), 400)
+            return
+
+        client_id = secrets.token_urlsafe(24)
+        client = {
+            "client_id": client_id,
+            "client_name": str(meta.get("client_name") or "handcraft OAuth client"),
+            "redirect_uris": redirect_uris,
+            "token_endpoint_auth_method": "none",
+            "created_at": time.time(),
+        }
+        with OAUTH_CLIENTS_LOCK:
+            OAUTH_CLIENTS[client_id] = client
+
         self._send_oauth_json({
-            "client_id": str(uuid.uuid4()),
+            "client_id": client_id,
+            "client_id_issued_at": int(client["created_at"]),
             "client_secret_expires_at": 0,
-            "redirect_uris": meta.get("redirect_uris", []),
+            "redirect_uris": redirect_uris,
             "grant_types": ["authorization_code"],
             "response_types": ["code"],
             "token_endpoint_auth_method": "none",
+            "scope": "mcp",
         }, 201)
 
     # ── 主要端點 ──────────────────────────────────────────────────────────────
@@ -2041,7 +2209,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b"Unauthorized")
                 return
             token = auth.removeprefix("Bearer ").strip()
-            if token != api_token:
+            if not bearer_token_is_authorized(token, api_token):
                 log(f"401 Unauthorized: invalid token")
                 self.send_response(401)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")

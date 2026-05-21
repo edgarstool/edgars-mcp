@@ -2,6 +2,8 @@
 
 import json
 import threading
+import urllib.error
+import urllib.parse
 import urllib.request
 import subprocess
 import tempfile
@@ -34,6 +36,11 @@ from server_http import (
     validate_http_startup_config,
     validate_mcp_api_token,
 )
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def tool_text(response):
@@ -213,6 +220,147 @@ class HttpStartupConfigTests(unittest.TestCase):
             self.assertEqual("/health", payload["local"]["health_path"])
             self.assertEqual("https://mcp.example.test/mcp", payload["public"]["mcp_url"])
             self.assertTrue(payload["auth"]["mcp_api_token_configured"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+
+class OAuthFlowTests(unittest.TestCase):
+    def setUp(self):
+        with server_http.OAUTH_CODES_LOCK:
+            server_http.OAUTH_CODES.clear()
+        with server_http.OAUTH_CLIENTS_LOCK:
+            server_http.OAUTH_CLIENTS.clear()
+        with server_http.OAUTH_TOKENS_LOCK:
+            server_http.OAUTH_ACCESS_TOKENS.clear()
+
+    def _start_server(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MCPHTTPHandler, config=config)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread, f"http://127.0.0.1:{server.server_address[1]}"
+
+    def test_oauth_metadata_advertises_pkce_public_client_flow(self):
+        server, thread, base = self._start_server()
+        try:
+            with urllib.request.urlopen(f"{base}/.well-known/oauth-authorization-server", timeout=5) as response:
+                metadata = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(["authorization_code"], metadata["grant_types_supported"])
+            self.assertEqual(["S256"], metadata["code_challenge_methods_supported"])
+            self.assertEqual(["none"], metadata["token_endpoint_auth_methods_supported"])
+            self.assertEqual(f"https://mcp.example.test/authorize", metadata["authorization_endpoint"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_register_rejects_missing_redirect_uris(self):
+        server, thread, base = self._start_server()
+        try:
+            body = json.dumps({"client_name": "bad-client"}).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/register",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(req, timeout=5)
+
+            self.assertEqual(400, raised.exception.code)
+            payload = json.loads(raised.exception.read().decode("utf-8"))
+            self.assertEqual("invalid_client_metadata", payload["error"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_authorization_code_pkce_flow_issues_usable_bearer_token(self):
+        server, thread, base = self._start_server()
+        try:
+            redirect_uri = "https://chat.openai.com/aip/oauth/callback"
+            register_body = json.dumps({
+                "client_name": "ChatGPT",
+                "redirect_uris": [redirect_uri],
+            }).encode("utf-8")
+            register_req = urllib.request.Request(
+                f"{base}/register",
+                data=register_body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(register_req, timeout=5) as response:
+                registered = json.loads(response.read().decode("utf-8"))
+            client_id = registered["client_id"]
+
+            verifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"
+            challenge = server_http.pkce_s256_challenge(verifier)
+            authorize_query = urllib.parse.urlencode({
+                "response_type": "code",
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "scope": "mcp",
+                "state": "state-1",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            })
+            opener = urllib.request.build_opener(NoRedirectHandler)
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                opener.open(f"{base}/authorize?{authorize_query}", timeout=5)
+            self.assertEqual(302, raised.exception.code)
+            location = raised.exception.headers["Location"]
+            redirected = urllib.parse.urlparse(location)
+            redirected_query = urllib.parse.parse_qs(redirected.query)
+            self.assertEqual(["state-1"], redirected_query["state"])
+            code = redirected_query["code"][0]
+
+            token_body = urllib.parse.urlencode({
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "code": code,
+                "code_verifier": verifier,
+            }).encode("utf-8")
+            token_req = urllib.request.Request(
+                f"{base}/token",
+                data=token_body,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                method="POST",
+            )
+            with urllib.request.urlopen(token_req, timeout=5) as response:
+                token_payload = json.loads(response.read().decode("utf-8"))
+
+            access_token = token_payload["access_token"]
+            self.assertNotEqual("secret-token", access_token)
+            self.assertEqual("Bearer", token_payload["token_type"])
+            self.assertEqual("mcp", token_payload["scope"])
+
+            tools_body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {},
+            }).encode("utf-8")
+            tools_req = urllib.request.Request(
+                f"{base}/mcp",
+                data=tools_body,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(tools_req, timeout=5) as response:
+                tools_payload = json.loads(response.read().decode("utf-8"))
+
+            tool_names = [tool["name"] for tool in tools_payload["result"]["tools"]]
+            self.assertIn("fs_disk_info", tool_names)
         finally:
             server.shutdown()
             server.server_close()

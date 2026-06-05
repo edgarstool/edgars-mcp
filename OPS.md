@@ -1,6 +1,6 @@
 # handcraft-mcp 操作手冊
 
-> 適用版本：0.1.0｜最後更新：2026-04-14
+> 適用版本：0.1.0｜最後更新：2026-06-05
 
 ---
 
@@ -148,6 +148,17 @@ def handle_my_tool(req_id, arguments: dict) -> dict:
     return make_response(req_id, make_tool_text_response(result))
 ```
 
+### 寫入工具流程
+
+對 Obsidian / Linear 這類會落地的工具，現在預設走 verified write：
+
+1. 先讀或解析目標
+2. 做最小寫入
+3. 立刻讀回驗證
+4. 失敗時回傳 `[BLOCKED] ... Reason: ...`
+
+這條規則適用於 `vault_write`、`vault_append`、`vault_daily_note`、`vault_create_from_template`、`linear_create_issue`、`linear_update_issue`。
+
 ---
 
 ## 6. 環境變數（可在 Doppler 設定）
@@ -168,21 +179,15 @@ doppler secrets set MCP_AGENT_TIMEOUT_SECONDS=600
 
 ### Bearer Token（HTTP server）
 
-在 `server_http.py` 第 34 行：
+HTTP server 的 token 由 Doppler 注入的 `MCP_API_TOKEN` 提供：
 ```python
-API_TOKEN = "null$Orchestrator=zer0"
+MCP_API_TOKEN = os.getenv("MCP_API_TOKEN", "")
 ```
 
-要換 token：改這行，重啟 server，同時更新客戶端設定。
-
-建議改成從 Doppler 讀取（更安全）：
-```python
-API_TOKEN = os.getenv("MCP_API_TOKEN", "null$Orchestrator=zer0")
-```
-然後：
 ```bash
-doppler secrets set MCP_API_TOKEN=你的新token
+doppler secrets set MCP_API_TOKEN=your-new-token
 ```
+然後重啟 `run_http.cmd`。
 
 ### Origin 白名單（DNS rebinding 防護）
 
@@ -244,7 +249,7 @@ curl -X POST https://mcp.whoasked.vip/mcp \
   -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}"
 ```
 
-正常回應包含 `"serverInfo": { "name": "handcraft-mcp" }`。
+正常回應包含 `"serverInfo": { "name": "edgars mcp" }`。
 
 ---
 
@@ -257,7 +262,7 @@ curl -X POST https://mcp.whoasked.vip/mcp \
 → 把你的 origin 加進 `ALLOWED_HOSTNAMES`。
 
 **Q：curl 回 401 Unauthorized**
-→ 加上 header：`-H "Authorization: Bearer null$Orchestrator=zer0"`
+→ 加上正確的 `Authorization: Bearer <MCP_API_TOKEN>`。
 
 **Q：agent 工具回 timeout**
 → 試試加 `"async": true` 改成背景執行，再用 `agent_job_status` 查結果。

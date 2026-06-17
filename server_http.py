@@ -97,6 +97,7 @@ MCP_PATH = "/mcp"
 HEALTH_PATH = "/health"
 PACKAGE_WEBHOOK_PATH = "/webhook/package"
 LINEAR_WEBHOOK_PATH = "/webhook/linear"
+LINEAR_WEBHOOK_PATH_ALIAS = "/webhooks/linear"  # accept Linear's plural-form URL
 DEFAULT_JOB_RETENTION_SECONDS = int(os.getenv("MCP_JOB_RETENTION_SECONDS", "3600"))
 
 CONNECTOR_DISPLAY_NAME = "edgars mcp"
@@ -2451,7 +2452,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         if parsed_path == PACKAGE_WEBHOOK_PATH:
             self._handle_package_webhook()
             return
-        if parsed_path == LINEAR_WEBHOOK_PATH:
+        if parsed_path == LINEAR_WEBHOOK_PATH or parsed_path == LINEAR_WEBHOOK_PATH_ALIAS:
             self._handle_linear_webhook()
             return
         if parsed_path != MCP_PATH:

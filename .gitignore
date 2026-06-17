@@ -11,8 +11,6 @@ logs/
 *.webp
 *.svg
 *.ico
-# poke-hermes-bridge artifacts
-poke-hermes-bridge/.runtime/
-poke-hermes-bridge/.tmp/
-poke-hermes-bridge/*.jsonl
-poke-hermes-bridge/*.json
+# poke-hermes-bridge (not tracked here, lives only locally)
+poke-hermes-bridge/
+

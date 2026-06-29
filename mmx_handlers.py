@@ -1,12 +1,14 @@
 """MiniMax mmx tool handlers for handcraft-mcp."""
 
+from pathlib import Path
+
 def rmmx(a, t=120):
     import subprocess as s, shutil
     mmx_bin = shutil.which("mmx") or "mmx"
     # Windows npm .cmd files require shell=True to execute correctly
     return s.run([mmx_bin] + a, capture_output=True, text=True, timeout=t, shell=True)
 
-_DEFAULT_IMG_DIR = r"C:\Users\EdgarsTool\Projects\mcp-handcraft\.screenshots"
+_DEFAULT_IMG_DIR = str(Path(__file__).resolve().parent / ".screenshots")
 
 def hmi(r, a):
     p = a.get("prompt", "").strip()

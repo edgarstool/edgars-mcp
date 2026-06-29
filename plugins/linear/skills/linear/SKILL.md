@@ -12,10 +12,10 @@ Use this skill to keep Linear work tied to the current repo state instead of tre
 ## Entry Workflow
 
 1. Read current context before touching Linear:
-   - `D:\Agent-KB\DAILY\RECENT.md`
-   - `D:\Agent-KB\DAILY\LEARNINGS.md`
-   - `D:\Agent-KB\RULES.md`
-   - `D:\Agent-KB\PLAYBOOKS\AGENT-SKILLS-SCAN-MAP.md`
+   - `G:\Agent-KB\DAILY\RECENT.md`
+   - `G:\Agent-KB\DAILY\LEARNINGS.md`
+   - `G:\Agent-KB\RULES.md`
+   - `G:\Agent-KB\PLAYBOOKS\AGENT-SKILLS-SCAN-MAP.md`
    - `git status --short --branch`
 2. Identify whether the user wants read-only review, a new issue, an issue update, or a handoff note.
 3. Use read-only operations first. In mcp-handcraft, `linear_issues` is read-only; `linear_create_issue` and `linear_update_issue` change Linear.
@@ -88,7 +88,7 @@ When preparing a Linear handoff, include:
 - command output summary
 - known unrelated dirty files
 - exact next action
-- forbidden areas from `D:\Agent-KB\RULES.md` if relevant
+- forbidden areas from `G:\Agent-KB\RULES.md` if relevant
 
 Keep handoffs actionable; avoid project history unless it changes the next action.
 
@@ -98,7 +98,7 @@ Keep handoffs actionable; avoid project history unless it changes the next actio
 - If Linear session/auth is expired, report the blocker and suggest re-auth; do not reset OAuth, rotate tokens, or edit secret storage automatically.
 - Do not create broad new workstreams without an explicit user task or a clear existing WHO issue.
 - Do not merge, force push, reset, deploy, delete, or move files as part of a Linear update.
-- Treat `D:\Agent-KB` as source-of-truth context, not scratchpad output.
+- Treat `G:\Agent-KB` as source-of-truth context, not scratchpad output.
 - Treat `[BLOCKED] ... Reason:` from mcp-handcraft as an authoritative failed write report. Do not claim Linear changed unless the tool reports read-back verification.
 
 ## Verified Write Closeout

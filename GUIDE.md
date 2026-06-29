@@ -166,7 +166,7 @@ npx mcp-add \
 ```
 輸入：
   task        (string, 必填) — 要執行的任務描述
-  working_dir (string, 選填) — 工作目錄，預設 C:\Users\Windows10-JS
+  working_dir (string, 選填) — 工作目錄，預設 V:\projects
 輸出：Codex 執行完成後的最終回覆
 ```
 
@@ -181,12 +181,12 @@ npx mcp-add \
 ```
 輸入：
   task        (string, 必填) — 要執行的程式任務
-  working_dir (string, 選填) — 工作目錄，預設 C:\Users\Windows10-JS
+  working_dir (string, 選填) — 工作目錄，預設 V:\projects
 輸出：Claude Code 執行完成後的最終回覆
 ```
 
 **範例：**
-> 請用 claude_code_agent 幫我分析 C:\Users\Windows10-JS\mcp-handcraft\server_http.py 的結構
+> 請用 claude_code_agent 幫我分析 V:\projects\mcp-handcraft\server_http.py 的結構
 
 ---
 

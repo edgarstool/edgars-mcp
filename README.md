@@ -89,7 +89,7 @@ OpenAI Secure MCP Tunnel 會讓本機 `tunnel-client` 對 OpenAI 建立 outbound
 先在 OpenAI Platform tunnel settings 建立 / 選取 tunnel，取得 `tunnel_id`，並準備一把具備 Tunnels Read + Use 權限的 runtime API key。不要把 key 寫進 repo 或命令列歷史。
 
 ```powershell
-cd C:\Users\EdgarsTool\Projects\mcp-handcraft
+cd V:\projects\mcp-handcraft
 $env:OPENAI_MCP_TUNNEL_ID = "tunnel_..."
 $env:CONTROL_PLANE_API_KEY = "sk-..."
 $env:MCP_API_TOKEN = "<local-mcp-bearer-token>"
@@ -108,7 +108,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-OpenAISecure
 ### 只啟動 HTTP server（透過 Doppler 注入 secrets）
 
 ```powershell
-cd C:\Users\EdgarsTool\Projects\mcp-handcraft
+cd V:\projects\mcp-handcraft
 .\run_http.cmd
 ```
 
@@ -281,7 +281,7 @@ https://mcp.edgars.tools/.well-known/oauth-protected-resource
 報告預設輸出到：
 
 ```text
-C:\Users\EdgarsTool\Projects\mcp-handcraft\reports
+V:\projects\mcp-handcraft\reports
 ```
 
 ---
@@ -370,7 +370,7 @@ C:\Users\EdgarsTool\Projects\mcp-handcraft\reports
 
 ### 📓 Obsidian Vault（13）
 
-Vault 路徑：`D:\Edgar'sObsidianVault`
+Vault 路徑：`G:\Obsidian\Edgar'sObsidianVault`（備援：`G:\AgentKB\Obsidian\Edgar'sObsidianVault`）
 
 | 工具 | 說明 |
 |------|------|
@@ -421,7 +421,7 @@ Templates/         ← 筆記模板
 ## Smoke Test
 
 ```powershell
-cd C:\Users\EdgarsTool\Projects\mcp-handcraft
+cd V:\projects\mcp-handcraft
 doppler run -- python -m unittest test_server_http.py -v
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftSecureStartup.ps1
 ```
@@ -516,6 +516,6 @@ https://mcp.edgars.tools/linear/oauth/status    ← 檢查是否已授權
 ## 相關連結
 
 - Linear Project：WHO 系列 issues
-- Agent-KB：`D:\Agent-KB`
-- Vault：`D:\Edgar'sObsidianVault`
-- Screenshots：`C:\Users\EdgarsTool\Projects\mcp-handcraft\.screenshots\`
+- Agent-KB：`G:\Agent-KB`
+- Vault：`G:\Obsidian\Edgar'sObsidianVault`
+- Screenshots：`V:\projects\mcp-handcraft\.screenshots\`

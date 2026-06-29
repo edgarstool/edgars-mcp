@@ -105,9 +105,24 @@ WARP_API_KEY        = os.getenv("WARP_API_KEY", "")
 CURSOR_API_KEY      = os.getenv("CURSOR_API_KEY", "")
 FACTORY_API_KEY     = os.getenv("FACTORY_API_KEY", "")
 
-SCREENSHOTS_DIR = Path(r"C:\Users\EdgarsTool\Projects\mcp-handcraft\.screenshots")
-REPORTS_DIR     = Path(r"C:\Users\EdgarsTool\Projects\mcp-handcraft\reports")
-VAULT_ROOT      = Path(r"D:\Edgar'sObsidianVault")
+REPO_ROOT = Path(__file__).resolve().parent
+_VAULT_CANONICAL = Path(r"G:\Obsidian\Edgar'sObsidianVault")
+_VAULT_FALLBACK = Path(r"G:\AgentKB\Obsidian\Edgar'sObsidianVault")
+
+
+def _resolve_vault_root() -> Path:
+    override = os.getenv("OBSIDIAN_VAULT_ROOT", "").strip()
+    if override:
+        return Path(override)
+    for candidate in (_VAULT_CANONICAL, _VAULT_FALLBACK):
+        if candidate.is_dir():
+            return candidate
+    return _VAULT_CANONICAL
+
+
+SCREENSHOTS_DIR = REPO_ROOT / ".screenshots"
+REPORTS_DIR     = REPO_ROOT / "reports"
+VAULT_ROOT      = _resolve_vault_root()
 
 CODEX_CMD = r"C:\Users\EdgarsTool\AppData\Roaming\npm\codex.cmd"
 CLAUDE_CMD = shutil.which("claude") or "claude"

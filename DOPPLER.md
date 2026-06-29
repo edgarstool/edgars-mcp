@@ -6,7 +6,7 @@
 
 - **Doppler project**: `handcraft-mcp`
 - **Config**: `prd`
-- **Scope**: `C:\Users\EdgarsTool\Projects\mcp-handcraft`
+- **Scope**: `V:\projects\mcp-handcraft`
 
 ## 啟動方式
 

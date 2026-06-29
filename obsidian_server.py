@@ -1,6 +1,6 @@
 """
 obsidian_server.py — local MCP server for Edgar's Obsidian vault
-Vault root: D:\Edgar'sObsidianVault
+Vault root: G:\Obsidian\Edgar'sObsidianVault (fallback: G:\AgentKB\Obsidian\Edgar'sObsidianVault)
 
 Tools:
   vault_read    - read a note by relative path
@@ -27,7 +27,21 @@ if sys.platform == "win32":
     sys.stdin  = open(sys.stdin.fileno(),  "r", encoding="utf-8", newline="\n", closefd=False)
     sys.stdout = open(sys.stdout.fileno(), "w", encoding="utf-8", newline="\n", closefd=False)
 
-VAULT_ROOT = Path(r"D:\Edgar'sObsidianVault")
+_VAULT_CANONICAL = Path(r"G:\Obsidian\Edgar'sObsidianVault")
+_VAULT_FALLBACK = Path(r"G:\AgentKB\Obsidian\Edgar'sObsidianVault")
+
+
+def _resolve_vault_root() -> Path:
+    override = os.getenv("OBSIDIAN_VAULT_ROOT", "").strip()
+    if override:
+        return Path(override)
+    for candidate in (_VAULT_CANONICAL, _VAULT_FALLBACK):
+        if candidate.is_dir():
+            return candidate
+    return _VAULT_CANONICAL
+
+
+VAULT_ROOT = _resolve_vault_root()
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 

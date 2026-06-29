@@ -55,7 +55,7 @@ def load_mcp_api_token() -> str:
 
 
 def load_base_url() -> str:
-    return os.getenv("MCP_BASE_URL", "https://mcp.whoasked.vip").strip()
+    return os.getenv("MCP_BASE_URL", "https://mcp.edgars.tools").strip()
 
 
 @dataclass(frozen=True)
@@ -1180,7 +1180,7 @@ TOOLS = [_normalize_tool_descriptor(tool) for tool in TOOLS]
 # ── Origin 白名單（防 DNS rebinding，spec 強制要求）────────────────────────────
 # 允許 localhost / 127.0.0.1 任意 port，供本地開發 + MCP Inspector 使用。
 # Cloudflare Tunnel 接入後，瀏覽器 origin 會是 tunnel domain，需另行加入。
-ALLOWED_HOSTNAMES = {"localhost", "127.0.0.1", "mcp.whoasked.vip"}
+ALLOWED_HOSTNAMES = {"localhost", "127.0.0.1", "mcp.whoasked.vip", "mcp.edgars.tools"}
 
 
 # ─── 共用工具 ─────────────────────────────────────────────────────────────────
@@ -2642,7 +2642,7 @@ def validate_mcp_api_token(raw_token: str | None) -> str:
 
 def validate_base_url(raw_url: str | None) -> str:
     base_url = (raw_url or "").strip()
-    return base_url or "https://mcp.whoasked.vip"
+    return base_url or "https://mcp.edgars.tools"
 
 
 def validate_http_startup_config() -> HandcraftServerConfig:

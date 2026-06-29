@@ -1,37 +1,33 @@
-# GitHub Copilot Instructions — mcp-handcraft
+# Copilot Repo Instructions
 
-## Project Overview
-MCP server with dual entry points: stdio (local agents) and HTTP (browser/inspector clients).
-Stack: Python 3 · Windows py -3 launcher · stdio + HTTP MCP protocol
+完整代理規則請見根目錄 [`AGENTS.md`](../AGENTS.md)。本檔只放 Copilot 在本 repo 必須立刻知道的短規則。
 
-## Entry Points — Keep Them Separate
-- server.py + run.cmd: stdio MCP for local agents (Ollama, OpenClaw) via stdin/stdout
-  - server_http.py + run_http.cmd: HTTP MCP on POST /mcp for browser clients
-- Do NOT mix stdio and HTTP logic
-- server_http.py integrates codex_agent and claude_code_agent
+## 語言
 
-## Git Workflow
-- Always git pull origin master before starting (default branch is master)
-- Use conventional commits: feat/fix/chore(scope): description
-- Scopes: stdio, http, agent, codex, claude, tools, config
-  - Reference issues in commits: fix(#5): handle timeout in http agent
+- 一律使用**繁體中文**回覆。若出現英文術語，請附中文意思與白話解釋。
 
-## Windows Environment
-- Use py -3 launcher, not python directly — do not hardcode user paths
-- Claude Code agent requires: winget install Anthropic.ClaudeCode then claude auth login
-  - If claude is not in PATH, HTTP tool calls to claude_code_agent will fail
+## 路徑
 
-  ## Architecture
-  - HTTP server defaults to 90s agent timeout (override: MCP_AGENT_TIMEOUT_SECONDS env var)
-  - Timeout prevents Cloudflare Tunnel from cutting response before agent finishes
-  - Exposed via Cloudflare Tunnel at mcp.whoasked.vip
+- repo root = 你所在的目錄，**不要**假設成 `C:\Users\EdgarsTool\Projects\<name>`。
+- 全域 repo 主場：`V:\projects`
+- runtime / tmp / cache：`G:\AI_WORK_512`
+- `D:\` deprecated，不作正式入口。
 
-  ## Code Style
-  - Python: PEP 8, f-strings, clear error messages
-  - Keep tool implementations focused and single-purpose
-  - Log agent errors clearly so HTTP callers get useful responses, not blank 500s
-  - Validate inputs at tool boundary before calling agents
+## Shell
 
-  ## Secrets and Config
-  - Never hardcode API keys or paths
-  - Use environment variables or .env for agent credentials
+- Windows 預設使用 **PowerShell**。
+
+## 安全邊界
+
+- 不掃 secrets-like 檔案（`*.env`、`*.pem`、`*.key`、`id_rsa*`、`1password*`、`doppler*`、`.ssh/*`）。
+- 改檔前先 `git status`，列清單，等使用者確認。
+- 不要 auto-commit、auto-push、auto-merge、auto-deploy。
+- 不要主動要求使用者貼 API key / token / password。
+
+## Proactive Behavior
+
+- When GitHub Actions, Copilot Automations, MCP, ACP, Review, PR workflow, or scheduled patrol would help, proactively mention the opportunity in plain Traditional Chinese.
+- Do not assume the user knows these features exist.
+- For read-only review / preview / patrol proposals, proceed and report.
+- For actions that modify files, create PRs, change workflow permissions, deploy, access secrets, or touch production, stop and ask for confirmation first.
+- Prefer scheduled checks that create reports or issues before scheduled checks that modify code.

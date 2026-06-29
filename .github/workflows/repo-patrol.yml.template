@@ -1,0 +1,105 @@
+# Repo Patrol — TEMPLATE (NOT ACTIVE)
+#
+# 這是 template，副檔名 .yml.template 代表 GitHub Actions 不會自動跑。
+# 啟用方式：
+#   1. 看完內容並改成本 repo 適用版本
+#   2. 改名成 repo-patrol.yml
+#   3. 先用 workflow_dispatch 手動跑一次
+#   4. 確認 OK 才把 schedule 段落取消註解
+#
+# 設計原則：
+#   - 只做 report，不改檔
+#   - permissions 最小化
+#   - 結果輸出到 GITHUB_STEP_SUMMARY
+#   - 不在 workflow 內存 secrets 或外送資料
+
+name: Repo Patrol (Read-Only Report)
+
+on:
+  workflow_dispatch:
+  # 確認可用後再取消註解。Cron 為 UTC。
+  # schedule:
+  #   - cron: "0 22 * * 1"  # 每週一 UTC 22:00 = 台灣週二 06:00
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  patrol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: README 存在性
+        run: |
+          if [ -f README.md ] || [ -f README.rst ] || [ -f README.txt ]; then
+            echo "- README: present" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- README: MISSING" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Package / dependency 檔
+        run: |
+          {
+            echo "## Package files"
+            for f in package.json pyproject.toml requirements.txt Cargo.toml go.mod composer.json Gemfile *.csproj; do
+              ls -1 $f 2>/dev/null || true
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Workflow 檔清單
+        run: |
+          {
+            echo "## Workflows"
+            ls -1 .github/workflows 2>/dev/null || echo "(none)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: TODO / FIXME 巡檢（前 50 筆）
+        run: |
+          {
+            echo "## TODO / FIXME"
+            grep -RInE "TODO|FIXME|XXX|HACK" \
+              --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" \
+              --include="*.py" --include="*.go" --include="*.rs" --include="*.cs" \
+              --include="*.ps1" --include="*.psm1" --include="*.md" \
+              . 2>/dev/null | head -n 50 || echo "(none)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 疑似 secret-like 檔名（只列檔名，不開內容）
+        run: |
+          {
+            echo "## Secret-like filenames (names only)"
+            find . -type f \
+              \( -iname "*.env" -o -iname "*.env.*" \
+                 -o -iname "*.pem" -o -iname "*.key" -o -iname "*.pfx" \
+                 -o -iname "id_rsa*" -o -iname "*1password*" -o -iname "*doppler*" \
+              \) -not -path "./.git/*" 2>/dev/null || echo "(none)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: EDGAR-OS 路徑合規（grep 不該硬編的字串）
+        run: |
+          {
+            echo "## EDGAR-OS path compliance"
+            echo "### 違規：硬編 C:\\Users\\EdgarsTool\\Projects"
+            grep -RIn "C:\\\\Users\\\\EdgarsTool\\\\Projects" . 2>/dev/null || echo "(none)"
+            echo "### 違規：硬編 D:\\ 作為入口"
+            grep -RIn "D:\\\\Agent-KB\\|D:\\\\projects" . 2>/dev/null || echo "(none)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generated files 污染檢查
+        run: |
+          {
+            echo "## Generated file pollution"
+            find . -type d \( -name "node_modules" -o -name "dist" -o -name "build" -o -name "__pycache__" -o -name ".venv" \) -not -path "./.git/*" 2>/dev/null || echo "(clean)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summary 收尾
+        run: |
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "_Read-only patrol completed. No files were modified._" >> "$GITHUB_STEP_SUMMARY"

@@ -9,7 +9,7 @@
 ```
 本機
 ├── server.py          ← stdio 模式（Claude Desktop / OpenClaw 本機呼叫）
-├── server_http.py     ← HTTP 模式（遠端 / mcp.whoasked.vip）
+├── server_http.py     ← HTTP 模式（遠端 / mcp.edgars.tools）
 ├── run.cmd            ← 啟動 stdio server（透過 Doppler 注入 key）
 └── run_http.cmd       ← 啟動 HTTP server（透過 Doppler 注入 key）
 
@@ -18,7 +18,7 @@ Doppler（雲端）
     └── 存放所有 API key，啟動時注入，不落地
 
 Cloudflare Tunnel
-└── mcp.whoasked.vip → 本機 :8765/mcp
+└── mcp.edgars.tools → 本機 :8765/mcp
 ```
 
 ### 兩個 server 的差異
@@ -68,7 +68,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-HandcraftSta
 - 確認 `http://127.0.0.1:8765/health`
 - 若本機 HTTP server 沒活著，用 Doppler 啟動 `server_http.py`
 - 確認或啟動 `cloudflared`
-- 檢查 `https://mcp.whoasked.vip/mcp` 是否回 200
+- 檢查 `https://mcp.edgars.tools/mcp` 是否回 200
 
 ### 只做健康檢查
 ```powershell
@@ -226,12 +226,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-HandcraftMc
 
 在 `server_http.py` 第 216 行：
 ```python
-ALLOWED_HOSTNAMES = {"localhost", "127.0.0.1", "mcp.whoasked.vip"}
+ALLOWED_HOSTNAMES = {"localhost", "127.0.0.1", "mcp.edgars.tools"}
 ```
 
 新增允許的 origin：
 ```python
-ALLOWED_HOSTNAMES = {"localhost", "127.0.0.1", "mcp.whoasked.vip", "new.domain.com"}
+ALLOWED_HOSTNAMES = {"localhost", "127.0.0.1", "mcp.edgars.tools", "new.domain.com"}
 ```
 
 ---
@@ -240,15 +240,25 @@ ALLOWED_HOSTNAMES = {"localhost", "127.0.0.1", "mcp.whoasked.vip", "new.domain.c
 
 | 設定項目 | 值 |
 |---|---|
-| Tunnel 名稱 | `home-tunnel` |
-| Tunnel ID | `0e0a1b13-db47-4d0c-9fa4-4fc7d269cbbf` |
-| 對外網址 | `https://mcp.whoasked.vip` |
+| Tunnel 名稱（現役） | `edgar-local-01-tunnel` |
+| Tunnel ID | `5361a5cd-20f7-4639-95f1-92c1b28d31e1` |
+| 對外網址 | `https://mcp.edgars.tools` |
 | 本機目標 | `http://localhost:8765` |
 
-Tunnel 由 `cloudflared` 常駐管理，不需手動操作。確認狀態：
-```bash
-cloudflared tunnel info home-tunnel
+> **Deprecated**：`~/.cloudflared/config.yml` 內的 `home-tunnel`（`0e0a1b13-...`）已停用。`Start-HandcraftStack.ps1` 不再用該 yaml；若 Windows 服務 `Cloudflared` 已在跑，腳本不會重複啟動 tunnel。
+
+Tunnel 由 `cloudflared` 常駐管理（建議用 Windows 服務或 `cloudflared tunnel run edgar-local-01-tunnel`）。確認狀態：
+
+```powershell
+cloudflared tunnel info 5361a5cd-20f7-4639-95f1-92c1b28d31e1
+Get-Service Cloudflared
 ```
+
+### 外網 403：`DNS points to prohibited IP`（Cloudflare error 1000）
+
+代表 `mcp.edgars.tools` 的 DNS 記錄未正確指向 tunnel（例如仍指向 localhost / 禁止 IP）。在 Cloudflare Dashboard → Zero Trust → Networks → Tunnels → `edgar-local-01-tunnel` 確認 Public Hostname `mcp.edgars.tools` 存在，並讓 DNS 走 tunnel CNAME（`5361a5cd-20f7-4639-95f1-92c1b28d31e1.cfargotunnel.com`），不要手動 A 到 `127.0.0.1`。
+
+修正 DNS 屬於 production 變更，動手前請先確認。
 
 ---
 
@@ -277,7 +287,7 @@ curl -X POST http://localhost:8765/mcp \
   -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"clientInfo\":{\"name\":\"test\",\"version\":\"1.0\"},\"capabilities\":{}}}"
 
 # 確認外網
-curl -X POST https://mcp.whoasked.vip/mcp \
+curl -X POST https://mcp.edgars.tools/mcp \
   -H "Content-Type: application/json" \
   -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}"
 ```
@@ -298,10 +308,10 @@ The proxy defaults to `http://127.0.0.1:8765/mcp`; override with `MCP_URL` only 
 
 Do not collapse these into one URL during review:
 
-- MCP endpoint: `https://mcp.whoasked.vip/mcp`
-- Discord webhook: `https://mcp.whoasked.vip/webhook/discord`
-- Package / TrackTW webhook: `https://mcp.whoasked.vip/webhook/package`
-- Linear webhook: `https://mcp.whoasked.vip/webhook/linear`
+- MCP endpoint: `https://mcp.edgars.tools/mcp`
+- Discord webhook: `https://mcp.edgars.tools/webhook/discord`
+- Package / TrackTW webhook: `https://mcp.edgars.tools/webhook/package`
+- Linear webhook: `https://mcp.edgars.tools/webhook/linear`
 
 Local package webhook test:
 
@@ -413,7 +423,7 @@ mcp-handcraft/
 
 | 資源 | 網址 |
 |---|---|
-| 外網端點 | https://mcp.whoasked.vip/mcp |
+| 外網端點 | https://mcp.edgars.tools/mcp |
 | Doppler Web UI | https://dashboard.doppler.com |
 | Doppler 官方 fork | https://github.com/Edgars-tool/python-doppler-env |
 | Cloudflare DNS | https://dash.cloudflare.com |

@@ -10,7 +10,7 @@
 
 | 項目 | 內容 |
 |------|------|
-| 端點 | `https://mcp.whoasked.vip/mcp` |
+| 端點 | `https://mcp.edgars.tools/mcp` |
 | 協議版本 | 2025-11-25 |
 | 傳輸方式 | Streamable HTTP (POST) |
 
@@ -27,7 +27,7 @@
   "mcpServers": {
     "handcraft-mcp": {
       "type": "http",
-      "url": "https://mcp.whoasked.vip/mcp"
+      "url": "https://mcp.edgars.tools/mcp"
     }
   }
 }
@@ -39,7 +39,7 @@
 npx mcp-add \
   --name handcraft-mcp \
   --type http \
-  --url "https://mcp.whoasked.vip/mcp" \
+  --url "https://mcp.edgars.tools/mcp" \
   --clients "claude code"
 ```
 
@@ -54,7 +54,7 @@ npx mcp-add \
   "mcpServers": {
     "handcraft-mcp": {
       "type": "http",
-      "url": "https://mcp.whoasked.vip/mcp"
+      "url": "https://mcp.edgars.tools/mcp"
     }
   }
 }
@@ -68,16 +68,46 @@ npx mcp-add \
 
 ### Cursor
 
+#### 本機（推薦：stdio proxy → 本機 HTTP）
+
+1. 先啟動 HTTP server：`.\run_http.cmd` 或 `.\scripts\Start-HandcraftStack.ps1 -SkipPublic`
+2. 在 Cursor `Settings > MCP` 加入（也可用 repo 內 `config\mcp.local.example.json`）：
+
+```json
+{
+  "mcpServers": {
+    "handcraft-mcp": {
+      "command": "doppler",
+      "args": [
+        "run",
+        "--project", "handcraft-mcp",
+        "--config", "prd",
+        "--",
+        "py", "-3", "V:\\projects\\mcp-handcraft\\stdio_proxy.py"
+      ]
+    }
+  }
+}
+```
+
+等價啟動命令：`V:\projects\mcp-handcraft\run_stdio.cmd`
+
+`stdio_proxy.py` 會從 Doppler/env 讀 `MCP_API_TOKEN`，轉送到 `http://127.0.0.1:8765/mcp`。
+
+#### 外網（OAuth HTTP）
+
 進入 `Settings > MCP`，新增：
 
 ```json
 {
   "handcraft-mcp": {
     "type": "http",
-    "url": "https://mcp.whoasked.vip/mcp"
+    "url": "https://mcp.edgars.tools/mcp"
   }
 }
 ```
+
+外網連線走 MCP 內建 OAuth（見 README 的 ChatGPT 連接器設定）。若 Cloudflare 回 `DNS points to prohibited IP`，需先修正 `mcp.edgars.tools` 的 tunnel DNS（見 OPS.md）。
 
 ---
 
@@ -90,7 +120,7 @@ npx mcp-add \
   "mcpServers": {
     "handcraft-mcp": {
       "type": "http",
-      "url": "https://mcp.whoasked.vip/mcp"
+      "url": "https://mcp.edgars.tools/mcp"
     }
   }
 }
@@ -107,7 +137,7 @@ npx mcp-add \
   "servers": {
     "handcraft-mcp": {
       "type": "http",
-      "url": "https://mcp.whoasked.vip/mcp"
+      "url": "https://mcp.edgars.tools/mcp"
     }
   }
 }
@@ -165,7 +195,7 @@ npx mcp-add \
 用 curl 測試：
 
 ```bash
-curl -X POST https://mcp.whoasked.vip/mcp \
+curl -X POST https://mcp.edgars.tools/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","clientInfo":{"name":"test","version":"1.0"},"capabilities":{}}}'
 ```

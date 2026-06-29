@@ -1,7 +1,7 @@
 param(
     [string]$LocalBaseUrl = "http://127.0.0.1:8765",
-    [string]$PublicMcpUrl = "https://mcp.whoasked.vip/mcp",
-    [string]$CloudflaredConfig = "$env:USERPROFILE\.cloudflared\config.yml",
+    [string]$PublicMcpUrl = "https://mcp.edgars.tools/mcp",
+    [string]$TunnelName = "edgar-local-01-tunnel",
     [int]$WaitSeconds = 30,
     [switch]$SkipCloudflared,
     [switch]$SkipPublic
@@ -76,15 +76,15 @@ if (-not (Test-LocalHealth)) {
 }
 
 if (-not $SkipCloudflared) {
+    $cloudflaredService = Get-Service Cloudflared -ErrorAction SilentlyContinue
     $cloudflaredProcess = Get-Process cloudflared -ErrorAction SilentlyContinue
-    if (-not $cloudflaredProcess) {
-        if (-not (Test-Path -LiteralPath $CloudflaredConfig)) {
-            throw "Cloudflared config not found: $CloudflaredConfig"
-        }
+    if ($cloudflaredService -and $cloudflaredService.Status -eq "Running") {
+        Write-Verbose "Cloudflared Windows service is already running; skipping manual tunnel start."
+    } elseif (-not $cloudflaredProcess) {
         $cloudflared = Get-Command cloudflared -ErrorAction Stop
         Start-Process `
             -FilePath $cloudflared.Source `
-            -ArgumentList @("tunnel", "--config", $CloudflaredConfig, "run") `
+            -ArgumentList @("tunnel", "run", $TunnelName) `
             -WorkingDirectory $RepoRoot `
             -WindowStyle Hidden `
             -RedirectStandardOutput $CloudflaredOutLogPath `

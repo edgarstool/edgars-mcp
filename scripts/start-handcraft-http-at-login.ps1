@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$repoRoot = "C:\Users\EdgarsTool\Projects\mcp-handcraft"
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 $stackScript = Join-Path $repoRoot "scripts\Start-HandcraftStack.ps1"
 $outLogPath = Join-Path $repoRoot "mcp-http-startup-stack.out.log"
 $errLogPath = Join-Path $repoRoot "mcp-http-startup-stack.err.log"

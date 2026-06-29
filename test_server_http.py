@@ -169,6 +169,11 @@ class HttpStartupConfigTests(unittest.TestCase):
     def test_mcp_api_token_trims_configured_value(self):
         self.assertEqual("secret-token", validate_mcp_api_token("  secret-token  "))
 
+    def test_base_url_defaults_to_edgars_tools(self):
+        self.assertEqual("https://mcp.edgars.tools", server_http.validate_base_url(None))
+        self.assertEqual("https://mcp.edgars.tools", server_http.validate_base_url(""))
+        self.assertEqual("https://custom.example", server_http.validate_base_url("  https://custom.example  "))
+
     def test_http_startup_config_reads_environment_into_config_object(self):
         with patch.dict(
             "os.environ",

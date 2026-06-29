@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "handcraft-mcp": {
+      "command": "doppler",
+      "args": [
+        "run",
+        "--project",
+        "handcraft-mcp",
+        "--config",
+        "prd",
+        "--",
+        "py",
+        "-3",
+        "V:\\projects\\mcp-handcraft\\stdio_proxy.py"
+      ]
+    }
+  }
+}

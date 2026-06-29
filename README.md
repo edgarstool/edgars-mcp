@@ -17,11 +17,16 @@ mcp-handcraft/
 ├── mmx_handlers.py     ← MiniMax 媒體生成 handlers
 ├── run.cmd             ← 啟動 stdio server
 ├── run_http.cmd        ← 啟動 HTTP server（透過 Doppler 注入 secrets）
+├── run_stdio.cmd       ← 啟動 stdio proxy（Cursor / Hermes → 本機 HTTP MCP）
 ├── scripts/
-│   ├── Start-HandcraftStack.ps1 ← 啟動/驗證 :8765 + cloudflared + public /mcp
+│   ├── start-mcp.ps1 ← 開啟：背景啟動 HTTP + 可選 cloudflared（寫 PID）
+│   ├── check-mcp.ps1 ← 檢驗：本機 / 外網 / MCP handshake
+│   ├── maintain-mcp.ps1 ← 維護：日誌輪替、健康修復、可選 smoke test
+│   ├── stop-mcp.ps1 ← 停止 HTTP（可選 cloudflared）
+│   ├── Start-HandcraftStack.ps1 ← 舊版一鍵啟動（仍可用）
 │   ├── Start-OpenAISecureMcpTunnel.ps1 ← 啟動 OpenAI Secure MCP Tunnel
 │   ├── Install-OpenAITunnelClient.ps1 ← 安裝 OpenAI tunnel-client
-│   └── Test-HandcraftHealth.ps1 ← 明確健康檢查
+│   └── Test-HandcraftHealth.ps1 ← 輕量健康檢查（check-mcp 會涵蓋更多）
 └── test_server_http.py ← smoke test
 ```
 
@@ -47,14 +52,32 @@ mcp-handcraft/
 > 缺 token 時 server 會印 `MCP_API_TOKEN is required` 後 exit。
 
 
-### 一鍵恢復本機 + tunnel + public MCP
+### Ops 腳本 trio（建議）
 
 ```powershell
-cd C:\Users\EdgarsTool\Projects\mcp-handcraft
+cd V:\projects\mcp-handcraft
+
+# 開啟（背景執行，寫 PID 至 G:\AI_WORK_512\run\mcp-handcraft\）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-mcp.ps1
+
+# 檢驗（本機 health + MCP handshake + 外網 /mcp）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-mcp.ps1
+
+# 維護（日誌輪替；不健康時自動重啟）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\maintain-mcp.ps1 -RestartIfUnhealthy
+
+# 停止
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\stop-mcp.ps1
+```
+
+### 一鍵恢復本機 + tunnel + public MCP（舊腳本）
+
+```powershell
+cd V:\projects\mcp-handcraft
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-HandcraftStack.ps1
 ```
 
-這會先確認 `http://127.0.0.1:8765/health`，必要時用 Doppler 啟動 `server_http.py`；再確認 `cloudflared` 程序；最後檢查 `https://mcp.whoasked.vip/mcp` 是否回 200。
+這會先確認 `http://127.0.0.1:8765/health`，必要時用 Doppler 啟動 `server_http.py`；再確認 `cloudflared` 程序；最後檢查 `https://mcp.edgars.tools/mcp` 是否回 200。
 
 ### 啟動 OpenAI Secure MCP Tunnel（私有 MCP，不開公開入口）
 
@@ -141,7 +164,7 @@ Authorization: Bearer <access_token>
 | 欄位 | 值 |
 |------|----|
 | 連接器名稱 | `edgars mcp` |
-| MCP 伺服器 URL | `https://mcp.whoasked.vip/mcp` |
+| MCP 伺服器 URL | `https://mcp.edgars.tools/mcp` |
 | 驗證 | `OAuth` |
 | Client ID | `handcraft-mcp` |
 | Client Secret | `handcraft-mcp-client-secret` |
@@ -150,8 +173,8 @@ Authorization: Bearer <access_token>
 OAuth discovery endpoints：
 
 ```text
-https://mcp.whoasked.vip/.well-known/oauth-authorization-server
-https://mcp.whoasked.vip/.well-known/oauth-protected-resource
+https://mcp.edgars.tools/.well-known/oauth-authorization-server
+https://mcp.edgars.tools/.well-known/oauth-protected-resource
 ```
 
 此 MCP 使用 Authorization Code + PKCE S256。對外顯示的 connector / `serverInfo.name` 是 `edgars mcp`；OAuth `client_id` 仍保留 `handcraft-mcp`，避免既有授權設定被破壞。為了相容不允許空白 Client Secret 的 AI UI，預設手動 client secret 是 `handcraft-mcp-client-secret`；正式環境可用 `MCP_OAUTH_CLIENT_SECRET` 覆蓋。Dynamic client registration 端點為 `/register`，會核發 `client_id` 與 `client_secret`。
@@ -379,7 +402,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftSecu
 | `NOTION_API_KEY` | Notion 讀取 |
 | `TRACKTW_API_KEY` | TrackTW 物流查詢 |
 | `MCP_AGENT_TIMEOUT_SECONDS` | Agent 等待上限（預設 300 秒） |
-| `MCP_BASE_URL` | 公開 URL（預設 https://mcp.whoasked.vip） |
+| `MCP_BASE_URL` | 公開 URL（預設 https://mcp.edgars.tools） |
 | `MCP_PORT` | 本機 HTTP port（預設 8765；測試可覆蓋） |
 
 ---
@@ -387,12 +410,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftSecu
 ## 公開端點
 
 ```
-https://mcp.whoasked.vip/mcp
+https://mcp.edgars.tools/mcp
 ```
 
 透過 Cloudflare Tunnel 對外。本機重開機後需手動重啟 cloudflared。
 
-OpenAI Secure MCP Tunnel 是另一條私有路徑：`tunnel-client` 從本機 outbound 連到 OpenAI，OpenAI 產品透過 OpenAI-hosted tunnel endpoint 呼叫本機 MCP。它不需要 `mcp.whoasked.vip`，也不需要開 inbound firewall port。
+OpenAI Secure MCP Tunnel 是另一條私有路徑：`tunnel-client` 從本機 outbound 連到 OpenAI，OpenAI 產品透過 OpenAI-hosted tunnel endpoint 呼叫本機 MCP。它不需要 `mcp.edgars.tools`，也不需要開 inbound firewall port。
 
 ### Hermes stdio proxy
 
@@ -409,7 +432,7 @@ python .\stdio_proxy.py
 給 TrackTW / 包裹通知使用的 webhook URL：
 
 ```text
-https://mcp.whoasked.vip/webhook/package
+https://mcp.edgars.tools/webhook/package
 ```
 
 本機對應 endpoint 是：
@@ -425,7 +448,7 @@ http://127.0.0.1:8765/webhook/package
 給 Linear webhook 使用的 URL：
 
 ```text
-https://mcp.whoasked.vip/webhook/linear
+https://mcp.edgars.tools/webhook/linear
 ```
 
 這條不是 MCP endpoint。對方要「接 Linear webhook」時給 `/webhook/linear`。

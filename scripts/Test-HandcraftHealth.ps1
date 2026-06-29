@@ -1,6 +1,6 @@
 param(
     [string]$LocalBaseUrl = "http://127.0.0.1:8765",
-    [string]$PublicMcpUrl = "https://mcp.whoasked.vip/mcp",
+    [string]$PublicMcpUrl = "https://mcp.edgars.tools/mcp",
     [int]$TimeoutSec = 10,
     [switch]$SkipPublic
 )
@@ -36,8 +36,20 @@ function Invoke-JsonProbe {
         }
     } catch {
         $statusCode = $null
+        $detail = $null
         if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
             $statusCode = [int]$_.Exception.Response.StatusCode
+            try {
+                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                $body = $reader.ReadToEnd()
+                if ($body -match "DNS points to prohibited IP") {
+                    $detail = "cloudflare_error_1000_dns_prohibited_ip"
+                } elseif ($body -match "cloudflareaccess\.com|cf_access") {
+                    $detail = "cloudflare_access_blocked"
+                }
+            } catch {
+                $detail = $null
+            }
         }
         return [ordered]@{
             name = $Name
@@ -45,6 +57,7 @@ function Invoke-JsonProbe {
             status = $statusCode
             uri = $Uri
             error = $_.Exception.Message
+            detail = $detail
         }
     }
 }
@@ -71,6 +84,8 @@ $checks += [ordered]@{
 }
 
 if (-not $SkipPublic) {
+    $publicBaseUrl = ($PublicMcpUrl -replace "/mcp$", "")
+    $checks += Invoke-JsonProbe -Name "public_health" -Uri "$publicBaseUrl/health"
     $checks += Invoke-JsonProbe -Name "public_mcp_get" -Uri $PublicMcpUrl
 }
 

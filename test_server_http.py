@@ -188,6 +188,7 @@ class HttpStartupConfigTests(unittest.TestCase):
             HandcraftServerConfig(
                 mcp_api_token="secret-token",
                 base_url="https://mcp.example.test",
+                webhook_base_url="https://mcp.example.test",
             ),
             config,
         )

@@ -646,6 +646,7 @@ class LinearOAuthTests(unittest.TestCase):
             self.assertTrue(location.startswith("https://linear.app/oauth/authorize?"))
             self.assertIn("client_id=client-1", location)
             self.assertIn("actor=app", location)
+            self.assertIn("prompt=consent", location)
         finally:
             server.shutdown()
             server.server_close()
@@ -1310,6 +1311,38 @@ class ExternalApiIntegrationTests(unittest.TestCase):
         self.assertIn("linear.app/oauth/authorize", url)
         self.assertIn("actor=app", url)
         self.assertIn("state=test-state", url)
+        self.assertIn("prompt=consent", url)
+
+    def test_linear_oauth_bootstrap_saves_client_credentials_token(self):
+        token_file = server_http.LINEAR_OAUTH_TOKEN_FILE
+        backup = token_file.read_text(encoding="utf-8") if token_file.exists() else None
+        try:
+            if token_file.exists():
+                token_file.unlink()
+            with patch.object(server_http, "LINEAR_CLIENT_ID", "cid"), patch.object(
+                server_http, "LINEAR_CLIENT_SECRET", "sec"
+            ), patch.object(
+                server_http,
+                "exchange_linear_oauth_client_credentials",
+                return_value={
+                    "access_token": "app-token",
+                    "expires_in": 2591999,
+                    "scope": "read write",
+                },
+            ):
+                status, payload = server_http.handle_linear_oauth_bootstrap()
+            self.assertEqual(200, status)
+            self.assertTrue(payload["ok"])
+            self.assertFalse(payload["already_present"])
+            saved = server_http.load_linear_oauth_token()
+            self.assertEqual("app-token", saved.get("access_token"))
+            self.assertEqual("client_credentials", saved.get("grant_type"))
+        finally:
+            if backup is None:
+                if token_file.exists():
+                    token_file.unlink()
+            else:
+                token_file.write_text(backup, encoding="utf-8")
 
     def test_linear_oauth_callback_saves_token(self):
         token_file = server_http.LINEAR_OAUTH_TOKEN_FILE

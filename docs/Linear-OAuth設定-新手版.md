@@ -120,6 +120,24 @@ Webhook **先不要開**（manifest 裡 `enabled: false`）。要開時再跟 AI
 **Q：authorize 頁面說 not_configured？**  
 → Doppler 還沒加 `LINEAR_CLIENT_ID` / `LINEAR_CLIENT_SECRET`，或 MCP 沒重開。
 
+**Q：Linear 顯示「Hermes Agent already installed」，只有 Cancel / Manage，沒有 Authorize？**  
+→ 這是 Linear 的正常行為：App **6/24 已裝進工作區**，但 MCP **本機還沒存 token**（`token_present: false`）。  
+→ **請照這條路走（唯一可靠）：**
+
+1. 打開 **[linear.app/settings/applications](https://linear.app/settings/applications)**（或 Settings → Installed applications）
+2. 找到 **Hermes Agent** → 按 **Manage**
+3. 按 **Revoke access**（撤銷存取 / 解除安裝）
+4. 用瀏覽器重新開：**[https://mcp.edgars.tools/linear/oauth/authorize](https://mcp.edgars.tools/linear/oauth/authorize)**
+5. 這次應出現 **Install** 或 **Authorize** → 按下去
+6. 看到「授權成功」後，確認 **[status](https://mcp.edgars.tools/linear/oauth/status)** 的 `token_present` 變成 `true`
+
+> 我們已在授權網址加上 `prompt=consent`；若仍卡在 already installed，**一定要先做 Revoke**。
+
+**Q：不想用瀏覽器，能自動拿 token 嗎？**  
+→ 可以，但要在 Linear OAuth App 設定裡**開啟 Client credentials tokens**（建立/編輯 Hermes Agent 時的開關）。  
+→ 開好後，瀏覽器打開：**[https://mcp.edgars.tools/linear/oauth/bootstrap](https://mcp.edgars.tools/linear/oauth/bootstrap)**  
+→ 成功會回 JSON `"ok": true`；再查 status 應為 `token_present: true`。
+
 **Q：callback 說 state 無效？**  
 → 授權連結過期（10 分鐘）。重新從 `/linear/oauth/authorize` 開始。
 

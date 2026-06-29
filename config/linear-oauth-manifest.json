@@ -35,6 +35,7 @@
   "notes": {
     "oauth_callback_host": "mcp.edgars.tools",
     "oauth_authorize_entry": "https://mcp.edgars.tools/linear/oauth/authorize",
+    "oauth_bootstrap_entry": "https://mcp.edgars.tools/linear/oauth/bootstrap",
     "oauth_status_check": "https://mcp.edgars.tools/linear/oauth/status",
     "webhook_phase1_alternate": "Hermes gateway currently uses webhook.whoasked.vip via cloudflared tunnel (see cloudflared/HERMES-WEBHOOK.md). webhook.edgars.tools is the manifest target for future Cloudflare Worker routing.",
     "doppler_project": "handcraft-mcp",

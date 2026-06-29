@@ -193,6 +193,28 @@ https://mcp.edgars.tools/.well-known/oauth-protected-resource
 
 只有在 **localhost / migration 模式** 下才建議直接用。當 `MCP_CLOUDFLARE_ACCESS_ENABLED=true` 且 public hostname 走 Access 時，repo 內建 `/authorize`、`/token`、`/register` 不再是外網主流程。
 
+### Codex / Claude / Hermes 的最小正式 auth 方案
+
+建議直接分三條路：
+
+1. **Edgar 本機**
+   - `stdio_proxy.py` -> `http://127.0.0.1:8765/mcp`
+   - 用 `MCP_API_TOKEN`
+2. **遠端 / 雲端 agent**
+   - `stdio_proxy.py` -> `https://mcp.edgars.tools/mcp`
+   - 用 Cloudflare Access service token
+   - headers:
+     - `CF-Access-Client-Id`
+     - `CF-Access-Client-Secret`
+3. **人類互動式 public client**
+   - 走 Cloudflare Access Managed OAuth
+
+詳細版請看：
+
+- [docs/MCP-CLIENT-AUTH-最小正式方案.md](docs/MCP-CLIENT-AUTH-最小正式方案.md)
+- [config/mcp.local.example.json](config/mcp.local.example.json)
+- [config/mcp.remote.stdio.example.json](config/mcp.remote.stdio.example.json)
+
 ---
 
 ## 工具總覽（70 個）

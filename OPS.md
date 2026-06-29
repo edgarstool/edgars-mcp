@@ -269,6 +269,46 @@ MCP_CLOUDFLARE_ACCESS_ALLOW_PUBLIC_TOKEN_FALLBACK=false
 
 不再作為外網主流程。
 
+### Codex / Claude / Hermes 最小正式 auth
+
+建議固定分工：
+
+1. **Edgar 本機**
+   - `stdio_proxy.py` 轉送到 `http://127.0.0.1:8765/mcp`
+   - 用 `MCP_API_TOKEN`
+
+2. **遠端 / 雲端 agent**
+   - `stdio_proxy.py` 轉送到 `https://mcp.edgars.tools/mcp`
+   - 用 Cloudflare Access service token
+   - 透過這兩個 header 進入 Access：
+     - `CF-Access-Client-Id`
+     - `CF-Access-Client-Secret`
+
+proxy 支援的環境變數：
+
+```text
+MCP_CF_ACCESS_CLIENT_ID
+MCP_CF_ACCESS_CLIENT_SECRET
+```
+
+向後相容也接受：
+
+```text
+CF_ACCESS_CLIENT_ID
+CF_ACCESS_CLIENT_SECRET
+HERMES_HANDCRAFT_CF_ACCESS_CLIENT_ID
+HERMES_HANDCRAFT_CF_ACCESS_CLIENT_SECRET
+```
+
+3. **人類互動式 client**
+   - 走 Cloudflare Access Managed OAuth
+
+參考：
+
+- `config/mcp.local.example.json`
+- `config/mcp.remote.stdio.example.json`
+- `docs/MCP-CLIENT-AUTH-最小正式方案.md`
+
 ### Origin 白名單（DNS rebinding 防護）
 
 在 `server_http.py` 的 `ALLOWED_HOSTNAMES`：

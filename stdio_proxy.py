@@ -58,6 +58,22 @@ def load_auth_token() -> str:
     return ""
 
 
+def load_cf_access_service_token() -> tuple[str, str]:
+    client_id_names = (
+        "MCP_CF_ACCESS_CLIENT_ID",
+        "CF_ACCESS_CLIENT_ID",
+        "HERMES_HANDCRAFT_CF_ACCESS_CLIENT_ID",
+    )
+    client_secret_names = (
+        "MCP_CF_ACCESS_CLIENT_SECRET",
+        "CF_ACCESS_CLIENT_SECRET",
+        "HERMES_HANDCRAFT_CF_ACCESS_CLIENT_SECRET",
+    )
+    client_id = next((os.getenv(name, "").strip() for name in client_id_names if os.getenv(name, "").strip()), "")
+    client_secret = next((os.getenv(name, "").strip() for name in client_secret_names if os.getenv(name, "").strip()), "")
+    return client_id, client_secret
+
+
 def build_request(payload: dict) -> urllib.request.Request:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {
@@ -67,6 +83,10 @@ def build_request(payload: dict) -> urllib.request.Request:
     auth_token = load_auth_token()
     if auth_token:
         headers["Authorization"] = f"Bearer {auth_token}"
+    client_id, client_secret = load_cf_access_service_token()
+    if client_id and client_secret:
+        headers["CF-Access-Client-Id"] = client_id
+        headers["CF-Access-Client-Secret"] = client_secret
     return urllib.request.Request(MCP_URL, data=body, headers=headers, method="POST")
 
 
@@ -80,9 +100,18 @@ HermesPreflightError = PreflightError
 
 def validate_auth_token() -> str:
     token = load_auth_token()
-    if not token:
-        raise PreflightError("MCP_API_TOKEN is not available for handcraft MCP preflight")
-    return token
+    client_id, client_secret = load_cf_access_service_token()
+    if token:
+        return "bearer"
+    if client_id and client_secret:
+        return "service_token"
+    if client_id or client_secret:
+        raise PreflightError(
+            "Cloudflare Access service token is incomplete. Set both MCP_CF_ACCESS_CLIENT_ID and MCP_CF_ACCESS_CLIENT_SECRET."
+        )
+    raise PreflightError(
+        "No MCP auth is available for handcraft MCP preflight. Set MCP_API_TOKEN for localhost or MCP_CF_ACCESS_CLIENT_ID and MCP_CF_ACCESS_CLIENT_SECRET for Access-protected public MCP."
+    )
 
 
 def run_preflight() -> None:

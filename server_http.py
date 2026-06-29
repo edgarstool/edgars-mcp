@@ -77,6 +77,9 @@ PERPLEXITY_API_KEY  = os.getenv("PERPLEXITY_API_KEY", "")
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
 LINEAR_API_KEY      = os.getenv("LINEAR_API_KEY", "")
 TRACKTW_API_KEY     = os.getenv("TRACKTW_API_KEY", "")
+WARP_API_KEY        = os.getenv("WARP_API_KEY", "")
+CURSOR_API_KEY      = os.getenv("CURSOR_API_KEY", "")
+FACTORY_API_KEY     = os.getenv("FACTORY_API_KEY", "")
 
 SCREENSHOTS_DIR = Path(r"C:\Users\EdgarsTool\Projects\mcp-handcraft\.screenshots")
 REPORTS_DIR     = Path(r"C:\Users\EdgarsTool\Projects\mcp-handcraft\reports")
@@ -113,6 +116,10 @@ DISCORD_WEBHOOK_EVENTS_LOCK = threading.Lock()
 DISCORD_WEBHOOK_EVENTS: list[dict] = []
 MAX_DISCORD_WEBHOOK_EVENTS = int(os.getenv("MCP_DISCORD_WEBHOOK_EVENT_LIMIT", "100"))
 TRACKTW_BASE_URL = os.getenv("TRACKTW_BASE_URL", "https://track.tw/api/v1").rstrip("/")
+WARP_BASE_URL = os.getenv("WARP_BASE_URL", "https://app.warp.dev/api/v1").rstrip("/")
+CURSOR_BASE_URL = os.getenv("CURSOR_BASE_URL", "https://api.cursor.com").rstrip("/")
+FACTORY_API_BASE_URL = os.getenv("FACTORY_API_BASE_URL", "https://api.factory.ai").rstrip("/")
+FACTORY_APP_BASE_URL = os.getenv("FACTORY_APP_BASE_URL", "https://app.factory.ai").rstrip("/")
 TRACKTW_STATUS_MODEL_SOURCE = "Google Sheet: TrackTW / tracktw_active + tracktw_events"
 TRACKTW_ACTIVE_FIELDS = (
     "enabled",
@@ -1083,6 +1090,130 @@ TOOLS = [
             "required": ["issue_id"],
         },
     },
+    # ── Warp Oz Cloud Agents ───────────────────────────────────────────────────
+    {
+        "name": "warp_agent_runs_list",
+        "description": "List recent Warp Oz cloud agent runs (Warp terminal cloud agents API).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max runs to return (default: 10)"},
+            },
+        },
+    },
+    {
+        "name": "warp_agent_run_status",
+        "description": "Get status and details for a single Warp Oz agent run by run_id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "Warp agent run ID"},
+            },
+            "required": ["run_id"],
+        },
+    },
+    {
+        "name": "warp_agent_run_create",
+        "description": "Start a new Warp Oz cloud agent run with a prompt (requires environment_id).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Task instruction for the agent"},
+                "environment_id": {"type": "string", "description": "Oz cloud environment ID (from oz environment list)"},
+                "title": {"type": "string", "description": "Optional display title for the run"},
+            },
+            "required": ["prompt", "environment_id"],
+        },
+    },
+    # ── Cursor Cloud Agents API ─────────────────────────────────────────────────
+    {
+        "name": "cursor_agents_list",
+        "description": "List Cursor Cloud Agents (background agents) for the authenticated account.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max agents to return (default: 10)"},
+            },
+        },
+    },
+    {
+        "name": "cursor_agent_get",
+        "description": "Get a Cursor Cloud Agent by agent ID, including latest run metadata.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Cursor agent ID (e.g. bc-...)"},
+            },
+            "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "cursor_agent_create",
+        "description": "Create a Cursor Cloud Agent and enqueue its initial run with a prompt.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Task instruction for the agent"},
+                "repo_url": {"type": "string", "description": "GitHub repo URL (optional, e.g. https://github.com/org/repo)"},
+                "branch": {"type": "string", "description": "Starting branch or ref (optional)"},
+                "name": {"type": "string", "description": "Optional display name for the agent"},
+            },
+            "required": ["prompt"],
+        },
+    },
+    {
+        "name": "cursor_agent_run_status",
+        "description": "Get status for a specific Cursor agent run.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Cursor agent ID"},
+                "run_id": {"type": "string", "description": "Run ID from agent create or list"},
+            },
+            "required": ["agent_id", "run_id"],
+        },
+    },
+    # ── Factory.ai (Droid platform) ─────────────────────────────────────────────
+    {
+        "name": "factory_sessions_list",
+        "description": "List Factory Droid sessions (factory.ai). May require org feature flag.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max sessions (default: 10)"},
+            },
+        },
+    },
+    {
+        "name": "factory_session_get",
+        "description": "Get a Factory Droid session by session ID.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Factory session ID"},
+            },
+            "required": ["session_id"],
+        },
+    },
+    {
+        "name": "factory_computers_list",
+        "description": "List Factory Droid Computers (persistent dev environments).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "factory_readiness_reports",
+        "description": "List Factory agent readiness / maturity reports for repositories.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max reports (default: 10)"},
+                "repo_id": {"type": "string", "description": "Filter by repository ID (optional)"},
+            },
+        },
+    },
 ]
 
 READ_ONLY_TOOL_NAMES = {
@@ -1116,6 +1247,15 @@ READ_ONLY_TOOL_NAMES = {
     "tracktw_package_status",
     "web_search",
     "linear_issues",
+    "warp_agent_runs_list",
+    "warp_agent_run_status",
+    "cursor_agents_list",
+    "cursor_agent_get",
+    "cursor_agent_run_status",
+    "factory_sessions_list",
+    "factory_session_get",
+    "factory_computers_list",
+    "factory_readiness_reports",
 }
 
 DESTRUCTIVE_TOOL_NAMES = {
@@ -1126,6 +1266,8 @@ DESTRUCTIVE_TOOL_NAMES = {
     "vault_sort_inbox",
     "git_commit",
     "linear_update_issue",
+    "warp_agent_run_create",
+    "cursor_agent_create",
 }
 
 DEFAULT_TEXT_OUTPUT_SCHEMA = {
@@ -1217,6 +1359,18 @@ class SafeMcpWriteError(RuntimeError):
 
 
 class LinearMcpError(RuntimeError):
+    pass
+
+
+class WarpMcpError(RuntimeError):
+    pass
+
+
+class CursorMcpError(RuntimeError):
+    pass
+
+
+class FactoryMcpError(RuntimeError):
     pass
 
 
@@ -1888,6 +2042,34 @@ def handle_tools_call(req_id, params: dict) -> dict:
         return handle_linear_create_issue(req_id, arguments)
     if name == "linear_update_issue":
         return handle_linear_update_issue(req_id, arguments)
+
+    # ── Warp
+    if name == "warp_agent_runs_list":
+        return handle_warp_agent_runs_list(req_id, arguments)
+    if name == "warp_agent_run_status":
+        return handle_warp_agent_run_status(req_id, arguments)
+    if name == "warp_agent_run_create":
+        return handle_warp_agent_run_create(req_id, arguments)
+
+    # ── Cursor
+    if name == "cursor_agents_list":
+        return handle_cursor_agents_list(req_id, arguments)
+    if name == "cursor_agent_get":
+        return handle_cursor_agent_get(req_id, arguments)
+    if name == "cursor_agent_create":
+        return handle_cursor_agent_create(req_id, arguments)
+    if name == "cursor_agent_run_status":
+        return handle_cursor_agent_run_status(req_id, arguments)
+
+    # ── Factory
+    if name == "factory_sessions_list":
+        return handle_factory_sessions_list(req_id, arguments)
+    if name == "factory_session_get":
+        return handle_factory_session_get(req_id, arguments)
+    if name == "factory_computers_list":
+        return handle_factory_computers_list(req_id, arguments)
+    if name == "factory_readiness_reports":
+        return handle_factory_readiness_reports(req_id, arguments)
 
     return make_response(req_id, make_tool_text_response(f"Unknown tool: {name}", is_error=True))
 
@@ -4895,6 +5077,414 @@ def handle_linear_update_issue(req_id, arguments: dict) -> dict:
         return make_response(req_id, make_tool_text_response(
             format_safe_mcp_failure("Linear issue update", issue_id, str(e)), is_error=True
         ))
+
+
+# ─── Warp Oz Cloud Agents Handlers ────────────────────────────────────────────
+
+def _warp_key() -> str:
+    key = (WARP_API_KEY or os.getenv("WARP_API_KEY", "")).strip()
+    if not key:
+        raise WarpMcpError("WARP_API_KEY not set. Add it to Doppler project handcraft-mcp / prd.")
+    return key
+
+
+def _warp_request(method: str, path: str, payload: dict | None = None, params: dict | None = None) -> dict | list:
+    url = f"{WARP_BASE_URL}{path}"
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+
+    headers = {
+        "Authorization": f"Bearer {_warp_key()}",
+        "Accept": "application/json",
+        "User-Agent": "handcraft-mcp/0.1",
+    }
+    body = None
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        error_text = exc.read().decode("utf-8", errors="replace")
+        raise WarpMcpError(f"Warp API error {exc.code}: {error_text[:800]}") from exc
+    except urllib.error.URLError as exc:
+        raise WarpMcpError(f"Warp connection failed: {exc.reason}") from exc
+
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise WarpMcpError(f"Warp returned invalid JSON: {exc}") from exc
+
+
+def _format_warp_run_line(run: dict) -> str:
+    run_id = run.get("run_id") or run.get("id") or "—"
+    state = run.get("state") or run.get("status") or "—"
+    title = run.get("title") or run.get("name") or run.get("prompt", "—")
+    if isinstance(title, dict):
+        title = title.get("text") or title.get("prompt") or "—"
+    created = run.get("created_at") or run.get("createdAt") or ""
+    return f"[{run_id}] {state} — {title}" + (f" ({created})" if created else "")
+
+
+def handle_warp_agent_runs_list(req_id, arguments: dict) -> dict:
+    limit = int(arguments.get("limit", 10))
+    try:
+        data = _warp_request("GET", "/agent/runs", params={"limit": limit})
+        runs = data if isinstance(data, list) else data.get("runs") or data.get("items") or []
+        if not runs:
+            return make_response(req_id, make_tool_text_response("No Warp agent runs found."))
+        lines = [_format_warp_run_line(run) for run in runs[:limit]]
+        return make_response(req_id, make_tool_text_response(
+            f"Warp agent runs ({len(lines)}):\n\n" + "\n".join(lines)
+        ))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(f"Error: {e}", is_error=True))
+
+
+def handle_warp_agent_run_status(req_id, arguments: dict) -> dict:
+    run_id = (arguments.get("run_id") or "").strip()
+    if not run_id:
+        return make_response(req_id, make_tool_text_response("Error: run_id is required", is_error=True))
+    try:
+        data = _warp_request("GET", f"/agent/runs/{urllib.parse.quote(run_id, safe='')}")
+        return make_response(req_id, make_tool_json_response(data))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(
+            format_safe_mcp_failure("Warp agent run status", run_id, str(e)), is_error=True
+        ))
+
+
+def handle_warp_agent_run_create(req_id, arguments: dict) -> dict:
+    prompt = (arguments.get("prompt") or "").strip()
+    environment_id = (arguments.get("environment_id") or "").strip()
+    title = (arguments.get("title") or "").strip()
+    if not prompt:
+        return make_response(req_id, make_tool_text_response("Error: prompt is required", is_error=True))
+    if not environment_id:
+        return make_response(req_id, make_tool_text_response("Error: environment_id is required", is_error=True))
+    try:
+        payload: dict = {
+            "prompt": prompt,
+            "config": {"environment_id": environment_id},
+        }
+        if title:
+            payload["title"] = title
+        data = _warp_request("POST", "/agent/run", payload=payload)
+        run_id = data.get("run_id") or data.get("id") or "—"
+        state = data.get("state") or data.get("status") or "created"
+        return make_response(req_id, make_tool_text_response(
+            f"Warp agent run started.\nrun_id: {run_id}\nstate: {state}\n\n"
+            + json.dumps(data, ensure_ascii=False, indent=2)
+        ))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(
+            format_safe_mcp_failure("Warp agent run create", environment_id, str(e)), is_error=True
+        ))
+
+
+# ─── Cursor Cloud Agents Handlers ─────────────────────────────────────────────
+
+def _cursor_key() -> str:
+    key = (CURSOR_API_KEY or os.getenv("CURSOR_API_KEY", "")).strip()
+    if not key:
+        raise CursorMcpError(
+            "CURSOR_API_KEY not set. Generate at Cursor Dashboard → API Keys, "
+            "then add to Doppler project handcraft-mcp / prd."
+        )
+    return key
+
+
+def _cursor_request(method: str, path: str, payload: dict | None = None, params: dict | None = None) -> dict | list:
+    url = f"{CURSOR_BASE_URL}{path}"
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+
+    headers = {
+        "Authorization": f"Bearer {_cursor_key()}",
+        "Accept": "application/json",
+        "User-Agent": "handcraft-mcp/0.1",
+    }
+    body = None
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        error_text = exc.read().decode("utf-8", errors="replace")
+        raise CursorMcpError(f"Cursor API error {exc.code}: {error_text[:800]}") from exc
+    except urllib.error.URLError as exc:
+        raise CursorMcpError(f"Cursor connection failed: {exc.reason}") from exc
+
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise CursorMcpError(f"Cursor returned invalid JSON: {exc}") from exc
+
+
+def _format_cursor_agent_line(agent: dict) -> str:
+    agent_id = agent.get("id") or agent.get("agentId") or "—"
+    name = agent.get("name") or "—"
+    status = agent.get("status") or agent.get("state") or "—"
+    url = agent.get("url") or ""
+    line = f"[{agent_id}] {name} — {status}"
+    if url:
+        line += f"\n  {url}"
+    return line
+
+
+def handle_cursor_agents_list(req_id, arguments: dict) -> dict:
+    limit = int(arguments.get("limit", 10))
+    try:
+        data = _cursor_request("GET", "/v1/agents", params={"limit": limit})
+        agents = data.get("agents") if isinstance(data, dict) else data
+        if not isinstance(agents, list):
+            agents = []
+        if not agents:
+            return make_response(req_id, make_tool_text_response("No Cursor agents found."))
+        lines = [_format_cursor_agent_line(agent) for agent in agents[:limit]]
+        return make_response(req_id, make_tool_text_response(
+            f"Cursor agents ({len(lines)}):\n\n" + "\n\n".join(lines)
+        ))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(f"Error: {e}", is_error=True))
+
+
+def handle_cursor_agent_get(req_id, arguments: dict) -> dict:
+    agent_id = (arguments.get("agent_id") or "").strip()
+    if not agent_id:
+        return make_response(req_id, make_tool_text_response("Error: agent_id is required", is_error=True))
+    try:
+        data = _cursor_request("GET", f"/v1/agents/{urllib.parse.quote(agent_id, safe='')}")
+        agent = data.get("agent") if isinstance(data, dict) and "agent" in data else data
+        lines = [_format_cursor_agent_line(agent if isinstance(agent, dict) else data)]
+        latest_run = (agent or {}).get("latestRunId") or (agent or {}).get("latest_run_id")
+        if latest_run:
+            lines.append(f"latestRunId: {latest_run}")
+        return make_response(req_id, make_tool_text_response(
+            "\n".join(lines) + "\n\n" + json.dumps(data, ensure_ascii=False, indent=2)
+        ))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(
+            format_safe_mcp_failure("Cursor agent get", agent_id, str(e)), is_error=True
+        ))
+
+
+def handle_cursor_agent_create(req_id, arguments: dict) -> dict:
+    prompt = (arguments.get("prompt") or "").strip()
+    repo_url = (arguments.get("repo_url") or "").strip()
+    branch = (arguments.get("branch") or "").strip()
+    name = (arguments.get("name") or "").strip()
+    if not prompt:
+        return make_response(req_id, make_tool_text_response("Error: prompt is required", is_error=True))
+    try:
+        payload: dict = {"prompt": {"text": prompt}}
+        if name:
+            payload["name"] = name[:100]
+        if repo_url:
+            repo_entry: dict = {"url": repo_url}
+            if branch:
+                repo_entry["startingRef"] = branch
+            payload["repos"] = [repo_entry]
+        data = _cursor_request("POST", "/v1/agents", payload=payload)
+        agent = data.get("agent") or {}
+        run = data.get("run") or {}
+        agent_id = agent.get("id") or data.get("id") or "—"
+        run_id = run.get("id") or run.get("runId") or "—"
+        agent_url = agent.get("url") or ""
+        text = f"Cursor agent created.\nagent_id: {agent_id}\nrun_id: {run_id}"
+        if agent_url:
+            text += f"\nurl: {agent_url}"
+        return make_response(req_id, make_tool_text_response(
+            text + "\n\n" + json.dumps(data, ensure_ascii=False, indent=2)
+        ))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(
+            format_safe_mcp_failure("Cursor agent create", prompt[:80], str(e)), is_error=True
+        ))
+
+
+def handle_cursor_agent_run_status(req_id, arguments: dict) -> dict:
+    agent_id = (arguments.get("agent_id") or "").strip()
+    run_id = (arguments.get("run_id") or "").strip()
+    if not agent_id or not run_id:
+        return make_response(req_id, make_tool_text_response(
+            "Error: agent_id and run_id are required", is_error=True
+        ))
+    try:
+        path = f"/v1/agents/{urllib.parse.quote(agent_id, safe='')}/runs/{urllib.parse.quote(run_id, safe='')}"
+        data = _cursor_request("GET", path)
+        run = data.get("run") if isinstance(data, dict) and "run" in data else data
+        state = (run or {}).get("status") or (run or {}).get("state") or "—"
+        return make_response(req_id, make_tool_text_response(
+            f"Cursor run [{run_id}] state: {state}\n\n"
+            + json.dumps(data, ensure_ascii=False, indent=2)
+        ))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(
+            format_safe_mcp_failure("Cursor agent run status", f"{agent_id}/{run_id}", str(e)),
+            is_error=True,
+        ))
+
+
+# ─── Factory.ai Handlers ──────────────────────────────────────────────────────
+
+def _factory_key() -> str:
+    key = (FACTORY_API_KEY or os.getenv("FACTORY_API_KEY", "")).strip()
+    if not key:
+        raise FactoryMcpError(
+            "FACTORY_API_KEY not set. Generate at app.factory.ai/settings/api-keys, "
+            "then add to Doppler project handcraft-mcp / prd."
+        )
+    return key
+
+
+def _factory_request(
+    method: str,
+    path: str,
+    *,
+    base_url: str | None = None,
+    payload: dict | None = None,
+    params: dict | None = None,
+) -> dict | list:
+    root = (base_url or FACTORY_API_BASE_URL).rstrip("/")
+    url = f"{root}{path}"
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+
+    headers = {
+        "Authorization": f"Bearer {_factory_key()}",
+        "Accept": "application/json",
+        "User-Agent": "handcraft-mcp/0.1",
+    }
+    body = None
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        error_text = exc.read().decode("utf-8", errors="replace")
+        raise FactoryMcpError(f"Factory API error {exc.code}: {error_text[:800]}") from exc
+    except urllib.error.URLError as exc:
+        raise FactoryMcpError(f"Factory connection failed: {exc.reason}") from exc
+
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise FactoryMcpError(f"Factory returned invalid JSON: {exc}") from exc
+
+
+def _factory_sessions_from_response(data: object) -> list:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("sessions", "items", "data"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def handle_factory_sessions_list(req_id, arguments: dict) -> dict:
+    limit = int(arguments.get("limit", 10))
+    try:
+        data = _factory_request("GET", "/api/v0/sessions", params={"limit": limit})
+        sessions = _factory_sessions_from_response(data)
+        if not sessions:
+            return make_response(req_id, make_tool_text_response(
+                "No Factory sessions found (feature may require org enablement)."
+            ))
+        lines = []
+        for session in sessions[:limit]:
+            sid = session.get("id") or session.get("sessionId") or "—"
+            title = session.get("title") or session.get("name") or "—"
+            status = session.get("status") or session.get("state") or "—"
+            lines.append(f"[{sid}] {title} — {status}")
+        return make_response(req_id, make_tool_text_response(
+            f"Factory sessions ({len(lines)}):\n\n" + "\n".join(lines)
+        ))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(f"Error: {e}", is_error=True))
+
+
+def handle_factory_session_get(req_id, arguments: dict) -> dict:
+    session_id = (arguments.get("session_id") or "").strip()
+    if not session_id:
+        return make_response(req_id, make_tool_text_response("Error: session_id is required", is_error=True))
+    try:
+        data = _factory_request(
+            "GET",
+            f"/api/v0/sessions/{urllib.parse.quote(session_id, safe='')}",
+        )
+        return make_response(req_id, make_tool_json_response(data))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(
+            format_safe_mcp_failure("Factory session get", session_id, str(e)), is_error=True
+        ))
+
+
+def handle_factory_computers_list(req_id, arguments: dict) -> dict:  # pylint: disable=unused-argument
+    try:
+        data = _factory_request("GET", "/api/v0/computers")
+        computers = data if isinstance(data, list) else data.get("computers") or data.get("items") or []
+        if not computers:
+            return make_response(req_id, make_tool_text_response("No Factory computers found."))
+        lines = []
+        for computer in computers:
+            cid = computer.get("id") or "—"
+            name = computer.get("name") or "—"
+            status = computer.get("status") or computer.get("state") or "—"
+            lines.append(f"[{cid}] {name} — {status}")
+        return make_response(req_id, make_tool_text_response(
+            f"Factory computers ({len(lines)}):\n\n" + "\n".join(lines)
+        ))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(f"Error: {e}", is_error=True))
+
+
+def handle_factory_readiness_reports(req_id, arguments: dict) -> dict:
+    limit = int(arguments.get("limit", 10))
+    repo_id = (arguments.get("repo_id") or "").strip()
+    params: dict = {"limit": limit}
+    if repo_id:
+        params["repoId"] = repo_id
+    try:
+        data = _factory_request(
+            "GET",
+            "/api/organization/maturity-level-reports",
+            base_url=FACTORY_APP_BASE_URL,
+            params=params,
+        )
+        reports = data if isinstance(data, list) else data.get("reports") or data.get("items") or []
+        if not reports:
+            return make_response(req_id, make_tool_text_response("No Factory readiness reports found."))
+        lines = []
+        for report in reports[:limit]:
+            rid = report.get("reportId") or report.get("id") or "—"
+            repo = report.get("repoUrl") or report.get("repo_url") or "—"
+            created = report.get("createdAt") or report.get("created_at") or ""
+            lines.append(f"[{rid}] {repo}" + (f" ({created})" if created else ""))
+        return make_response(req_id, make_tool_text_response(
+            f"Factory readiness reports ({len(lines)}):\n\n" + "\n".join(lines)
+        ))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(f"Error: {e}", is_error=True))
 
 
 if __name__ == "__main__":

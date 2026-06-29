@@ -225,3 +225,12 @@ curl -X POST https://mcp.edgars.tools/mcp \
 
 **Q: 執行任務太慢？**
 `codex_agent` 和 `claude_code_agent` timeout 設為 5 分鐘，複雜任務請耐心等待。
+
+**Q: Warp / Cursor / Factory 工具說 API key 沒設？**
+到 Doppler 專案 `handcraft-mcp` / `prd` 加入對應 key，然後重啟 MCP server：
+
+| Doppler 變數 | 去哪裡拿 |
+|--------------|----------|
+| `WARP_API_KEY` | [oz.warp.dev/settings](https://oz.warp.dev/settings)（前綴 `wk-`） |
+| `CURSOR_API_KEY` | Cursor Dashboard → API Keys |
+| `FACTORY_API_KEY` | [app.factory.ai/settings/api-keys](https://app.factory.ai/settings/api-keys) |

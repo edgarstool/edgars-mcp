@@ -2,9 +2,9 @@
 
 Edgar 的本地 MCP（Model Context Protocol）Server。
 
-讓任何支援 MCP 的 AI（Claude、OpenClaw 等）能透過 HTTP 直接操作本機電腦，包含：檔案系統、Git、系統指令、瀏覽器、Obsidian Vault、Linear、Notion、AI 代理委派、免費圖片生成。
+讓任何支援 MCP 的 AI（Claude、OpenClaw 等）能透過 HTTP 直接操作本機電腦，包含：檔案系統、Git、系統指令、瀏覽器、Obsidian Vault、Linear、Notion、Warp、Cursor、Factory.ai、AI 代理委派、免費圖片生成。
 
-**目前工具數量：61 個**（最後校對：2026-06-14）
+**目前工具數量：72 個**（最後校對：2026-06-29）
 
 ---
 
@@ -293,6 +293,44 @@ C:\Users\EdgarsTool\Projects\mcp-handcraft\reports
 
 ---
 
+### ⚡ Warp Oz Cloud Agents（3）
+
+| 工具 | 說明 |
+|------|------|
+| `warp_agent_runs_list` | 列出 Warp 雲端 agent 執行紀錄 |
+| `warp_agent_run_status` | 查單一 run 狀態（JSON 詳情） |
+| `warp_agent_run_create` | 用 prompt + `environment_id` 啟動新 run |
+
+需要 Doppler：`WARP_API_KEY`（在 [oz.warp.dev/settings](https://oz.warp.dev/settings) 產生，前綴 `wk-`）。
+
+---
+
+### 🖱 Cursor Cloud Agents（4）
+
+| 工具 | 說明 |
+|------|------|
+| `cursor_agents_list` | 列出 Cursor 雲端 agent |
+| `cursor_agent_get` | 查單一 agent 詳情 |
+| `cursor_agent_create` | 建立 agent 並送出第一個 prompt（可選 repo URL） |
+| `cursor_agent_run_status` | 查 agent 某次 run 狀態 |
+
+需要 Doppler：`CURSOR_API_KEY`（Cursor Dashboard → API Keys）。
+
+---
+
+### 🏭 Factory.ai / Droid（4）
+
+| 工具 | 說明 |
+|------|------|
+| `factory_sessions_list` | 列出 Droid sessions（部分 org 需開通） |
+| `factory_session_get` | 查單一 session 詳情 |
+| `factory_computers_list` | 列出 Droid Computers（持久開發環境） |
+| `factory_readiness_reports` | 列出 repo agent readiness 報告 |
+
+需要 Doppler：`FACTORY_API_KEY`（[app.factory.ai/settings/api-keys](https://app.factory.ai/settings/api-keys)）。
+
+---
+
 ### 📝 Notion（2）
 
 | 工具 | 說明 |
@@ -401,6 +439,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftSecu
 | `LINEAR_API_KEY` | Linear issue 管理 |
 | `NOTION_API_KEY` | Notion 讀取 |
 | `TRACKTW_API_KEY` | TrackTW 物流查詢 |
+| `WARP_API_KEY` | Warp Oz 雲端 agent API |
+| `CURSOR_API_KEY` | Cursor Cloud Agents API |
+| `FACTORY_API_KEY` | Factory.ai / Droid API |
 | `MCP_AGENT_TIMEOUT_SECONDS` | Agent 等待上限（預設 300 秒） |
 | `MCP_BASE_URL` | 公開 URL（預設 https://mcp.edgars.tools） |
 | `MCP_PORT` | 本機 HTTP port（預設 8765；測試可覆蓋） |

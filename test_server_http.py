@@ -1039,5 +1039,100 @@ class ClaudeCodeAgentSmokeTests(unittest.TestCase):
         self.assertIsNone(kwargs["env_overrides"]["ANTHROPIC_API_KEY"])
 
 
+class ExternalApiIntegrationTests(unittest.TestCase):
+    def test_warp_cursor_factory_tools_are_registered(self):
+        names = {tool["name"] for tool in TOOLS}
+        expected = {
+            "warp_agent_runs_list",
+            "warp_agent_run_status",
+            "warp_agent_run_create",
+            "cursor_agents_list",
+            "cursor_agent_get",
+            "cursor_agent_create",
+            "cursor_agent_run_status",
+            "factory_sessions_list",
+            "factory_session_get",
+            "factory_computers_list",
+            "factory_readiness_reports",
+        }
+        self.assertTrue(expected.issubset(names))
+
+    def test_warp_agent_runs_list_formats_response(self):
+        with patch.object(server_http, "_warp_request", return_value={
+            "runs": [
+                {"run_id": "run-1", "state": "running", "title": "scan deps"},
+            ]
+        }):
+            response = server_http.handle_warp_agent_runs_list(req_id=1, arguments={"limit": 5})
+        self.assertFalse(tool_is_error(response))
+        self.assertIn("run-1", tool_text(response))
+        self.assertIn("running", tool_text(response))
+
+    def test_warp_missing_api_key_reports_error(self):
+        with patch.object(server_http, "WARP_API_KEY", ""):
+            response = server_http.handle_warp_agent_run_status(
+                req_id=1, arguments={"run_id": "run-1"}
+            )
+        self.assertTrue(tool_is_error(response))
+        self.assertIn("WARP_API_KEY", tool_text(response))
+
+    def test_cursor_agent_create_returns_ids(self):
+        with patch.object(server_http, "_cursor_request", return_value={
+            "agent": {"id": "bc-abc", "url": "https://cursor.com/agents/bc-abc"},
+            "run": {"id": "run-xyz"},
+        }):
+            response = server_http.handle_cursor_agent_create(
+                req_id=1,
+                arguments={"prompt": "fix tests", "repo_url": "https://github.com/org/repo"},
+            )
+        self.assertFalse(tool_is_error(response))
+        text = tool_text(response)
+        self.assertIn("bc-abc", text)
+        self.assertIn("run-xyz", text)
+
+    def test_cursor_agent_create_builds_repo_payload(self):
+        captured = {}
+
+        def fake_cursor_request(method, path, payload=None, params=None):
+            captured["method"] = method
+            captured["path"] = path
+            captured["payload"] = payload
+            return {"agent": {"id": "bc-1"}, "run": {"id": "run-1"}}
+
+        with patch.object(server_http, "_cursor_request", side_effect=fake_cursor_request):
+            server_http.handle_cursor_agent_create(
+                req_id=1,
+                arguments={
+                    "prompt": "review",
+                    "repo_url": "https://github.com/org/repo",
+                    "branch": "main",
+                },
+            )
+        self.assertEqual("POST", captured["method"])
+        self.assertEqual("/v1/agents", captured["path"])
+        self.assertEqual("review", captured["payload"]["prompt"]["text"])
+        self.assertEqual("main", captured["payload"]["repos"][0]["startingRef"])
+
+    def test_factory_computers_list_formats_response(self):
+        with patch.object(server_http, "_factory_request", return_value=[
+            {"id": "cmp-1", "name": "dev-box", "status": "active"},
+        ]):
+            response = server_http.handle_factory_computers_list(req_id=1, arguments={})
+        self.assertFalse(tool_is_error(response))
+        text = tool_text(response)
+        self.assertIn("cmp-1", text)
+        self.assertIn("dev-box", text)
+
+    def test_factory_readiness_reports_uses_app_base_url(self):
+        with patch.object(server_http, "_factory_request", return_value={
+            "reports": [{"reportId": "rpt-1", "repoUrl": "github.com/org/repo"}],
+        }) as mock_request:
+            response = server_http.handle_factory_readiness_reports(req_id=1, arguments={"limit": 5})
+        self.assertFalse(tool_is_error(response))
+        self.assertIn("rpt-1", tool_text(response))
+        mock_request.assert_called_once()
+        self.assertEqual(server_http.FACTORY_APP_BASE_URL, mock_request.call_args.kwargs["base_url"])
+
+
 if __name__ == "__main__":
     unittest.main()

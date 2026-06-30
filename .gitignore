@@ -11,6 +11,9 @@ logs/
 *.webp
 *.svg
 *.ico
+# site-www branding assets (OAuth verification homepage)
+!site-www/assets/
+!site-www/assets/**
 # poke-hermes-bridge (not tracked here, lives only locally)
 poke-hermes-bridge/
 config/linear-oauth-token.json

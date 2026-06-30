@@ -3,19 +3,22 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="edgarsoauth — Edgar 個人 OAuth 授權服務，用於安全連結 Google 帳號與 Edgar 的生產力工具。">
+  <meta name="description" content="edgarsoauth — Edgar 個人 Google OAuth 授權服務，安全連結 Google 帳號與 EDGAR'S 生產力工具。">
   <title>edgarsoauth — Edgar OAuth 授權服務</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=Noto+Sans+TC:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
-  <link rel="icon" href="assets/edgars-logo.png" type="image/png">
+  <link rel="icon" href="assets/logo.png" type="image/png">
 </head>
 <body>
   <header class="site-header">
     <div class="header-inner">
       <a class="brand" href="index.html">
-        <img class="brand-logo" src="assets/edgars-logo.png" alt="EDGAR'S logo" width="120" height="40">
+        <img class="brand-logo" src="assets/logo.png" alt="EDGAR'S logo" width="160" height="38">
         <span class="brand-text">
           <span class="brand-name">edgarsoauth</span>
-          <span class="brand-tag">OAuth 授權服務</span>
+          <span class="brand-tag">OAuth · edgars.tools</span>
         </span>
       </a>
       <nav class="site-nav" aria-label="主要導覽">
@@ -28,36 +31,42 @@
 
   <main>
     <section class="hero">
-      <img class="hero-logo" src="assets/edgars-logo.png" alt="EDGAR'S" width="240" height="80">
+      <div class="hero-logo-wrap">
+        <img class="hero-logo" src="assets/logo.png" alt="EDGAR'S" width="320" height="88">
+      </div>
       <h1>edgarsoauth</h1>
       <p class="subtitle">
-        Edgar（王世鈞）個人 OAuth 授權服務 — 讓您安全地將 Google 帳號連結至 Edgar 的生產力與自動化工具。
+        Edgar（王世鈞）個人 Google OAuth 授權服務 — 讓您安全地將 Google 帳號連結至 EDGAR'S 生產力與自動化工具鏈。
       </p>
       <div class="hero-badges">
         <span class="badge">Google OAuth 2.0</span>
-        <span class="badge">個人使用</span>
         <span class="badge">最小權限原則</span>
+        <span class="badge">edgars.tools</span>
       </div>
     </section>
 
     <div class="highlight-box">
       <h2>應用程式用途</h2>
       <p>
-        <strong>edgarsoauth</strong> 是 Edgar 個人開發與維運的 OAuth 授權應用程式，用途如下：
+        <strong>edgarsoauth</strong> 是 Edgar 個人開發與維運的 OAuth 授權應用程式。當您在 Google 授權畫面看到此名稱時，代表您正在授權以下用途：
       </p>
       <ul>
-        <li>讓使用者透過 Google 帳號登入，授權存取 Edgar 的 MCP（Model Context Protocol）伺服器與相關生產力工具</li>
-        <li>在 ChatGPT、Claude、Cursor 等 AI 客戶端中，安全地連結 Edgar 的本機自動化服務（如檔案管理、Git、Obsidian、Linear 整合）</li>
-        <li>僅在使用者明確同意後，取得完成授權流程所需的最小 Google API 權限範圍</li>
-        <li>不會將您的 Google 帳號資料出售、出租或分享給第三方</li>
+        <li>透過 Google 帳號登入，授權存取 Edgar 的 MCP（Model Context Protocol）伺服器與相關生產力工具</li>
+        <li>在 ChatGPT、Claude、Cursor 等 AI 客戶端中，安全連結 Edgar 的本機自動化服務（檔案管理、Git、Obsidian、Linear 等整合）</li>
+        <li>僅在您明確同意後，取得完成授權流程所需的最小 Google API 權限範圍</li>
+        <li>不會出售、出租或分享您的 Google 帳號資料給第三方</li>
       </ul>
+      <div class="legal-links">
+        <a href="privacy.html">隱私權政策</a>
+        <a href="terms.html">服務條款</a>
+      </div>
     </div>
 
     <div class="card-grid">
       <article class="card">
         <h3>誰在使用？</h3>
         <p>
-          本應用程式由 Edgar（王世鈞）個人開發與使用，主要服務對象為 Edgar 本人及其授權的協作工具鏈。OAuth 同意畫面會清楚列出所請求的權限範圍。
+          本應用程式由 Edgar（王世鈞）個人開發與使用，主要服務對象為 Edgar 本人及其授權的協作工具鏈。Google OAuth 同意畫面會清楚列出所請求的權限範圍。
         </p>
       </article>
       <article class="card">
@@ -89,13 +98,18 @@
       <p>
         若對本應用程式或 OAuth 授權流程有任何疑問，請透過 Edgar 的 GitHub 組織頁面聯繫：
         <a href="https://github.com/Edgars-tool" rel="noopener noreferrer" target="_blank">github.com/Edgars-tool</a>
+        ，或寄信至
+        <a href="mailto:edgar@edgars.tools">edgar@edgars.tools</a>。
       </p>
     </section>
   </main>
 
   <footer class="site-footer">
     <div class="footer-inner">
-      <span>&copy; 2026 Edgar（王世鈞）· edgarsoauth</span>
+      <div class="footer-brand">
+        <img src="assets/logo.png" alt="" width="120" height="24">
+        <span>edgarsoauth · www.edgars.tools</span>
+      </div>
       <div class="footer-links">
         <a href="index.html">首頁</a>
         <a href="privacy.html">隱私權政策</a>

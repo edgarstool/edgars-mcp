@@ -1,3 +1,7 @@
+---
+lang: zh-TW
+---
+
 # Linear 委派給 Hermes Agent — 新手版（給德德）
 
 > 最後更新：2026-06-30  
@@ -102,7 +106,7 @@ Linear 官方規定：收到 `AgentSessionEvent` 的 `created` 後，**10 秒內
 
 `agentActivityCreate` 只能用 **OAuth App token**（client_credentials），不能用個人 `lin_api_...` Key。
 
-需要在 **`C:\Users\EdgarsTool\.hermes\.env`**（或 Doppler `handcraft-mcp/prd`）有：
+需要在 **`%USERPROFILE%\.hermes\.env`**（或 Doppler `handcraft-mcp/prd`）有：
 
 - `LINEAR_OAUTH_CLIENT_ID`
 - `LINEAR_OAUTH_CLIENT_SECRET`
@@ -157,7 +161,7 @@ Linear 有 **兩套** webhook，容易搞混：
 **Signing secret（重要）：**
 
 1. 在同一頁複製 Hermes Agent 的 **Signing secret**
-2. 貼到 `C:\Users\EdgarsTool\.hermes\.env` 的 `LINEAR_OAUTH_WEBHOOK_SECRET=...`
+2. 貼到 `%USERPROFILE%\.hermes\.env` 的 `LINEAR_OAUTH_WEBHOOK_SECRET=...`
 3. Workspace webhook 的 secret 放 `LINEAR_WEBHOOK_SECRET=...`（兩個可能不同，orchestrator 會都試）
 
 > ❌ 不要只改 **Settings → Webhooks → linear-orchestrator** 就以為委派會通。
@@ -193,7 +197,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\Start-LinearOrchestrator.ps1 
 
 ### 步驟 3：確認 OAuth 密碼在 orchestrator 端
 
-Windows `C:\Users\EdgarsTool\.hermes\.env` 需有（名稱一字不差）：
+Windows `%USERPROFILE%\.hermes\.env` 需有（名稱一字不差）：
 
 ```
 LINEAR_OAUTH_CLIENT_ID=...
@@ -201,7 +205,7 @@ LINEAR_OAUTH_CLIENT_SECRET=...
 LINEAR_WEBHOOK_SECRET=...              # workspace webhook signing secret
 LINEAR_OAUTH_WEBHOOK_SECRET=...        # Hermes Agent App 頁的 signing secret（委派必備）
 LINEAR_API_KEY=lin_api_...             # 一般 comment 用（非 agent session 時）
-HERMES_PATH=C:\Users\EdgarsTool\AppData\Local\hermes\hermes-agent\venv\Scripts\hermes.exe
+HERMES_PATH=%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\hermes.exe
 ```
 
 （路徑可省略，啟動腳本會自動找 Hermes 桌面版。）
@@ -244,7 +248,7 @@ orchestrator 叫 Hermes 時會加 `--skills linear`，載入 Linear 相關 skill
 相關 skill 參考：
 
 - `V:\projects\linear-webhook-bridge\SKILL.md` — 四層 bridge 設計
-- `V:\projects\mcp-handcraft\plugins\linear\skills\linear-agent-session\SKILL.md` — Agent Session 協定
+- `./plugins/linear/skills/linear-agent-session/SKILL.md` — Agent Session 協定
 
 **Hermes 本身不會自動知道 Agent Session 協定**；必須靠 orchestrator 處理 webhook + API 回寫。
 

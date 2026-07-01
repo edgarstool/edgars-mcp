@@ -1,3 +1,7 @@
+---
+lang: zh-TW
+---
+
 # Linear OAuth × Hermes Agent — 新手版（給德德）
 
 > 最後更新：2026-06-30  

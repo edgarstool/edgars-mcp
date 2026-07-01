@@ -28,17 +28,30 @@ function Invoke-JsonProbe {
 
     try {
         $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -Method $Method -TimeoutSec $TimeoutSec
+        $finalUri = $Uri
+        if ($response.BaseResponse -and $response.BaseResponse.ResponseUri) {
+            $finalUri = $response.BaseResponse.ResponseUri.AbsoluteUri
+        }
+        $detail = $null
+        if ($finalUri -match "cloudflareaccess\.com") {
+            $detail = "cloudflare_access_login"
+        } elseif ([string]$response.Content -match "cloudflareaccess\.com|cf_access") {
+            $detail = "cloudflare_access_login"
+        }
         return [ordered]@{
             name = $Name
             ok = $true
             status = [int]$response.StatusCode
             uri = $Uri
+            final_uri = $finalUri
+            detail = $detail
         }
     } catch {
         $statusCode = $null
         $detail = $null
         if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
             $statusCode = [int]$_.Exception.Response.StatusCode
+            $cfMitigated = $_.Exception.Response.Headers["cf-mitigated"]
             try {
                 $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
                 $body = $reader.ReadToEnd()
@@ -49,6 +62,9 @@ function Invoke-JsonProbe {
                 }
             } catch {
                 $detail = $null
+            }
+            if (-not $detail -and $cfMitigated -eq "challenge") {
+                $detail = "cloudflare_edge_challenge"
             }
         }
         return [ordered]@{
@@ -85,11 +101,35 @@ $checks += [ordered]@{
 
 if (-not $SkipPublic) {
     $publicBaseUrl = ($PublicMcpUrl -replace "/mcp$", "")
-    $checks += Invoke-JsonProbe -Name "public_health" -Uri "$publicBaseUrl/health"
-    $checks += Invoke-JsonProbe -Name "public_mcp_get" -Uri $PublicMcpUrl
+    $publicHealth = Invoke-JsonProbe -Name "public_health" -Uri "$publicBaseUrl/health"
+    if ($publicHealth.ok -and $publicHealth.detail -eq "cloudflare_access_login") {
+        $publicHealth.note = "reachable_access_protected"
+    }
+    if (-not $publicHealth.ok -and $publicHealth.status -in @(302, 401, 405)) {
+        $publicHealth.ok = $true
+        $publicHealth.note = "reachable_auth_required"
+    }
+    $checks += $publicHealth
+
+    $publicMcp = Invoke-JsonProbe -Name "public_mcp_get" -Uri $PublicMcpUrl
+    if ($publicMcp.ok -and $publicMcp.detail -eq "cloudflare_access_login") {
+        $publicMcp.note = "reachable_access_protected"
+    }
+    if (-not $publicMcp.ok -and $publicMcp.status -in @(302, 401, 405)) {
+        $publicMcp.ok = $true
+        $publicMcp.note = "reachable_auth_required"
+    }
+    $checks += $publicMcp
 }
 
-$ok = -not [bool]($checks | Where-Object { -not $_.ok })
+$ok = -not [bool](
+    $checks | Where-Object {
+        if ($_.ok) {
+            return $false
+        }
+        return $_.detail -notin @("cloudflare_access_blocked", "cloudflare_access_login")
+    }
+)
 $result = [ordered]@{
     ok = $ok
     local_base_url = $LocalBaseUrl

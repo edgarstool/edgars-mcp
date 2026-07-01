@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "handcraft-mcp": {
+    "edgars-mcp": {
       "type": "http",
       "url": "https://mcp.edgars.tools/mcp"
     }

@@ -4,7 +4,7 @@ Edgar 的本地 MCP（Model Context Protocol）Server。
 
 讓任何支援 MCP 的 AI（Claude、OpenClaw 等）能透過 HTTP 直接操作本機電腦，包含：檔案系統、Git、系統指令、瀏覽器、Obsidian Vault、Linear、Notion、Warp、Cursor、Factory.ai、AI 代理委派、免費圖片生成。
 
-**目前工具數量：72 個**（最後校對：2026-06-29）
+**目前工具數量：70 個**（最後校對：2026-06-29）
 
 > 不懂 Doppler 要填什麼？請看 **[Doppler 設定指南（新手版）](docs/DOPPLER-設定指南-新手版.md)**。  
 > 搞不清 mcp / webhooks / hooks 哪個是哪個？請看 **[網域分工（新手版）](docs/網域分工-新手版.md)**。
@@ -21,14 +21,21 @@ mcp-handcraft/
 ├── run.cmd             ← 啟動 stdio server
 ├── run_http.cmd        ← 啟動 HTTP server（透過 Doppler 注入 secrets）
 ├── run_stdio.cmd       ← 啟動 stdio proxy（Cursor / Hermes → 本機 HTTP MCP）
+├── cloudflare/
+│   └── workers/        ← hooks/status Worker 的 source-of-truth
+├── config/
+│   ├── mcp.local.example.json
+│   ├── mcp.remote.example.json
+│   └── mcp.remote.stdio.example.json
+├── docs/
+│   ├── DOPPLER-設定指南-新手版.md
+│   └── MCP-CLIENT-AUTH-最小正式方案.md
 ├── scripts/
 │   ├── start-mcp.ps1 ← 開啟：背景啟動 HTTP + 可選 cloudflared（寫 PID）
 │   ├── check-mcp.ps1 ← 檢驗：本機 / 外網 / MCP handshake
 │   ├── maintain-mcp.ps1 ← 維護：日誌輪替、健康修復、可選 smoke test
 │   ├── stop-mcp.ps1 ← 停止 HTTP（可選 cloudflared）
 │   ├── Start-HandcraftStack.ps1 ← 舊版一鍵啟動（仍可用）
-│   ├── Start-OpenAISecureMcpTunnel.ps1 ← 啟動 OpenAI Secure MCP Tunnel
-│   ├── Install-OpenAITunnelClient.ps1 ← 安裝 OpenAI tunnel-client
 │   └── Test-HandcraftHealth.ps1 ← 輕量健康檢查（check-mcp 會涵蓋更多）
 └── test_server_http.py ← smoke test
 ```
@@ -84,23 +91,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-HandcraftSta
 
 ### 啟動 OpenAI Secure MCP Tunnel（私有 MCP，不開公開入口）
 
+> 注意：本 repo 目前**沒有**保留 `Start-OpenAISecureMcpTunnel.ps1` / `Install-OpenAITunnelClient.ps1`。  
+> 若之後要恢復這條路徑，請先把對應腳本重新納入 repo，再更新本段操作說明。
+
 OpenAI Secure MCP Tunnel 會讓本機 `tunnel-client` 對 OpenAI 建立 outbound HTTPS 連線，再把 OpenAI 端的 MCP JSON-RPC 請求轉發到本機 `http://127.0.0.1:8765/mcp`。這條路徑不需要把本機 MCP server 暴露到 public internet。
 
 先在 OpenAI Platform tunnel settings 建立 / 選取 tunnel，取得 `tunnel_id`，並準備一把具備 Tunnels Read + Use 權限的 runtime API key。不要把 key 寫進 repo 或命令列歷史。
 
 ```powershell
+<<<<<<< HEAD
+# 目前僅保留概念說明；腳本檔未納入此 repo snapshot
+=======
 cd V:\projects\mcp-handcraft
 $env:OPENAI_MCP_TUNNEL_ID = "tunnel_..."
 $env:CONTROL_PLANE_API_KEY = "sk-..."
 $env:MCP_API_TOKEN = "<local-mcp-bearer-token>"
 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-OpenAISecureMcpTunnel.ps1 -InstallIfMissing
+>>>>>>> origin/master
 ```
 
 只跑診斷、不啟動長跑 tunnel：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-OpenAISecureMcpTunnel.ps1 -DoctorOnly
+# 目前僅保留概念說明；腳本檔未納入此 repo snapshot
 ```
 
 這個腳本會確認本機 `:8765` 健康，必要時透過 Doppler 啟動 `server_http.py`，再用 `sample_mcp_remote_no_auth` profile 執行 `tunnel-client init`、`doctor` 和 `run`。本機 MCP bearer 會透過 `Authorization: env:MCP_API_TOKEN` 這類 env reference 傳給 `tunnel-client`，不寫入 profile。保持該 process 運作時，ChatGPT / Codex / API 端才可透過 tunnel 呼叫本機 MCP。
@@ -145,18 +159,29 @@ Stop-Process -Id <OwningProcessId> -Force
 | Claude Code | `winget install Anthropic.ClaudeCode` + `claude auth login` |
 | Ollama | 本地模型執行環境 |
 | mmx CLI | MiniMax 媒體生成 |
-| OpenAI tunnel-client | OpenAI Secure MCP Tunnel 用；可由 `scripts\Install-OpenAITunnelClient.ps1` 安裝 |
+| OpenAI tunnel-client | OpenAI Secure MCP Tunnel 用；本 repo snapshot 未附安裝腳本 |
 
 ---
 
 ## 認證
 
-HTTP MCP endpoint 支援兩種 bearer token：
+目前建議把認證分成兩層看：
 
-1. 正規 OAuth 2.0 Authorization Code + PKCE（給 ChatGPT / 自訂連接器使用）
-2. 靜態 `MCP_API_TOKEN`（給本機 smoke test / 既有自動化相容使用）
+1. **外網公開入口** `https://mcp.edgars.tools/mcp`
+   - 建議交給 **Cloudflare Access + Managed OAuth**
+   - 外部 MCP client 應走 Cloudflare Access 的 discovery / authorize / token 流程
+   - `server_http.py` 只把 Cloudflare Access 視為上游身分來源，不再以 repo 內建 OAuth 當外網主流程
 
-所有 `/mcp` 請求需帶 Bearer Token：
+2. **本機 / localhost**
+   - `http://127.0.0.1:8765/mcp`
+   - 仍可使用 `MCP_API_TOKEN`
+   - 供 `stdio_proxy.py`、維運腳本、smoke test、migration 使用
+
+### 外網 `/mcp`
+
+若已啟用 Cloudflare Access，外網 `POST /mcp` 會由 Access 先做登入與 OAuth，origin 端再驗證 `Cf-Access-Jwt-Assertion`。
+
+外網 client 需要：
 
 ```
 Authorization: Bearer <access_token>
@@ -169,24 +194,47 @@ Authorization: Bearer <access_token>
 | 連接器名稱 | `edgars mcp` |
 | MCP 伺服器 URL | `https://mcp.edgars.tools/mcp` |
 | 驗證 | `OAuth` |
-| Client ID | `handcraft-mcp` |
-| Client Secret | `handcraft-mcp-client-secret` |
+| OAuth 提供者 | Cloudflare Access Managed OAuth |
+| Client ID / Secret | 以 Cloudflare Access application 或 portal 顯示值為準 |
 | 傳輸 | 可串流 HTTP |
 
-OAuth discovery endpoints：
+Cloudflare Access 啟用後，OAuth discovery / redirect / token 以 Cloudflare Access 為準。  
+repo 內建這組端點：
 
 ```text
 https://mcp.edgars.tools/.well-known/oauth-authorization-server
 https://mcp.edgars.tools/.well-known/oauth-protected-resource
 ```
 
-此 MCP 使用 Authorization Code + PKCE S256。對外顯示的 connector / `serverInfo.name` 是 `edgars mcp`；OAuth `client_id` 仍保留 `handcraft-mcp`，避免既有授權設定被破壞。為了相容不允許空白 Client Secret 的 AI UI，預設手動 client secret 是 `handcraft-mcp-client-secret`；正式環境可用 `MCP_OAUTH_CLIENT_SECRET` 覆蓋。Dynamic client registration 端點為 `/register`，會核發 `client_id` 與 `client_secret`。
+只有在 **localhost / migration 模式** 下才建議直接用。當 `MCP_CLOUDFLARE_ACCESS_ENABLED=true` 且 public hostname 走 Access 時，repo 內建 `/authorize`、`/token`、`/register` 不再是外網主流程。
+
+### Codex / Claude / Hermes 的最小正式 auth 方案
+
+建議直接分三條路：
+
+1. **Edgar 本機**
+   - `stdio_proxy.py` -> `http://127.0.0.1:8765/mcp`
+   - 用 `MCP_API_TOKEN`
+2. **遠端 / 雲端 agent**
+   - `stdio_proxy.py` -> `https://mcp.edgars.tools/mcp`
+   - 用 Cloudflare Access service token
+   - headers:
+     - `CF-Access-Client-Id`
+     - `CF-Access-Client-Secret`
+3. **人類互動式 public client**
+   - 走 Cloudflare Access Managed OAuth
+
+詳細版請看：
+
+- [docs/MCP-CLIENT-AUTH-最小正式方案.md](docs/MCP-CLIENT-AUTH-最小正式方案.md)
+- [config/mcp.local.example.json](config/mcp.local.example.json)
+- [config/mcp.remote.stdio.example.json](config/mcp.remote.stdio.example.json)
 
 ---
 
-## 工具總覽（56 個）
+## 工具總覽（70 個）
 
-### 🤖 AI 代理（7）
+### 🤖 AI 代理（8）
 
 | 工具 | 說明 |
 |------|------|
@@ -432,11 +480,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftSecu
 
 | 變數 | 說明 |
 |------|------|
-| `MCP_API_TOKEN` | Bearer Token 認證 |
-| `MCP_OAUTH_CLIENT_ID` | OAuth 預設 public client id（預設 `handcraft-mcp`） |
-| `MCP_OAUTH_CLIENT_SECRET` | OAuth 預設 client secret（預設 `handcraft-mcp-client-secret`） |
-| `MCP_OAUTH_AUTH_CODE_TTL_SECONDS` | OAuth 授權碼有效秒數（預設 600） |
-| `MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS` | OAuth access token 有效秒數（預設 7776000） |
+| `MCP_API_TOKEN` | localhost / smoke test / stdio proxy 的 bearer token |
+| `MCP_CLOUDFLARE_ACCESS_ENABLED` | `true` 時 public `/mcp` 走 Cloudflare Access JWT 驗證 |
+| `MCP_CLOUDFLARE_ACCESS_TEAM_DOMAIN` | 例如 `team-name.cloudflareaccess.com` |
+| `MCP_CLOUDFLARE_ACCESS_AUD` | Cloudflare Access application 的 AUD |
+| `MCP_CLOUDFLARE_ACCESS_JWKS_URL` | 可選；預設 `https://<team-domain>/cdn-cgi/access/certs` |
+| `MCP_CLOUDFLARE_ACCESS_DISABLE_BUILTIN_OAUTH` | 預設 `true`；public hostname 停用 repo 內建 OAuth 端點 |
+| `MCP_CLOUDFLARE_ACCESS_ALLOW_PUBLIC_TOKEN_FALLBACK` | 過渡期才用；允許 public `/mcp` 回退到舊 bearer 模式 |
+| `MCP_OAUTH_CLIENT_ID` | repo 內建 OAuth 的 localhost / migration client id（預設 `handcraft-mcp`） |
+| `MCP_OAUTH_CLIENT_SECRET` | repo 內建 OAuth 的 localhost / migration client secret |
+| `MCP_OAUTH_AUTH_CODE_TTL_SECONDS` | repo 內建 OAuth 授權碼有效秒數（預設 600） |
+| `MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS` | repo 內建 OAuth access token 有效秒數（預設 7776000） |
 | `PERPLEXITY_API_KEY` | web_search 用 |
 | `OPENAI_API_KEY` | 備用 |
 | `LINEAR_API_KEY` | Linear issue 管理 |
@@ -447,6 +501,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftSecu
 | `FACTORY_API_KEY` | Factory.ai / Droid API |
 | `MCP_AGENT_TIMEOUT_SECONDS` | Agent 等待上限（預設 300 秒） |
 | `MCP_BASE_URL` | 公開 URL（預設 https://mcp.edgars.tools） |
+| `MCP_WEBHOOK_BASE_URL` | webhook 對外 URL；若要分流到 `hooks.*`，在這裡設定 |
+| `MCP_PACKAGE_WEBHOOK_TOKEN` | package webhook 共用 secret（可用 `Authorization: Bearer` 或 `X-Handcraft-Webhook-Token`） |
+| `MCP_LINEAR_WEBHOOK_TOKEN` | Linear webhook 共用 secret |
+| `MCP_DISCORD_WEBHOOK_TOKEN` | Discord webhook 共用 secret |
 | `MCP_PORT` | 本機 HTTP port（預設 8765；測試可覆蓋） |
 
 ---
@@ -457,7 +515,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftSecu
 https://mcp.edgars.tools/mcp
 ```
 
-透過 Cloudflare Tunnel 對外。本機重開機後需手動重啟 cloudflared。
+透過 Cloudflare Tunnel 對外。建議搭配 **Cloudflare Access Managed OAuth**，不要再把 repo 內建 OAuth 當外網主流程。
+
+注意：
+
+- public `/mcp` 在 Access 開啟後，探測可能會看到 **401 / 302 / Cloudflare Access login**，這不一定代表壞掉。
+- 若要強制保護 direct URL，請直接在 `mcp.edgars.tools` 掛 Access，不要只靠 portal 隱藏。
 
 OpenAI Secure MCP Tunnel 是另一條私有路徑：`tunnel-client` 從本機 outbound 連到 OpenAI，OpenAI 產品透過 OpenAI-hosted tunnel endpoint 呼叫本機 MCP。它不需要 `mcp.edgars.tools`，也不需要開 inbound firewall port。
 
@@ -473,7 +536,8 @@ python .\stdio_proxy.py
 
 ### Package webhook
 
-給 TrackTW / 包裹通知使用的 webhook URL：
+給 TrackTW / 包裹通知使用的 webhook URL。  
+若 `MCP_WEBHOOK_BASE_URL` 已設成獨立 hostname（例如 `https://hooks.mcp.edgars.tools`），請用那個值：
 
 ```text
 https://mcp.edgars.tools/webhook/package
@@ -489,7 +553,8 @@ http://127.0.0.1:8765/webhook/package
 
 ### Linear webhook
 
-給 Linear webhook 使用的 URL：
+給 Linear webhook 使用的 URL。  
+若 `MCP_WEBHOOK_BASE_URL` 已設成獨立 hostname，請用那個值：
 
 ```text
 https://mcp.edgars.tools/webhook/linear
@@ -507,7 +572,13 @@ https://mcp.edgars.tools/linear/oauth/status    ← 檢查是否已授權
 
 設定步驟見 `docs/Linear-OAuth設定-新手版.md`；manifest 在 `config/linear-oauth-manifest.json`。
 
-若 endpoint 需要 bearer token，設定 `MCP_API_TOKEN`；本檔不保存 token，也不要把 runtime log、`.screenshots/`、`__pycache__/` 或圖片檔 commit 進 repo。
+webhook 不會走 Cloudflare Access 的瀏覽器登入流程。若要保留公開直打，至少配置：
+
+- `MCP_PACKAGE_WEBHOOK_TOKEN`
+- `MCP_LINEAR_WEBHOOK_TOKEN`
+- `MCP_DISCORD_WEBHOOK_TOKEN`
+
+並讓呼叫方用 `Authorization: Bearer <secret>` 或 `X-Handcraft-Webhook-Token` 送進來。本檔不保存 token，也不要把 runtime log、`.screenshots/`、`__pycache__/` 或圖片檔 commit 進 repo。
 
 本 repo 內未保留 `gateway.cmd`；目前 HTTP / gateway 相關啟動路徑是 `run_http.cmd` 與 `scripts\Start-HandcraftStack.ps1`，兩者都走 Doppler/env 注入，不需要把 token 當參數傳入。手動探測 `/mcp` 時請使用 `scripts\Invoke-HandcraftMcp.ps1`，避免 `Authorization: Bearer ...` 出現在 shell history 或程序命令列。
 

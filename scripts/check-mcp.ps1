@@ -97,7 +97,10 @@ $infraChecks += [ordered]@{
 
 if (-not $SkipPublic) {
     $publicProbe = Invoke-HandcraftHttpProbe -Name "public_mcp_get" -Uri $config.PublicMcpUrl -TimeoutSec $TimeoutSec
-    if (-not $publicProbe.ok -and $publicProbe.status -in @(401, 403, 405)) {
+    if ($publicProbe.ok -and $publicProbe.detail -eq "cloudflare_access_login") {
+        $publicProbe.note = "reachable_access_protected"
+    }
+    if (-not $publicProbe.ok -and $publicProbe.status -in @(302, 401, 403, 405)) {
         $publicProbe.ok = $true
         $publicProbe.note = "reachable_auth_required"
     }

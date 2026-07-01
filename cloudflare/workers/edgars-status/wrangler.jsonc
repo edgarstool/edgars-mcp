@@ -1,0 +1,11 @@
+{
+  "name": "edgars-status",
+  "main": "index.mjs",
+  "compatibility_date": "2026-06-29",
+  "routes": [
+    {
+      "pattern": "status.edgars.tools/*",
+      "zone_name": "edgars.tools"
+    }
+  ]
+}

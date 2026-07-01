@@ -188,6 +188,7 @@ class HttpStartupConfigTests(unittest.TestCase):
             HandcraftServerConfig(
                 mcp_api_token="secret-token",
                 base_url="https://mcp.example.test",
+                webhook_base_url="https://mcp.example.test",
             ),
             config,
         )
@@ -240,8 +241,8 @@ class OAuthFlowTests(unittest.TestCase):
         with server_http.OAUTH_TOKENS_LOCK:
             server_http.OAUTH_ACCESS_TOKENS.clear()
 
-    def _start_server(self):
-        config = HandcraftServerConfig(
+    def _start_server(self, config=None):
+        config = config or HandcraftServerConfig(
             mcp_api_token="secret-token",
             base_url="https://mcp.example.test",
         )
@@ -515,6 +516,254 @@ class OAuthFlowTests(unittest.TestCase):
                 output_schema = tool.get("outputSchema")
                 self.assertIsInstance(output_schema, dict)
                 self.assertEqual("object", output_schema.get("type"))
+
+
+class CloudflareAccessModeTests(unittest.TestCase):
+    def _start_server(self, config=None):
+        config = config or HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            cloudflare_access_enabled=True,
+            cloudflare_access_team_domain="team.example.cloudflareaccess.com",
+            cloudflare_access_aud="aud-123",
+            cloudflare_access_jwks_url="https://team.example.cloudflareaccess.com/cdn-cgi/access/certs",
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MCPHTTPHandler, config=config)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread, f"http://127.0.0.1:{server.server_address[1]}"
+
+    def test_public_oauth_metadata_is_hidden_when_access_mode_enabled(self):
+        server, thread, base = self._start_server()
+        try:
+            req = urllib.request.Request(
+                f"{base}/.well-known/oauth-authorization-server",
+                headers={"Host": "mcp.example.test"},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(req, timeout=5)
+
+            self.assertEqual(404, raised.exception.code)
+            payload = json.loads(raised.exception.read().decode("utf-8"))
+            self.assertEqual("not_found", payload["error"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_public_mcp_requires_cf_access_jwt_when_access_mode_enabled(self):
+        server, thread, base = self._start_server()
+        try:
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {},
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/mcp",
+                data=body,
+                headers={
+                    "Host": "mcp.example.test",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(req, timeout=5)
+
+            self.assertEqual(401, raised.exception.code)
+            payload = json.loads(raised.exception.read().decode("utf-8"))
+            self.assertEqual("cloudflare_access_required", payload["error"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_public_mcp_accepts_cloudflare_access_jwt_when_verified(self):
+        server, thread, base = self._start_server()
+        try:
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {},
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/mcp",
+                data=body,
+                headers={
+                    "Host": "mcp.example.test",
+                    "Cf-Access-Jwt-Assertion": "signed.jwt.token",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with patch.object(server_http, "verify_cloudflare_access_jwt", return_value={"email": "edgar@example.com"}):
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(200, response.status)
+            tool_names = [tool["name"] for tool in payload["result"]["tools"]]
+            self.assertIn("fs_disk_info", tool_names)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_local_mcp_keeps_static_bearer_flow_in_access_mode(self):
+        server, thread, base = self._start_server()
+        try:
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {},
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/mcp",
+                data=body,
+                headers={
+                    "Authorization": "Bearer secret-token",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(200, response.status)
+            self.assertIn("tools", payload["result"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_public_mcp_ignores_spoofed_forwarded_host_when_access_mode_enabled(self):
+        server, thread, base = self._start_server()
+        try:
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {},
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/mcp",
+                data=body,
+                headers={
+                    "Authorization": "Bearer secret-token",
+                    "Content-Type": "application/json",
+                    "Host": "mcp.example.test",
+                    "X-Forwarded-Host": "127.0.0.1",
+                },
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(req, timeout=5)
+
+            self.assertEqual(401, raised.exception.code)
+            payload = json.loads(raised.exception.read().decode("utf-8"))
+            self.assertEqual("cloudflare_access_required", payload["error"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_public_health_requires_bearer_when_access_fallback_is_enabled(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            cloudflare_access_enabled=True,
+            cloudflare_access_team_domain="team.example.cloudflareaccess.com",
+            cloudflare_access_aud="aud-123",
+            cloudflare_access_jwks_url="https://team.example.cloudflareaccess.com/cdn-cgi/access/certs",
+            cloudflare_access_allow_public_token_fallback=True,
+        )
+        server, thread, base = self._start_server(config=config)
+        try:
+            req = urllib.request.Request(
+                f"{base}/health",
+                headers={"Host": "mcp.example.test"},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(req, timeout=5)
+
+            self.assertEqual(401, raised.exception.code)
+            self.assertIn("Bearer", raised.exception.headers["WWW-Authenticate"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_public_mcp_get_allows_bearer_when_access_fallback_is_enabled(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            cloudflare_access_enabled=True,
+            cloudflare_access_team_domain="team.example.cloudflareaccess.com",
+            cloudflare_access_aud="aud-123",
+            cloudflare_access_jwks_url="https://team.example.cloudflareaccess.com/cdn-cgi/access/certs",
+            cloudflare_access_allow_public_token_fallback=True,
+        )
+        server, thread, base = self._start_server(config=config)
+        try:
+            req = urllib.request.Request(
+                f"{base}/mcp",
+                headers={
+                    "Authorization": "Bearer secret-token",
+                    "Host": "mcp.example.test",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(200, response.status)
+            self.assertEqual(server_http.SERVER_INFO, payload["server"])
+            self.assertEqual(server_http.PROTOCOL_VERSION, payload["protocolVersion"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_package_webhook_can_require_shared_secret(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            package_webhook_token="pkg-secret",
+        )
+        server, thread, base = self._start_server(config=config)
+        try:
+            body = json.dumps({"tracking_number": "TEST123"}).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/webhook/package",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(req, timeout=5)
+
+            self.assertEqual(401, raised.exception.code)
+
+            authed_req = urllib.request.Request(
+                f"{base}/webhook/package",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Handcraft-Webhook-Token": "pkg-secret",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(authed_req, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(200, response.status)
+            self.assertTrue(payload["ok"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
 
 class CacheTraceRotationScriptTests(unittest.TestCase):

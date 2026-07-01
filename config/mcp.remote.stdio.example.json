@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "edgars-mcp-remote": {
+      "command": "py",
+      "args": [
+        "-3",
+        "V:\\projects\\mcp-handcraft\\stdio_proxy.py"
+      ],
+      "env": {
+        "MCP_URL": "https://mcp.edgars.tools/mcp",
+        "MCP_CF_ACCESS_CLIENT_ID": "<cloudflare-access-service-token-client-id>",
+        "MCP_CF_ACCESS_CLIENT_SECRET": "<cloudflare-access-service-token-client-secret>"
+      }
+    }
+  }
+}

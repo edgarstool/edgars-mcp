@@ -137,6 +137,15 @@ lang: zh-TW
 | `MCP_AGENT_TIMEOUT_SECONDS` | `300` | Agent 任務常逾時時調大 |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama 不在本機預設位址時 |
 
+如果你之後要讓 **遠端 Codex / Claude / Hermes** 走 Cloudflare Access 的機器身分，還會再多兩個秘密：
+
+| 變數名稱 | 什麼時候才要加 |
+|----------|----------------|
+| `MCP_CF_ACCESS_CLIENT_ID` | 給遠端 agent 走 Cloudflare Access service token 時 |
+| `MCP_CF_ACCESS_CLIENT_SECRET` | 給遠端 agent 走 Cloudflare Access service token 時 |
+
+這兩個不是現在一定要填；只有你真的要讓**遠端 agent 正式接 public MCP**時才需要。
+
 ---
 
 ## 在 Doppler 網頁怎麼新增一筆？（圖文步驟）

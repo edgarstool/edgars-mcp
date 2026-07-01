@@ -1,7 +1,7 @@
 """
 手刻 MCP Server - Streamable HTTP 版本
 協議版本: 2025-11-25
-依賴: 僅 Python 標準庫 (http.server, json, urllib.parse)
+依賴: Python 標準庫；啟用 Cloudflare Access 模式時額外使用 PyJWT
 
 端點:
 - POST /mcp
@@ -42,6 +42,14 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from mmx_handlers import DISPATCH, hmi, hmvd, hms, hmu, hmv, hmsq, hmc, hmq
 
+try:
+    import jwt
+    from jwt import InvalidTokenError, PyJWKClient
+except ImportError:  # pragma: no cover - optional dependency in legacy mode
+    jwt = None
+    InvalidTokenError = Exception
+    PyJWKClient = None
+
 # ── mmx handler aliases（對應 dispatch 的完整名稱）─────────────────────────────
 handle_mmx_image_generate   = hmi
 handle_mmx_video_generate   = hmv
@@ -61,10 +69,70 @@ def load_base_url() -> str:
     return os.getenv("MCP_BASE_URL", "https://mcp.edgars.tools").strip()
 
 
+def load_bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def load_webhook_base_url() -> str:
+    return os.getenv("MCP_WEBHOOK_BASE_URL", "").strip()
+
+
+def load_cloudflare_access_team_domain() -> str:
+    return os.getenv("MCP_CLOUDFLARE_ACCESS_TEAM_DOMAIN", "").strip()
+
+
+def load_cloudflare_access_aud() -> str:
+    return os.getenv("MCP_CLOUDFLARE_ACCESS_AUD", "").strip()
+
+
+def load_cloudflare_access_jwks_url() -> str:
+    return os.getenv("MCP_CLOUDFLARE_ACCESS_JWKS_URL", "").strip()
+
+
+def load_package_webhook_token() -> str:
+    return os.getenv("MCP_PACKAGE_WEBHOOK_TOKEN", "").strip()
+
+
+def load_linear_webhook_token() -> str:
+    return os.getenv("MCP_LINEAR_WEBHOOK_TOKEN", "").strip()
+
+
+def load_discord_webhook_token() -> str:
+    return os.getenv("MCP_DISCORD_WEBHOOK_TOKEN", "").strip()
+
+
 @dataclass(frozen=True)
 class HandcraftServerConfig:
     mcp_api_token: str
     base_url: str
+    webhook_base_url: str = ""
+    cloudflare_access_enabled: bool = False
+    cloudflare_access_team_domain: str = ""
+    cloudflare_access_aud: str = ""
+    cloudflare_access_jwks_url: str = ""
+    cloudflare_access_disable_builtin_oauth: bool = True
+    cloudflare_access_allow_public_token_fallback: bool = False
+    package_webhook_token: str = ""
+    linear_webhook_token: str = ""
+    discord_webhook_token: str = ""
+
+    @property
+    def public_hostname(self) -> str:
+        return (urllib.parse.urlparse(self.base_url).hostname or "").lower()
+
+    @property
+    def webhook_hostname(self) -> str:
+        candidate = self.webhook_base_url or self.base_url
+        return (urllib.parse.urlparse(candidate).hostname or "").lower()
+
+    @property
+    def cloudflare_access_issuer(self) -> str:
+        if not self.cloudflare_access_team_domain:
+            return ""
+        return f"https://{self.cloudflare_access_team_domain}"
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -213,6 +281,8 @@ OAUTH_STATIC_CLIENT_SECRET = (
     os.getenv("MCP_OAUTH_CLIENT_SECRET", "handcraft-mcp-client-secret").strip()
     or "handcraft-mcp-client-secret"
 )
+CLOUDFLARE_ACCESS_JWKS_LOCK = threading.Lock()
+CLOUDFLARE_ACCESS_JWKS_CLIENTS: dict[str, object] = {}
 TOOLS = [
     {
         "name": "echo",
@@ -1413,6 +1483,10 @@ class FactoryMcpError(RuntimeError):
     pass
 
 
+class CloudflareAccessAuthError(RuntimeError):
+    pass
+
+
 def format_safe_mcp_failure(action: str, target: str, reason: str) -> str:
     return f"[BLOCKED] {action} failed\nTarget: {target}\nReason: {reason}"
 
@@ -1560,6 +1634,47 @@ def oauth_access_token_is_valid(token: str) -> bool:
             OAUTH_ACCESS_TOKENS.pop(token, None)
             return False
         return True
+
+
+def get_cloudflare_access_jwk_client(jwks_url: str):
+    if PyJWKClient is None:
+        raise CloudflareAccessAuthError(
+            "PyJWT with PyJWKClient support is required when Cloudflare Access mode is enabled."
+        )
+    with CLOUDFLARE_ACCESS_JWKS_LOCK:
+        client = CLOUDFLARE_ACCESS_JWKS_CLIENTS.get(jwks_url)
+        if client is None:
+            client = PyJWKClient(jwks_url)
+            CLOUDFLARE_ACCESS_JWKS_CLIENTS[jwks_url] = client
+        return client
+
+
+def verify_cloudflare_access_jwt(token: str, config: HandcraftServerConfig) -> dict:
+    if not token:
+        raise CloudflareAccessAuthError("Missing Cf-Access-Jwt-Assertion header.")
+    if not config.cloudflare_access_enabled:
+        raise CloudflareAccessAuthError("Cloudflare Access mode is not enabled for this server.")
+    if jwt is None:
+        raise CloudflareAccessAuthError("PyJWT is required to verify Cloudflare Access JWTs.")
+
+    try:
+        jwk_client = get_cloudflare_access_jwk_client(config.cloudflare_access_jwks_url)
+        signing_key = jwk_client.get_signing_key_from_jwt(token)
+        claims = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=config.cloudflare_access_aud,
+            issuer=config.cloudflare_access_issuer,
+        )
+    except InvalidTokenError as exc:
+        raise CloudflareAccessAuthError(f"Cloudflare Access JWT invalid: {exc}") from exc
+    except CloudflareAccessAuthError:
+        raise
+    except Exception as exc:
+        raise CloudflareAccessAuthError(f"Cloudflare Access JWT verification failed: {exc}") from exc
+
+    return claims if isinstance(claims, dict) else {}
 
 
 def bearer_token_is_authorized(token: str, static_token: str) -> bool:
@@ -2636,14 +2751,32 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         if path == "/.well-known/oauth-authorization-server":
+            if not self._builtin_oauth_enabled_for_request():
+                self._send_builtin_oauth_disabled()
+                return
             self._handle_oauth_metadata()
         elif path == "/.well-known/oauth-protected-resource":
+            if not self._builtin_oauth_enabled_for_request():
+                self._send_builtin_oauth_disabled()
+                return
             self._handle_resource_metadata()
         elif path == "/.well-known/oauth-protected-resource/mcp":
+            if not self._builtin_oauth_enabled_for_request():
+                self._send_builtin_oauth_disabled()
+                return
             self._handle_resource_metadata(resource_path=MCP_PATH)
         elif path == "/authorize":
+            if not self._builtin_oauth_enabled_for_request():
+                self._send_builtin_oauth_disabled()
+                return
             self._handle_authorize(parsed.query)
         elif path == HEALTH_PATH:
+            if self._requires_cloudflare_access_for_request(path):
+                claims = self._authenticate_public_request_via_cloudflare_access()
+                if claims is False:
+                    return
+                if claims is None and not self._authenticate_bearer_request():
+                    return
             self._handle_health()
         elif path == LINEAR_OAUTH_AUTHORIZE_PATH:
             self._handle_linear_oauth_authorize()
@@ -2654,6 +2787,12 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         elif path == LINEAR_OAUTH_BOOTSTRAP_PATH:
             self._handle_linear_oauth_bootstrap()
         elif path == "/mcp":
+            if self._requires_cloudflare_access_for_request(path):
+                claims = self._authenticate_public_request_via_cloudflare_access()
+                if claims is False:
+                    return
+                if claims is None and not self._authenticate_bearer_request():
+                    return
             body = json.dumps({
                 "server": SERVER_INFO,
                 "protocolVersion": PROTOCOL_VERSION,
@@ -2741,11 +2880,19 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             "public": {
                 "base_url": base_url,
                 "mcp_url": f"{base_url}{MCP_PATH}",
+                "webhook_base_url": (self.server.config.webhook_base_url or self.server.config.base_url).rstrip("/"),
             },
             "auth": {
                 "mcp_api_token_configured": bool(self.server.config.mcp_api_token),
                 "oauth_public_client_id": OAUTH_STATIC_CLIENT_ID,
                 "oauth_active_tokens": len(OAUTH_ACCESS_TOKENS),
+                "oauth_mode": (
+                    "cloudflare_access_managed"
+                    if self.server.config.cloudflare_access_enabled
+                    else "handcraft_builtin"
+                ),
+                "cloudflare_access_enabled": self.server.config.cloudflare_access_enabled,
+                "cloudflare_access_aud_configured": bool(self.server.config.cloudflare_access_aud),
             },
             "webhooks": [
                 PACKAGE_WEBHOOK_PATH,
@@ -2950,9 +3097,15 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed_path = urllib.parse.urlparse(self.path).path
         if parsed_path == "/token":
+            if not self._builtin_oauth_enabled_for_request():
+                self._send_builtin_oauth_disabled()
+                return
             self._handle_token()
             return
         if parsed_path == "/register":
+            if not self._builtin_oauth_enabled_for_request():
+                self._send_builtin_oauth_disabled()
+                return
             self._handle_register()
             return
         if parsed_path == "/webhook/discord":
@@ -2969,25 +3122,19 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        # ── Bearer token 驗證 ─────────────────────────────────────────────────
-        auth = self.headers.get("Authorization", "")
-        api_token = self.server.config.mcp_api_token
-        if api_token:  # Token 已設定時，header 必須存在且正確
-            if not auth:
-                log("401 Unauthorized: missing token")
-                self._send_mcp_unauthorized(
-                    error="invalid_token",
-                    description="Missing bearer token. Authorize this MCP app to continue.",
-                )
+        access_claims = None
+        if self._requires_cloudflare_access_for_request(parsed_path):
+            access_claims = self._authenticate_public_request_via_cloudflare_access()
+            if access_claims is False:
                 return
-            token = auth.removeprefix("Bearer ").strip()
-            if not bearer_token_is_authorized(token, api_token):
-                log(f"401 Unauthorized: invalid token")
-                self._send_mcp_unauthorized(
-                    error="invalid_token",
-                    description="Bearer token is invalid or expired. Re-authorize this MCP app.",
-                )
+
+        # ── Bearer token 驗證（localhost / migration fallback）─────────────────
+        if access_claims is None:
+            if not self._authenticate_bearer_request():
                 return
+        elif isinstance(access_claims, dict):
+            access_identity = access_claims.get("email") or access_claims.get("sub") or "cloudflare-access-user"
+            log(f"Cloudflare Access authenticated request: {access_identity}")
 
         # ── Origin 驗證（spec 強制，防 DNS rebinding）─────────────────────────
         origin = self.headers.get("Origin", "")
@@ -3028,6 +3175,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         self._send_json(response)
 
     def _handle_package_webhook(self) -> None:
+        if not self._ensure_webhook_token(self.server.config.package_webhook_token, "package"):
+            return
         content_length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(content_length)
         raw_text = raw.decode("utf-8", errors="replace")
@@ -3064,6 +3213,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         })
 
     def _handle_linear_webhook(self) -> None:
+        if not self._ensure_webhook_token(self.server.config.linear_webhook_token, "linear"):
+            return
         content_length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(content_length)
         raw_text = raw.decode("utf-8", errors="replace")
@@ -3113,6 +3264,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     # ── 回應輔助 ──────────────────────────────────────────────────────────────
     def _handle_discord_webhook(self) -> None:
+        if not self._ensure_webhook_token(self.server.config.discord_webhook_token, "discord"):
+            return
         content_length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
         try:
@@ -3138,7 +3291,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers",
-                         "Content-Type, Authorization, Accept, Mcp-Session-Id")
+                         "Content-Type, Authorization, Accept, Mcp-Session-Id, Cf-Access-Jwt-Assertion, X-Handcraft-Webhook-Token, X-Webhook-Token")
 
     def _is_allowed_origin(self, origin: str) -> bool:
         try:
@@ -3146,6 +3299,115 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return hostname in ALLOWED_HOSTNAMES
         except Exception:
             return False
+
+    def _request_hostname(self) -> str:
+        host = self.headers.get("Host", "").split(",")[0].strip()
+        return host.split(":")[0].strip().lower()
+
+    def _request_targets_base_hostname(self) -> bool:
+        hostname = self._request_hostname()
+        return bool(hostname) and hostname == self.server.config.public_hostname
+
+    def _builtin_oauth_enabled_for_request(self) -> bool:
+        config = self.server.config
+        if not config.cloudflare_access_enabled or not config.cloudflare_access_disable_builtin_oauth:
+            return True
+        return not self._request_targets_base_hostname()
+
+    def _requires_cloudflare_access_for_request(self, path: str) -> bool:
+        config = self.server.config
+        if not config.cloudflare_access_enabled:
+            return False
+        if not self._request_targets_base_hostname():
+            return False
+        return path in {MCP_PATH, HEALTH_PATH}
+
+    def _send_builtin_oauth_disabled(self) -> None:
+        self._send_oauth_json(
+            oauth_error(
+                "not_found",
+                "Public OAuth is managed by Cloudflare Access for this hostname.",
+            ),
+            404,
+        )
+
+    def _send_cloudflare_access_unauthorized(self, description: str) -> None:
+        self._send_json(
+            {
+                "ok": False,
+                "error": "cloudflare_access_required",
+                "error_description": description,
+            },
+            status=401,
+        )
+
+    def _authenticate_public_request_via_cloudflare_access(self):
+        access_jwt = self.headers.get("Cf-Access-Jwt-Assertion", "").strip()
+        if not access_jwt:
+            if self.server.config.cloudflare_access_allow_public_token_fallback:
+                return None
+            self._send_cloudflare_access_unauthorized(
+                "This public endpoint is protected by Cloudflare Access. Complete Managed OAuth in your MCP client and retry.",
+            )
+            return False
+        try:
+            return verify_cloudflare_access_jwt(access_jwt, self.server.config)
+        except CloudflareAccessAuthError as exc:
+            self._send_cloudflare_access_unauthorized(str(exc))
+            return False
+
+    def _authenticate_bearer_request(self) -> bool:
+        api_token = self.server.config.mcp_api_token
+        if not api_token:
+            return True
+        auth = self.headers.get("Authorization", "")
+        if not auth:
+            log("401 Unauthorized: missing token")
+            self._send_mcp_unauthorized(
+                error="invalid_token",
+                description="Missing bearer token. Authorize this MCP app to continue.",
+            )
+            return False
+        token = auth.removeprefix("Bearer ").strip()
+        if not bearer_token_is_authorized(token, api_token):
+            log("401 Unauthorized: invalid token")
+            self._send_mcp_unauthorized(
+                error="invalid_token",
+                description="Bearer token is invalid or expired. Re-authorize this MCP app.",
+            )
+            return False
+        return True
+
+    def _webhook_token_from_request(self) -> str:
+        auth = self.headers.get("Authorization", "").strip()
+        if auth.lower().startswith("bearer "):
+            return auth[7:].strip()
+        for name in (
+            "X-Handcraft-Webhook-Token",
+            "X-Webhook-Token",
+            "X-Linear-Webhook-Token",
+            "X-TrackTW-Webhook-Token",
+            "X-Discord-Webhook-Token",
+        ):
+            value = self.headers.get(name, "").strip()
+            if value:
+                return value
+        return ""
+
+    def _ensure_webhook_token(self, expected_token: str, webhook_name: str) -> bool:
+        if not expected_token:
+            return True
+        supplied = self._webhook_token_from_request()
+        if supplied and hmac.compare_digest(supplied, expected_token):
+            return True
+        self._send_json(
+            {
+                **make_webhook_response(webhook_name, accepted=False),
+                "error": "Missing or invalid webhook secret.",
+            },
+            status=401,
+        )
+        return False
 
     # ── 把 http.server 的 access log 導到 stderr ──────────────────────────────
     def log_message(self, fmt, *args):
@@ -3166,10 +3428,75 @@ def validate_base_url(raw_url: str | None) -> str:
     return base_url or "https://mcp.edgars.tools"
 
 
+def validate_optional_base_url(raw_url: str | None, default_url: str) -> str:
+    base_url = (raw_url or "").strip()
+    return base_url or default_url
+
+
+def validate_cloudflare_access_team_domain(raw_domain: str | None) -> str:
+    candidate = (raw_domain or "").strip()
+    if not candidate:
+        return ""
+    if "://" not in candidate:
+        candidate = f"https://{candidate}"
+    parsed = urllib.parse.urlparse(candidate)
+    return (parsed.netloc or parsed.path).rstrip("/").lower()
+
+
+def validate_cloudflare_access_jwks_url(raw_url: str | None, team_domain: str) -> str:
+    candidate = (raw_url or "").strip()
+    if candidate:
+        return candidate
+    if not team_domain:
+        return ""
+    return f"https://{team_domain}/cdn-cgi/access/certs"
+
+
 def validate_http_startup_config() -> HandcraftServerConfig:
+    base_url = validate_base_url(load_base_url())
+    cloudflare_access_enabled = load_bool_env("MCP_CLOUDFLARE_ACCESS_ENABLED", False)
+    cloudflare_access_team_domain = validate_cloudflare_access_team_domain(
+        load_cloudflare_access_team_domain()
+    )
+    cloudflare_access_aud = load_cloudflare_access_aud().strip()
+    cloudflare_access_jwks_url = validate_cloudflare_access_jwks_url(
+        load_cloudflare_access_jwks_url(),
+        cloudflare_access_team_domain,
+    )
+
+    if cloudflare_access_enabled:
+        if jwt is None or PyJWKClient is None:
+            raise RuntimeError(
+                "PyJWT with PyJWKClient support is required when MCP_CLOUDFLARE_ACCESS_ENABLED=true"
+            )
+        if not cloudflare_access_team_domain:
+            raise RuntimeError(
+                "MCP_CLOUDFLARE_ACCESS_TEAM_DOMAIN is required when MCP_CLOUDFLARE_ACCESS_ENABLED=true"
+            )
+        if not cloudflare_access_aud:
+            raise RuntimeError(
+                "MCP_CLOUDFLARE_ACCESS_AUD is required when MCP_CLOUDFLARE_ACCESS_ENABLED=true"
+            )
+
     return HandcraftServerConfig(
         mcp_api_token=validate_mcp_api_token(load_mcp_api_token()),
-        base_url=validate_base_url(load_base_url()),
+        base_url=base_url,
+        webhook_base_url=validate_optional_base_url(load_webhook_base_url(), base_url),
+        cloudflare_access_enabled=cloudflare_access_enabled,
+        cloudflare_access_team_domain=cloudflare_access_team_domain,
+        cloudflare_access_aud=cloudflare_access_aud,
+        cloudflare_access_jwks_url=cloudflare_access_jwks_url,
+        cloudflare_access_disable_builtin_oauth=load_bool_env(
+            "MCP_CLOUDFLARE_ACCESS_DISABLE_BUILTIN_OAUTH",
+            True,
+        ),
+        cloudflare_access_allow_public_token_fallback=load_bool_env(
+            "MCP_CLOUDFLARE_ACCESS_ALLOW_PUBLIC_TOKEN_FALLBACK",
+            False,
+        ),
+        package_webhook_token=load_package_webhook_token(),
+        linear_webhook_token=load_linear_webhook_token(),
+        discord_webhook_token=load_discord_webhook_token(),
     )
 
 
@@ -3187,8 +3514,19 @@ def main() -> None:
     log(f"Endpoint : POST http://localhost:{PORT}{MCP_PATH}")
     log(f"Webhook : POST http://localhost:{PORT}{PACKAGE_WEBHOOK_PATH}")
     log(f"Webhook : POST http://localhost:{PORT}{LINEAR_WEBHOOK_PATH}")
+<<<<<<< HEAD
+    log(
+        "Auth mode: "
+        + (
+            "Cloudflare Access managed public endpoint"
+            if config.cloudflare_access_enabled
+            else "Built-in bearer/OAuth"
+        )
+    )
+=======
     log(f"Linear OAuth authorize: GET http://localhost:{PORT}{LINEAR_OAUTH_AUTHORIZE_PATH}")
     log(f"Linear OAuth callback: GET http://localhost:{PORT}{LINEAR_OAUTH_CALLBACK_PATH}")
+>>>>>>> origin/master
     log(f"Allowed origins: {ALLOWED_HOSTNAMES}")
     try:
         server.serve_forever()

@@ -1,0 +1,14 @@
+{
+  "name": "edgar-hooks-inbox",
+  "main": "index.mjs",
+  "compatibility_date": "2026-06-29",
+  "routes": [
+    {
+      "pattern": "hooks.edgars.tools/*",
+      "zone_name": "edgars.tools"
+    }
+  ],
+  "vars": {
+    "SERVICE_NAME": "edgar-hooks-inbox"
+  }
+}

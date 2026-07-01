@@ -325,25 +325,55 @@ function Invoke-HandcraftHttpProbe {
 
     try {
         $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -Method $Method -TimeoutSec $TimeoutSec
+        $finalUri = $Uri
+        if ($response.BaseResponse -and $response.BaseResponse.ResponseUri) {
+            $finalUri = $response.BaseResponse.ResponseUri.AbsoluteUri
+        }
+        $detail = $null
+        $note = $null
+        $content = ""
+        try {
+            $content = [string]$response.Content
+        } catch {
+            $content = ""
+        }
+        if ($finalUri -match "cloudflareaccess\.com" -or $content -match "cloudflareaccess\.com|cf_access") {
+            $detail = "cloudflare_access_login"
+            $note = "reachable_access_login"
+        }
         return [ordered]@{
-            name   = $Name
-            scope  = if ($Uri -match '^https?://127\.0\.0\.1|^https?://localhost') { "local" } else { "external" }
-            ok     = $true
-            status = [int]$response.StatusCode
-            uri    = $Uri
+            name      = $Name
+            scope     = if ($Uri -match '^https?://127\.0\.0\.1|^https?://localhost') { "local" } else { "external" }
+            ok        = $true
+            status    = [int]$response.StatusCode
+            uri       = $Uri
+            final_uri = $finalUri
+            detail    = $detail
+            note      = $note
         }
     } catch {
         $statusCode = $null
+        $detail = $null
+        $finalUri = $Uri
         if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
             $statusCode = [int]$_.Exception.Response.StatusCode
+            try {
+                if ($_.Exception.Response.ResponseUri) {
+                    $finalUri = $_.Exception.Response.ResponseUri.AbsoluteUri
+                }
+            } catch {
+                $finalUri = $Uri
+            }
         }
         return [ordered]@{
-            name   = $Name
-            scope  = if ($Uri -match '^https?://127\.0\.0\.1|^https?://localhost') { "local" } else { "external" }
-            ok     = $false
-            status = $statusCode
-            uri    = $Uri
-            error  = $_.Exception.Message
+            name      = $Name
+            scope     = if ($Uri -match '^https?://127\.0\.0\.1|^https?://localhost') { "local" } else { "external" }
+            ok        = $false
+            status    = $statusCode
+            uri       = $Uri
+            final_uri = $finalUri
+            error     = $_.Exception.Message
+            detail    = $detail
         }
     }
 }

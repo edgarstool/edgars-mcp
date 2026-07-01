@@ -14,11 +14,14 @@
 └── run_http.cmd       ← 啟動 HTTP server（透過 Doppler 注入 key）
 
 Doppler（雲端）
-└── project: handcraft-mcp / config: dev
+└── project: handcraft-mcp / config: prd
     └── 存放所有 API key，啟動時注入，不落地
 
 Cloudflare Tunnel
 └── mcp.edgars.tools → 本機 :8765/mcp
+
+Cloudflare Access（建議 public 模式）
+└── Managed OAuth / Access policies 保護外網 `mcp.edgars.tools`
 ```
 
 ### 兩個 server 的差異
@@ -28,8 +31,8 @@ Cloudflare Tunnel
 | 用途 | 本機 agent 直連 | 外網 / 遠端呼叫 |
 | 啟動方式 | `run.cmd` | `run_http.cmd` |
 | Port | 無（stdin/stdout） | 8765 |
-| 工具數 | echo | echo + 5 個 agent 工具 |
-| Auth | 無需 | Bearer token |
+| 工具數 | echo | 主力完整工具集 |
+| Auth | 無需 | localhost 可用 bearer；外網建議 Cloudflare Access Managed OAuth |
 
 ---
 
@@ -68,7 +71,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-HandcraftSta
 - 確認 `http://127.0.0.1:8765/health`
 - 若本機 HTTP server 沒活著，用 Doppler 啟動 `server_http.py`
 - 確認或啟動 `cloudflared`
-- 檢查 `https://mcp.edgars.tools/mcp` 是否回 200
+- 檢查 `https://mcp.edgars.tools/mcp` 是否 reachable
+
+> 若 public hostname 已套 Cloudflare Access，外網檢查可能看到 `401`、`302` 或 Cloudflare Access login page；這算是「可連到而且已受保護」，不等於故障。
 
 ### 只做健康檢查
 ```powershell
@@ -122,7 +127,7 @@ doppler secrets
 避免在一般 shell 直接印出 secret 值。需要確認是否存在時，用 `doppler secrets` 看遮蔽後清單；真的要看值，請走 Doppler Web UI 或受控的 secrets 區，不要把輸出複製進 repo、log 或對話。
 
 ### Web UI
-https://dashboard.doppler.com → 選 `handcraft-mcp` → `dev`
+https://dashboard.doppler.com → 選 `handcraft-mcp` → `prd`
 
 ### 改完 key 要重啟 server
 Doppler 在啟動時注入，改完 key 要停掉 server 重跑 `run_http.cmd`。
@@ -205,9 +210,16 @@ doppler secrets set MCP_AGENT_TIMEOUT_SECONDS=600
 
 ## 7. 安全設定
 
-### Bearer Token（HTTP server）
+### Bearer Token（HTTP server / localhost）
 
-HTTP server 啟動時會讀 `MCP_API_TOKEN`，沒有設定會直接中止，不再使用 repo 內明文 fallback。
+HTTP server 啟動時會讀 `MCP_API_TOKEN`，沒有設定會直接中止，不再使用 repo 內明文 fallback。  
+這個 token 主要留給：
+
+- localhost `POST /mcp`
+- `stdio_proxy.py`
+- 維運腳本與 smoke test
+
+public hostname 不建議再把它當外網主認證。
 
 設定 token 時走 Doppler stdin / Web UI，不要把 token 寫進命令列或 shell history：
 
@@ -222,9 +234,84 @@ doppler secrets set MCP_API_TOKEN --project handcraft-mcp --config prd
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-HandcraftMcp.ps1
 ```
 
+### Cloudflare Access（public `/mcp` 建議做法）
+
+當外網 `mcp.edgars.tools` 要像正式 SaaS 一樣走登入 / redirect / OAuth，建議：
+
+1. 在 Cloudflare Zero Trust 建 **Self-hosted Access application**
+2. 開 **Managed OAuth**
+3. 記下 Access application 的 `AUD`
+4. 在 `server_http.py` 對 `Cf-Access-Jwt-Assertion` 做 origin 端驗證
+
+必要環境變數：
+
+```text
+MCP_CLOUDFLARE_ACCESS_ENABLED=true
+MCP_CLOUDFLARE_ACCESS_TEAM_DOMAIN=<team>.cloudflareaccess.com
+MCP_CLOUDFLARE_ACCESS_AUD=<access-app-aud>
+```
+
+可選：
+
+```text
+MCP_CLOUDFLARE_ACCESS_JWKS_URL=https://<team>.cloudflareaccess.com/cdn-cgi/access/certs
+MCP_CLOUDFLARE_ACCESS_DISABLE_BUILTIN_OAUTH=true
+MCP_CLOUDFLARE_ACCESS_ALLOW_PUBLIC_TOKEN_FALLBACK=false
+```
+
+當 `MCP_CLOUDFLARE_ACCESS_ENABLED=true` 且請求 hostname 是 public base URL 時，repo 內建：
+
+- `/.well-known/oauth-authorization-server`
+- `/.well-known/oauth-protected-resource`
+- `/authorize`
+- `/token`
+- `/register`
+
+不再作為外網主流程。
+
+### Codex / Claude / Hermes 最小正式 auth
+
+建議固定分工：
+
+1. **Edgar 本機**
+   - `stdio_proxy.py` 轉送到 `http://127.0.0.1:8765/mcp`
+   - 用 `MCP_API_TOKEN`
+
+2. **遠端 / 雲端 agent**
+   - `stdio_proxy.py` 轉送到 `https://mcp.edgars.tools/mcp`
+   - 用 Cloudflare Access service token
+   - 透過這兩個 header 進入 Access：
+     - `CF-Access-Client-Id`
+     - `CF-Access-Client-Secret`
+
+proxy 支援的環境變數：
+
+```text
+MCP_CF_ACCESS_CLIENT_ID
+MCP_CF_ACCESS_CLIENT_SECRET
+```
+
+向後相容也接受：
+
+```text
+CF_ACCESS_CLIENT_ID
+CF_ACCESS_CLIENT_SECRET
+HERMES_HANDCRAFT_CF_ACCESS_CLIENT_ID
+HERMES_HANDCRAFT_CF_ACCESS_CLIENT_SECRET
+```
+
+3. **人類互動式 client**
+   - 走 Cloudflare Access Managed OAuth
+
+參考：
+
+- `config/mcp.local.example.json`
+- `config/mcp.remote.stdio.example.json`
+- `docs/MCP-CLIENT-AUTH-最小正式方案.md`
+
 ### Origin 白名單（DNS rebinding 防護）
 
-在 `server_http.py` 第 216 行：
+在 `server_http.py` 的 `ALLOWED_HOSTNAMES`：
 ```python
 ALLOWED_HOSTNAMES = {"localhost", "127.0.0.1", "mcp.edgars.tools"}
 ```
@@ -286,13 +373,14 @@ curl -X POST http://localhost:8765/mcp \
   -H "Content-Type: application/json" \
   -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"clientInfo\":{\"name\":\"test\",\"version\":\"1.0\"},\"capabilities\":{}}}"
 
-# 確認外網
+# 確認外網（public hostname 套 Access 後，未授權時可能回 401/302 或 Access login）
 curl -X POST https://mcp.edgars.tools/mcp \
   -H "Content-Type: application/json" \
   -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}"
 ```
 
-正常回應包含 `"serverInfo": { "name": "handcraft-mcp" }`。
+正常回應包含 `"serverInfo": { "name": "edgars mcp" }`。  
+若未登入 Access，出現 Access login / 401 也代表 edge 在工作。
 
 ### Hermes stdio proxy
 
@@ -312,6 +400,22 @@ Do not collapse these into one URL during review:
 - Discord webhook: `https://mcp.edgars.tools/webhook/discord`
 - Package / TrackTW webhook: `https://mcp.edgars.tools/webhook/package`
 - Linear webhook: `https://mcp.edgars.tools/webhook/linear`
+
+如果要讓 webhook 不跟 `/mcp` 共用 Access policy，建議把對外 webhook URL 分到另一個 base URL，並在環境變數設定：
+
+```text
+MCP_WEBHOOK_BASE_URL=https://hooks.mcp.edgars.tools
+```
+
+若 webhook 仍保留公開直打，至少設定：
+
+```text
+MCP_PACKAGE_WEBHOOK_TOKEN=<secret>
+MCP_LINEAR_WEBHOOK_TOKEN=<secret>
+MCP_DISCORD_WEBHOOK_TOKEN=<secret>
+```
+
+呼叫方可用 `Authorization: Bearer <secret>` 或 `X-Handcraft-Webhook-Token`。
 
 Local package webhook test:
 
@@ -379,8 +483,11 @@ Get-Item .\logs\cache-trace.jsonl | Select-Object FullName,Length,LastWriteTime
 **Q：curl 回 403 Forbidden: Origin not allowed**
 → 把你的 origin 加進 `ALLOWED_HOSTNAMES`。
 
-**Q：curl 回 401 Unauthorized**
-→ 不要把 bearer token 寫在 `curl -H` 命令列。確認 `MCP_API_TOKEN` 或 `MCP_API_TOKEN` 已由 Doppler/env 提供，然後跑：
+**Q：public `/mcp` 回 401 / 302 / Cloudflare Access login**
+→ 若你已啟用 Cloudflare Access，這通常代表 edge 正常在保護入口。先確認 client 是否已完成 Managed OAuth。
+
+**Q：localhost `/mcp` 回 401 Unauthorized**
+→ 不要把 bearer token 寫在 `curl -H` 命令列。確認 `MCP_API_TOKEN` 已由 Doppler/env 提供，然後跑：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-HandcraftMcp.ps1
@@ -399,7 +506,7 @@ doppler login
 cd V:\projects\mcp-handcraft
 doppler configure
 ```
-應顯示 `project=handcraft-mcp config=dev`。
+應顯示 `project=handcraft-mcp config=prd`。
 
 ---
 

@@ -97,8 +97,25 @@ $checks += [ordered]@{
 
 if (-not $SkipPublic) {
     $publicBaseUrl = ($PublicMcpUrl -replace "/mcp$", "")
-    $checks += Invoke-JsonProbe -Name "public_health" -Uri "$publicBaseUrl/health"
-    $checks += Invoke-JsonProbe -Name "public_mcp_get" -Uri $PublicMcpUrl
+    $publicHealth = Invoke-JsonProbe -Name "public_health" -Uri "$publicBaseUrl/health"
+    if ($publicHealth.ok -and $publicHealth.detail -eq "cloudflare_access_login") {
+        $publicHealth.note = "reachable_access_protected"
+    }
+    if (-not $publicHealth.ok -and $publicHealth.status -in @(302, 401, 403, 405)) {
+        $publicHealth.ok = $true
+        $publicHealth.note = "reachable_auth_required"
+    }
+    $checks += $publicHealth
+
+    $publicMcp = Invoke-JsonProbe -Name "public_mcp_get" -Uri $PublicMcpUrl
+    if ($publicMcp.ok -and $publicMcp.detail -eq "cloudflare_access_login") {
+        $publicMcp.note = "reachable_access_protected"
+    }
+    if (-not $publicMcp.ok -and $publicMcp.status -in @(302, 401, 403, 405)) {
+        $publicMcp.ok = $true
+        $publicMcp.note = "reachable_auth_required"
+    }
+    $checks += $publicMcp
 }
 
 $ok = -not [bool](

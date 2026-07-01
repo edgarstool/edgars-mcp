@@ -104,6 +104,30 @@ class HermesPreflightTests(unittest.TestCase):
                 ):
                     hermes_stdio_proxy.run_preflight()
 
+    def test_preflight_service_token_401_mentions_cloudflare_access(self):
+        error = urllib.error.HTTPError(
+            hermes_stdio_proxy.MCP_URL,
+            401,
+            "Unauthorized",
+            hdrs={},
+            fp=io.BytesIO(b"access denied"),
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "MCP_CF_ACCESS_CLIENT_ID": "client-id.access",
+                "MCP_CF_ACCESS_CLIENT_SECRET": "client-secret",
+            },
+            clear=True,
+        ):
+            with patch("urllib.request.urlopen", side_effect=error):
+                with self.assertRaisesRegex(
+                    hermes_stdio_proxy.HermesPreflightError,
+                    "Cloudflare Access service token was rejected",
+                ):
+                    hermes_stdio_proxy.run_preflight()
+
     def test_main_exits_before_reading_stdin_when_preflight_fails(self):
         with patch(
             "hermes_stdio_proxy.run_preflight",

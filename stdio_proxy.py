@@ -114,6 +114,25 @@ def validate_auth_token() -> str:
     )
 
 
+def describe_preflight_unauthorized_error() -> str:
+    has_bearer = bool(load_auth_token())
+    client_id, client_secret = load_cf_access_service_token()
+    has_service_token = bool(client_id and client_secret)
+    if has_bearer and has_service_token:
+        return (
+            f"handcraft MCP rejected preflight auth at {MCP_URL}. "
+            "Check MCP_API_TOKEN, MCP_CF_ACCESS_CLIENT_ID / MCP_CF_ACCESS_CLIENT_SECRET, and Cloudflare Access configuration."
+        )
+    if has_bearer:
+        return f"MCP_API_TOKEN was rejected by handcraft MCP at {MCP_URL}"
+    if has_service_token:
+        return (
+            f"Cloudflare Access service token was rejected by handcraft MCP at {MCP_URL}. "
+            "Check MCP_CF_ACCESS_CLIENT_ID / MCP_CF_ACCESS_CLIENT_SECRET and Cloudflare Access configuration."
+        )
+    return f"handcraft MCP rejected preflight auth at {MCP_URL}"
+
+
 def run_preflight() -> None:
     validate_auth_token()
     payload = {
@@ -131,7 +150,7 @@ def run_preflight() -> None:
         response = forward_to_http(payload, timeout=PREFLIGHT_TIMEOUT_SECONDS)
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
-            raise PreflightError(f"MCP_API_TOKEN was rejected by handcraft MCP at {MCP_URL}") from exc
+            raise PreflightError(describe_preflight_unauthorized_error()) from exc
         raise PreflightError(f"handcraft MCP preflight failed at {MCP_URL}: HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
         raise PreflightError(f"handcraft MCP is unreachable at {MCP_URL}: {exc.reason}") from exc

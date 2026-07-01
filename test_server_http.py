@@ -639,6 +639,93 @@ class CloudflareAccessModeTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    def test_public_mcp_ignores_spoofed_forwarded_host_when_access_mode_enabled(self):
+        server, thread, base = self._start_server()
+        try:
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {},
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/mcp",
+                data=body,
+                headers={
+                    "Authorization": "Bearer secret-token",
+                    "Content-Type": "application/json",
+                    "Host": "mcp.example.test",
+                    "X-Forwarded-Host": "127.0.0.1",
+                },
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(req, timeout=5)
+
+            self.assertEqual(401, raised.exception.code)
+            payload = json.loads(raised.exception.read().decode("utf-8"))
+            self.assertEqual("cloudflare_access_required", payload["error"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_public_health_requires_bearer_when_access_fallback_is_enabled(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            cloudflare_access_enabled=True,
+            cloudflare_access_team_domain="team.example.cloudflareaccess.com",
+            cloudflare_access_aud="aud-123",
+            cloudflare_access_jwks_url="https://team.example.cloudflareaccess.com/cdn-cgi/access/certs",
+            cloudflare_access_allow_public_token_fallback=True,
+        )
+        server, thread, base = self._start_server(config=config)
+        try:
+            req = urllib.request.Request(
+                f"{base}/health",
+                headers={"Host": "mcp.example.test"},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(req, timeout=5)
+
+            self.assertEqual(401, raised.exception.code)
+            self.assertIn("Bearer", raised.exception.headers["WWW-Authenticate"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_public_mcp_get_allows_bearer_when_access_fallback_is_enabled(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            cloudflare_access_enabled=True,
+            cloudflare_access_team_domain="team.example.cloudflareaccess.com",
+            cloudflare_access_aud="aud-123",
+            cloudflare_access_jwks_url="https://team.example.cloudflareaccess.com/cdn-cgi/access/certs",
+            cloudflare_access_allow_public_token_fallback=True,
+        )
+        server, thread, base = self._start_server(config=config)
+        try:
+            req = urllib.request.Request(
+                f"{base}/mcp",
+                headers={
+                    "Authorization": "Bearer secret-token",
+                    "Host": "mcp.example.test",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(200, response.status)
+            self.assertEqual(server_http.SERVER_INFO, payload["server"])
+            self.assertEqual(server_http.PROTOCOL_VERSION, payload["protocolVersion"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_package_webhook_can_require_shared_secret(self):
         config = HandcraftServerConfig(
             mcp_api_token="secret-token",

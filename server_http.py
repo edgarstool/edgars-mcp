@@ -2494,11 +2494,15 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 claims = self._authenticate_public_request_via_cloudflare_access()
                 if claims is False:
                     return
+                if claims is None and not self._authenticate_bearer_request():
+                    return
             self._handle_health()
         elif path == "/mcp":
             if self._requires_cloudflare_access_for_request(path):
                 claims = self._authenticate_public_request_via_cloudflare_access()
                 if claims is False:
+                    return
+                if claims is None and not self._authenticate_bearer_request():
                     return
             body = json.dumps({
                 "server": SERVER_INFO,
@@ -2798,23 +2802,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 return
 
         # ── Bearer token 驗證（localhost / migration fallback）─────────────────
-        auth = self.headers.get("Authorization", "")
-        api_token = self.server.config.mcp_api_token
-        if access_claims is None and api_token:
-            if not auth:
-                log("401 Unauthorized: missing token")
-                self._send_mcp_unauthorized(
-                    error="invalid_token",
-                    description="Missing bearer token. Authorize this MCP app to continue.",
-                )
-                return
-            token = auth.removeprefix("Bearer ").strip()
-            if not bearer_token_is_authorized(token, api_token):
-                log("401 Unauthorized: invalid token")
-                self._send_mcp_unauthorized(
-                    error="invalid_token",
-                    description="Bearer token is invalid or expired. Re-authorize this MCP app.",
-                )
+        if access_claims is None:
+            if not self._authenticate_bearer_request():
                 return
         elif isinstance(access_claims, dict):
             access_identity = access_claims.get("email") or access_claims.get("sub") or "cloudflare-access-user"
@@ -2973,8 +2962,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return False
 
     def _request_hostname(self) -> str:
-        forwarded_host = self.headers.get("X-Forwarded-Host", "").split(",")[0].strip()
-        host = forwarded_host or self.headers.get("Host", "")
+        host = self.headers.get("Host", "").split(",")[0].strip()
         return host.split(":")[0].strip().lower()
 
     def _request_targets_base_hostname(self) -> bool:
@@ -3028,6 +3016,28 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         except CloudflareAccessAuthError as exc:
             self._send_cloudflare_access_unauthorized(str(exc))
             return False
+
+    def _authenticate_bearer_request(self) -> bool:
+        api_token = self.server.config.mcp_api_token
+        if not api_token:
+            return True
+        auth = self.headers.get("Authorization", "")
+        if not auth:
+            log("401 Unauthorized: missing token")
+            self._send_mcp_unauthorized(
+                error="invalid_token",
+                description="Missing bearer token. Authorize this MCP app to continue.",
+            )
+            return False
+        token = auth.removeprefix("Bearer ").strip()
+        if not bearer_token_is_authorized(token, api_token):
+            log("401 Unauthorized: invalid token")
+            self._send_mcp_unauthorized(
+                error="invalid_token",
+                description="Bearer token is invalid or expired. Re-authorize this MCP app.",
+            )
+            return False
+        return True
 
     def _webhook_token_from_request(self) -> str:
         auth = self.headers.get("Authorization", "").strip()

@@ -72,6 +72,27 @@ class StdioProxyPreflightTests(unittest.TestCase):
         self.assertEqual("client-id.access", captured["client_id"])
         self.assertEqual("client-secret", captured["client_secret"])
 
+    def test_service_token_401_mentions_cloudflare_access_instead_of_bearer(self):
+        error = urllib.error.HTTPError(
+            stdio_proxy.MCP_URL,
+            401,
+            "Unauthorized",
+            hdrs={},
+            fp=BytesIO(b"access denied"),
+        )
+
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "MCP_CF_ACCESS_CLIENT_ID": "client-id.access",
+                "MCP_CF_ACCESS_CLIENT_SECRET": "client-secret",
+            },
+            clear=True,
+        ):
+            with mock.patch("stdio_proxy.urllib.request.urlopen", side_effect=error):
+                with self.assertRaisesRegex(stdio_proxy.PreflightError, "Cloudflare Access service token was rejected"):
+                    stdio_proxy.run_preflight()
+
 
 if __name__ == "__main__":
     unittest.main()

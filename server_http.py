@@ -281,6 +281,11 @@ OAUTH_STATIC_CLIENT_SECRET = (
     os.getenv("MCP_OAUTH_CLIENT_SECRET", "handcraft-mcp-client-secret").strip()
     or "handcraft-mcp-client-secret"
 )
+# MCP OAuth: URL-based client_id metadata documents (ChatGPT, OpenAI Chat connectors).
+OAUTH_KNOWN_PUBLIC_CLOUD_CLIENT_IDS = frozenset({
+    "https://chatgpt.com",
+    "https://chat.openai.com",
+})
 CLOUDFLARE_ACCESS_JWKS_LOCK = threading.Lock()
 CLOUDFLARE_ACCESS_JWKS_CLIENTS: dict[str, object] = {}
 TOOLS = [
@@ -1559,6 +1564,15 @@ def get_oauth_client(client_id: str) -> dict | None:
             "redirect_uris": [],
             "allow_dynamic_redirect": True,
             "token_endpoint_auth_method": "client_secret_post",
+        }
+    if client_id in OAUTH_KNOWN_PUBLIC_CLOUD_CLIENT_IDS:
+        return {
+            "client_id": client_id,
+            "client_name": "ChatGPT" if "chatgpt.com" in client_id else "OpenAI Chat",
+            "client_secret": "",
+            "redirect_uris": [],
+            "allow_dynamic_redirect": True,
+            "token_endpoint_auth_method": "none",
         }
     return None
 

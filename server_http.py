@@ -3561,7 +3561,6 @@ def main() -> None:
     log(f"Endpoint : POST http://localhost:{PORT}{MCP_PATH}")
     log(f"Webhook : POST http://localhost:{PORT}{PACKAGE_WEBHOOK_PATH}")
     log(f"Webhook : POST http://localhost:{PORT}{LINEAR_WEBHOOK_PATH}")
-<<<<<<< HEAD
     log(
         "Auth mode: "
         + (
@@ -3570,10 +3569,8 @@ def main() -> None:
             else "Built-in bearer/OAuth"
         )
     )
-=======
     log(f"Linear OAuth authorize: GET http://localhost:{PORT}{LINEAR_OAUTH_AUTHORIZE_PATH}")
     log(f"Linear OAuth callback: GET http://localhost:{PORT}{LINEAR_OAUTH_CALLBACK_PATH}")
->>>>>>> origin/master
     log(f"Allowed origins: {ALLOWED_HOSTNAMES}")
     try:
         server.serve_forever()

@@ -184,11 +184,13 @@ main {
 }
 
 .hero-logo-frame {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
+  width: fit-content;
+  max-width: min(560px, 92vw);
   margin: 0 auto 1.5rem;
-  padding: 1rem 1.15rem;
+  padding: 1.25rem 1.5rem;
   border-radius: var(--radius-lg);
   background: rgba(64, 196, 255, 0.06);
   border: 1px solid var(--border);
@@ -197,11 +199,13 @@ main {
 
 .hero-logo {
   display: block;
-  width: min(176px, 46vw);
+  width: min(520px, 86vw);
+  max-width: 100%;
   height: auto;
   aspect-ratio: 1;
   object-fit: contain;
   object-position: center center;
+  border-radius: 0;
   filter: drop-shadow(0 0 28px var(--accent-glow));
 }
 
@@ -738,11 +742,12 @@ a.btn {
   }
 
   .hero-logo-frame {
-    padding: 0.85rem 1rem;
+    padding: 1rem 1.1rem;
+    max-width: min(480px, 94vw);
   }
 
   .hero-logo {
-    width: min(152px, 52vw);
+    width: min(420px, 88vw);
   }
 
   .hero-actions {

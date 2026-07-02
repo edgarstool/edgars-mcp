@@ -297,7 +297,7 @@ class OAuthFlowTests(unittest.TestCase):
             with urllib.request.urlopen(f"{base}/.well-known/oauth-protected-resource", timeout=5) as response:
                 metadata = json.loads(response.read().decode("utf-8"))
 
-            self.assertEqual("https://mcp.example.test", metadata["resource"])
+            self.assertEqual("https://mcp.example.test/mcp", metadata["resource"])
             self.assertEqual(["https://mcp.example.test"], metadata["authorization_servers"])
             self.assertEqual(["mcp"], metadata["scopes_supported"])
             self.assertIn("client_secret_post", metadata["token_endpoint_auth_methods_supported"])
@@ -316,6 +316,42 @@ class OAuthFlowTests(unittest.TestCase):
             self.assertEqual(["https://mcp.example.test"], metadata["authorization_servers"])
             self.assertEqual(["mcp"], metadata["scopes_supported"])
             self.assertEqual("https://mcp.example.test/mcp", metadata["resource_documentation"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_get_mcp_unauthorized_advertises_resource_metadata(self):
+        server, thread, base = self._start_server()
+        try:
+            req = urllib.request.Request(f"{base}/mcp", method="GET")
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(req, timeout=5)
+
+            self.assertEqual(401, raised.exception.code)
+            authenticate = raised.exception.headers["WWW-Authenticate"]
+            self.assertIn("Bearer", authenticate)
+            self.assertIn('resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/mcp"', authenticate)
+            self.assertIn('scope="mcp"', authenticate)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_get_mcp_with_bearer_token_returns_server_info(self):
+        server, thread, base = self._start_server()
+        try:
+            req = urllib.request.Request(
+                f"{base}/mcp",
+                headers={"Authorization": "Bearer secret-token"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(200, response.status)
+            self.assertEqual(server_http.SERVER_INFO, payload["server"])
+            self.assertEqual(server_http.PROTOCOL_VERSION, payload["protocolVersion"])
         finally:
             server.shutdown()
             server.server_close()
@@ -342,7 +378,7 @@ class OAuthFlowTests(unittest.TestCase):
             self.assertEqual(401, raised.exception.code)
             authenticate = raised.exception.headers["WWW-Authenticate"]
             self.assertIn("Bearer", authenticate)
-            self.assertIn('resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource"', authenticate)
+            self.assertIn('resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/mcp"', authenticate)
             self.assertIn('scope="mcp"', authenticate)
         finally:
             server.shutdown()
@@ -970,6 +1006,25 @@ class CloudflareAccessModeTests(unittest.TestCase):
 
             self.assertEqual(401, raised.exception.code)
             self.assertIn("Bearer", raised.exception.headers["WWW-Authenticate"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_public_mcp_get_requires_auth_when_access_mode_enabled(self):
+        server, thread, base = self._start_server()
+        try:
+            req = urllib.request.Request(
+                f"{base}/mcp",
+                headers={"Host": "mcp.example.test"},
+                method="GET",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(req, timeout=5)
+
+            self.assertEqual(401, raised.exception.code)
+            payload = json.loads(raised.exception.read().decode("utf-8"))
+            self.assertEqual("cloudflare_access_required", payload["error"])
         finally:
             server.shutdown()
             server.server_close()

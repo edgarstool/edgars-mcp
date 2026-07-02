@@ -18,8 +18,8 @@
 
 | 端點 | 用途 |
 |------|------|
-| `/.well-known/oauth-protected-resource` | RFC 9728 Protected Resource Metadata |
-| `/.well-known/oauth-protected-resource/mcp` | 同上，`resource` 指向 `/mcp` |
+| `/.well-known/oauth-protected-resource` | RFC 9728 Protected Resource Metadata（`resource` = `/mcp` canonical URI） |
+| `/.well-known/oauth-protected-resource/mcp` | 同上（path suffix alias，ChatGPT / RFC 9728 建議） |
 | `/.well-known/oauth-authorization-server` | OAuth AS metadata（含 DCR、CIMD、PKCE） |
 | `/.well-known/openid-configuration` | OIDC discovery（issuer、authorize、token、scopes） |
 | `/authorize` | Authorization Code + PKCE |

@@ -1505,9 +1505,17 @@ def format_safe_mcp_failure(action: str, target: str, reason: str) -> str:
     return f"[BLOCKED] {action} failed\nTarget: {target}\nReason: {reason}"
 
 
+def build_mcp_resource_url(base_url: str) -> str:
+    return f"{base_url.rstrip('/')}{MCP_PATH}"
+
+
+def build_oauth_protected_resource_metadata_url(base_url: str) -> str:
+    return f"{base_url.rstrip('/')}/.well-known/oauth-protected-resource{MCP_PATH}"
+
+
 def make_www_authenticate_header(base_url: str, *, error: str | None = None, description: str | None = None) -> str:
     parts = [
-        f'resource_metadata="{base_url.rstrip("/")}/.well-known/oauth-protected-resource"',
+        f'resource_metadata="{build_oauth_protected_resource_metadata_url(base_url)}"',
         f'scope="{OAUTH_SCOPE}"',
     ]
     if error:
@@ -2990,12 +2998,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         elif path == LINEAR_OAUTH_BOOTSTRAP_PATH:
             self._handle_linear_oauth_bootstrap()
         elif path == "/mcp":
-            if self._requires_cloudflare_access_for_request(path):
-                claims = self._authenticate_public_request_via_cloudflare_access()
-                if claims is False:
-                    return
-                if claims is None and not self._authenticate_bearer_request():
-                    return
+            if not self._ensure_mcp_request_authorized():
+                return
             body = json.dumps({
                 "server": SERVER_INFO,
                 "protocolVersion": PROTOCOL_VERSION,
@@ -3045,15 +3049,15 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
     def _handle_openid_configuration(self) -> None:
         self._send_oauth_json(build_openid_configuration_metadata(self.server.config.base_url))
 
-    def _handle_resource_metadata(self, resource_path: str = "") -> None:
+    def _handle_resource_metadata(self, resource_path: str = MCP_PATH) -> None:
         base_url = self.server.config.base_url.rstrip("/")
-        resource = f"{base_url}{resource_path}" if resource_path else base_url
+        resource = build_mcp_resource_url(base_url) if resource_path == MCP_PATH else f"{base_url}{resource_path}"
         self._send_oauth_json({
             "resource": resource,
             "authorization_servers": [base_url],
             "scopes_supported": [OAUTH_SCOPE],
             "bearer_methods_supported": ["header"],
-            "resource_documentation": f"{base_url}/mcp",
+            "resource_documentation": build_mcp_resource_url(base_url),
             "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
         })
 
@@ -3350,19 +3354,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        access_claims = None
-        if self._requires_cloudflare_access_for_request(parsed_path):
-            access_claims = self._authenticate_public_request_via_cloudflare_access()
-            if access_claims is False:
-                return
-
-        # ── Bearer token 驗證（localhost / migration fallback）─────────────────
-        if access_claims is None:
-            if not self._authenticate_bearer_request():
-                return
-        elif isinstance(access_claims, dict):
-            access_identity = access_claims.get("email") or access_claims.get("sub") or "cloudflare-access-user"
-            log(f"Cloudflare Access authenticated request: {access_identity}")
+        if not self._ensure_mcp_request_authorized():
+            return
 
         # ── Origin 驗證（spec 強制，防 DNS rebinding）─────────────────────────
         origin = self.headers.get("Origin", "")
@@ -3542,6 +3535,29 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return True
         return not self._request_targets_base_hostname()
 
+    def _mcp_auth_required(self) -> bool:
+        config = self.server.config
+        if self._requires_cloudflare_access_for_request(MCP_PATH):
+            return True
+        if self._builtin_oauth_enabled_for_request():
+            return True
+        return bool(config.mcp_api_token)
+
+    def _ensure_mcp_request_authorized(self) -> bool:
+        access_claims = None
+        if self._requires_cloudflare_access_for_request(MCP_PATH):
+            access_claims = self._authenticate_public_request_via_cloudflare_access()
+            if access_claims is False:
+                return False
+
+        if access_claims is None:
+            if not self._authenticate_bearer_request():
+                return False
+        elif isinstance(access_claims, dict):
+            access_identity = access_claims.get("email") or access_claims.get("sub") or "cloudflare-access-user"
+            log(f"Cloudflare Access authenticated request: {access_identity}")
+        return True
+
     def _requires_cloudflare_access_for_request(self, path: str) -> bool:
         config = self.server.config
         if not config.cloudflare_access_enabled:
@@ -3585,9 +3601,10 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return False
 
     def _authenticate_bearer_request(self) -> bool:
-        api_token = self.server.config.mcp_api_token
-        if not api_token:
+        if not self._mcp_auth_required():
             return True
+
+        api_token = self.server.config.mcp_api_token
         auth = self.headers.get("Authorization", "")
         if not auth:
             log("401 Unauthorized: missing token")

@@ -228,6 +228,17 @@ main {
   color: var(--text-muted);
 }
 
+.auth-banner {
+  display: block;
+  width: 100%;
+  max-width: 720px;
+  height: auto;
+  margin: 0 auto 1.5rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.22);
+}
+
 /* ── Hero CTAs ── */
 .hero-actions {
   display: flex;

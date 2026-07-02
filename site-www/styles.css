@@ -111,10 +111,10 @@ img {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 148px;
+  width: 44px;
   height: 44px;
-  padding: 0.2rem 0.45rem;
-  border-radius: 999px;
+  padding: 0.2rem;
+  border-radius: 10px;
   background: rgba(64, 196, 255, 0.06);
   border: 1px solid var(--border);
   overflow: hidden;
@@ -188,8 +188,8 @@ main {
   align-items: center;
   justify-content: center;
   margin: 0 auto 1.5rem;
-  padding: 0.85rem 1.75rem;
-  border-radius: 999px;
+  padding: 1rem 1.15rem;
+  border-radius: var(--radius-lg);
   background: rgba(64, 196, 255, 0.06);
   border: 1px solid var(--border);
   box-shadow: 0 0 32px rgba(64, 196, 255, 0.08);
@@ -197,9 +197,9 @@ main {
 
 .hero-logo {
   display: block;
-  width: auto;
-  max-width: min(320px, 78vw);
-  height: clamp(48px, 10vw, 72px);
+  width: min(176px, 46vw);
+  height: auto;
+  aspect-ratio: 1;
   object-fit: contain;
   object-position: center center;
   filter: drop-shadow(0 0 28px var(--accent-glow));
@@ -733,12 +733,16 @@ a.btn {
   }
 
   .brand-mark-wrap {
-    width: 132px;
+    width: 40px;
     height: 40px;
   }
 
   .hero-logo-frame {
-    padding: 0.7rem 1.25rem;
+    padding: 0.85rem 1rem;
+  }
+
+  .hero-logo {
+    width: min(152px, 52vw);
   }
 
   .hero-actions {

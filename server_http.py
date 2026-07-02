@@ -281,11 +281,13 @@ OAUTH_STATIC_CLIENT_SECRET = (
     os.getenv("MCP_OAUTH_CLIENT_SECRET", "handcraft-mcp-client-secret").strip()
     or "handcraft-mcp-client-secret"
 )
-# MCP OAuth: URL-based client_id metadata documents (ChatGPT, OpenAI Chat connectors).
-OAUTH_KNOWN_PUBLIC_CLOUD_CLIENT_IDS = frozenset({
-    "https://chatgpt.com",
-    "https://chat.openai.com",
-})
+# CIMD (Client ID Metadata Document) cache — RFC draft + MCP 2025-11-25.
+OAUTH_CIMD_CACHE_LOCK = threading.Lock()
+OAUTH_CIMD_CACHE: dict[str, dict] = {}
+OAUTH_CIMD_CACHE_TTL_SECONDS = int(os.getenv("MCP_OAUTH_CIMD_CACHE_TTL_SECONDS", "86400"))
+OAUTH_CIMD_FETCH_TIMEOUT_SECONDS = float(os.getenv("MCP_OAUTH_CIMD_FETCH_TIMEOUT_SECONDS", "10"))
+OAUTH_CIMD_MAX_BYTES = int(os.getenv("MCP_OAUTH_CIMD_MAX_BYTES", str(64 * 1024)))
+OAUTH_OIDC_SCOPES = ["openid", "profile", "email", OAUTH_SCOPE]
 CLOUDFLARE_ACCESS_JWKS_LOCK = threading.Lock()
 CLOUDFLARE_ACCESS_JWKS_CLIENTS: dict[str, object] = {}
 TOOLS = [
@@ -1549,6 +1551,173 @@ def is_safe_oauth_redirect_uri(redirect_uri: str) -> bool:
     return False
 
 
+def is_https_url_client_id(client_id: str) -> bool:
+    parsed = urllib.parse.urlparse(client_id)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return False
+    if parsed.query or parsed.fragment:
+        return False
+    return True
+
+
+def is_safe_cimd_fetch_target(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return False
+    if host.endswith(".local") or host.endswith(".internal"):
+        return False
+    if re.match(r"^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.)", host):
+        return False
+    return True
+
+
+def _cimd_cache_get(client_id_url: str) -> dict | None:
+    now = time.time()
+    with OAUTH_CIMD_CACHE_LOCK:
+        entry = OAUTH_CIMD_CACHE.get(client_id_url)
+        if not entry:
+            return None
+        if entry.get("expires_at", 0) < now:
+            OAUTH_CIMD_CACHE.pop(client_id_url, None)
+            return None
+        client = entry.get("client")
+        return dict(client) if isinstance(client, dict) else None
+
+
+def _cimd_cache_put(client_id_url: str, client: dict, *, max_age_seconds: int | None = None) -> None:
+    ttl = max_age_seconds if max_age_seconds is not None else OAUTH_CIMD_CACHE_TTL_SECONDS
+    ttl = max(60, min(int(ttl), OAUTH_CIMD_CACHE_TTL_SECONDS))
+    with OAUTH_CIMD_CACHE_LOCK:
+        OAUTH_CIMD_CACHE[client_id_url] = {
+            "client": dict(client),
+            "expires_at": time.time() + ttl,
+        }
+
+
+def _parse_cimd_http_cache_control(cache_control: str) -> int | None:
+    for part in cache_control.split(","):
+        piece = part.strip().lower()
+        if piece.startswith("max-age="):
+            try:
+                return int(piece.split("=", 1)[1].strip())
+            except ValueError:
+                return None
+    return None
+
+
+def validate_cimd_metadata_document(client_id_url: str, metadata: dict) -> tuple[dict | None, str]:
+    if not isinstance(metadata, dict):
+        return None, "metadata document must be a JSON object"
+    doc_client_id = str(metadata.get("client_id") or "").strip()
+    if doc_client_id != client_id_url:
+        return None, "client_id in metadata must exactly match the metadata URL"
+    client_name = metadata.get("client_name")
+    if not isinstance(client_name, str) or not client_name.strip():
+        return None, "client_name is required in metadata document"
+    redirect_uris = metadata.get("redirect_uris")
+    if not isinstance(redirect_uris, list) or not redirect_uris:
+        return None, "redirect_uris must be a non-empty array in metadata document"
+    if not all(isinstance(uri, str) and is_safe_oauth_redirect_uri(uri) for uri in redirect_uris):
+        return None, "redirect_uris must contain safe HTTPS or localhost HTTP URIs"
+    auth_method = str(metadata.get("token_endpoint_auth_method") or "none").strip() or "none"
+    if auth_method not in {"none", "client_secret_post", "client_secret_basic"}:
+        return None, "unsupported token_endpoint_auth_method in metadata document"
+    return {
+        "client_id": client_id_url,
+        "client_name": client_name.strip(),
+        "client_secret": "",
+        "redirect_uris": redirect_uris,
+        "token_endpoint_auth_method": auth_method,
+        "source": "cimd",
+    }, ""
+
+
+def fetch_cimd_document(client_id_url: str) -> tuple[dict | None, dict[str, str], str]:
+    """Fetch and validate a Client ID Metadata Document. Returns (metadata, response_headers, error)."""
+    if not is_https_url_client_id(client_id_url):
+        return None, {}, "client_id must be an HTTPS URL without query or fragment"
+    if not is_safe_cimd_fetch_target(client_id_url):
+        return None, {}, "metadata URL is not allowed"
+
+    req = urllib.request.Request(
+        client_id_url,
+        headers={"Accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=OAUTH_CIMD_FETCH_TIMEOUT_SECONDS) as response:
+            headers = {k.lower(): v for k, v in response.headers.items()}
+            raw = response.read(OAUTH_CIMD_MAX_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        return None, {}, f"failed to fetch metadata document: HTTP {exc.code}"
+    except urllib.error.URLError as exc:
+        return None, {}, f"failed to fetch metadata document: {exc.reason}"
+    except Exception as exc:
+        return None, {}, f"failed to fetch metadata document: {exc}"
+
+    if len(raw) > OAUTH_CIMD_MAX_BYTES:
+        return None, headers, "metadata document exceeds size limit"
+    try:
+        metadata = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, headers, "metadata document is not valid JSON"
+    return metadata, headers, ""
+
+
+def resolve_cimd_oauth_client(client_id_url: str) -> dict | None:
+    cached = _cimd_cache_get(client_id_url)
+    if cached:
+        return cached
+
+    metadata, response_headers, fetch_error = fetch_cimd_document(client_id_url)
+    if fetch_error or not isinstance(metadata, dict):
+        return None
+    client, validation_error = validate_cimd_metadata_document(client_id_url, metadata)
+    if validation_error or not client:
+        return None
+
+    max_age = _parse_cimd_http_cache_control(response_headers.get("cache-control", ""))
+    if max_age is None:
+        max_age = OAUTH_CIMD_CACHE_TTL_SECONDS
+    _cimd_cache_put(client_id_url, client, max_age_seconds=max_age)
+    return dict(client)
+
+
+def build_oauth_authorization_server_metadata(base_url: str) -> dict:
+    base_url = base_url.rstrip("/")
+    return {
+        "issuer": base_url,
+        "authorization_endpoint": f"{base_url}/authorize",
+        "token_endpoint": f"{base_url}/token",
+        "registration_endpoint": f"{base_url}/register",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "code_challenge_methods_supported": ["S256"],
+        "client_id_metadata_document_supported": True,
+        "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
+        "token_endpoint_auth_signing_alg_values_supported": [],
+        "revocation_endpoint_auth_methods_supported": ["none"],
+        "scopes_supported": OAUTH_OIDC_SCOPES,
+        "subject_types_supported": ["public"],
+    }
+
+
+def build_openid_configuration_metadata(base_url: str) -> dict:
+    metadata = build_oauth_authorization_server_metadata(base_url)
+    metadata.update({
+        "userinfo_endpoint": f"{base_url.rstrip('/')}/userinfo",
+        "id_token_signing_alg_values_supported": [],
+        "response_modes_supported": ["query"],
+        "claims_supported": ["sub", "name", "email"],
+    })
+    return metadata
+
+
 def get_oauth_client(client_id: str) -> dict | None:
     if not client_id:
         return None
@@ -1564,16 +1733,10 @@ def get_oauth_client(client_id: str) -> dict | None:
             "redirect_uris": [],
             "allow_dynamic_redirect": True,
             "token_endpoint_auth_method": "client_secret_post",
+            "source": "pre_registered",
         }
-    if client_id in OAUTH_KNOWN_PUBLIC_CLOUD_CLIENT_IDS:
-        return {
-            "client_id": client_id,
-            "client_name": "ChatGPT" if "chatgpt.com" in client_id else "OpenAI Chat",
-            "client_secret": "",
-            "redirect_uris": [],
-            "allow_dynamic_redirect": True,
-            "token_endpoint_auth_method": "none",
-        }
+    if is_https_url_client_id(client_id):
+        return resolve_cimd_oauth_client(client_id)
     return None
 
 
@@ -2800,6 +2963,11 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 self._send_builtin_oauth_disabled()
                 return
             self._handle_resource_metadata(resource_path=MCP_PATH)
+        elif path == "/.well-known/openid-configuration":
+            if not self._builtin_oauth_enabled_for_request():
+                self._send_builtin_oauth_disabled()
+                return
+            self._handle_openid_configuration()
         elif path == "/authorize":
             if not self._builtin_oauth_enabled_for_request():
                 self._send_builtin_oauth_disabled()
@@ -2872,22 +3040,10 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _handle_oauth_metadata(self) -> None:
-        base_url = self.server.config.base_url
-        self._send_oauth_json({
-            "issuer": base_url,
-            "authorization_endpoint": f"{base_url}/authorize",
-            "token_endpoint": f"{base_url}/token",
-            "registration_endpoint": f"{base_url}/register",
-            "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code"],
-            "code_challenge_methods_supported": ["S256"],
-            "client_id_metadata_document_supported": True,
-            "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
-            "token_endpoint_auth_signing_alg_values_supported": [],
-            "revocation_endpoint_auth_methods_supported": ["none"],
-            "scopes_supported": [OAUTH_SCOPE],
-            "subject_types_supported": ["public"],
-        })
+        self._send_oauth_json(build_oauth_authorization_server_metadata(self.server.config.base_url))
+
+    def _handle_openid_configuration(self) -> None:
+        self._send_oauth_json(build_openid_configuration_metadata(self.server.config.base_url))
 
     def _handle_resource_metadata(self, resource_path: str = "") -> None:
         base_url = self.server.config.base_url.rstrip("/")
@@ -3129,30 +3285,41 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self._send_oauth_json(oauth_error("invalid_client_metadata", "redirect_uris must be HTTPS or localhost HTTP"), 400)
             return
 
+        token_endpoint_auth_method = str(meta.get("token_endpoint_auth_method") or "client_secret_post").strip()
+        if token_endpoint_auth_method not in {"client_secret_post", "client_secret_basic", "none"}:
+            self._send_oauth_json(
+                oauth_error("invalid_client_metadata", "token_endpoint_auth_method must be none, client_secret_post, or client_secret_basic"),
+                400,
+            )
+            return
+
         client_id = secrets.token_urlsafe(24)
-        client_secret = secrets.token_urlsafe(32)
+        client_secret = "" if token_endpoint_auth_method == "none" else secrets.token_urlsafe(32)
         client = {
             "client_id": client_id,
             "client_secret": client_secret,
             "client_name": str(meta.get("client_name") or "handcraft OAuth client"),
             "redirect_uris": redirect_uris,
-            "token_endpoint_auth_method": "client_secret_post",
+            "token_endpoint_auth_method": token_endpoint_auth_method,
             "created_at": time.time(),
+            "source": "dcr",
         }
         with OAUTH_CLIENTS_LOCK:
             OAUTH_CLIENTS[client_id] = client
 
-        self._send_oauth_json({
+        response = {
             "client_id": client_id,
-            "client_secret": client_secret,
             "client_id_issued_at": int(client["created_at"]),
-            "client_secret_expires_at": 0,
             "redirect_uris": redirect_uris,
-            "grant_types": ["authorization_code"],
-            "response_types": ["code"],
-            "token_endpoint_auth_method": "client_secret_post",
-            "scope": "mcp",
-        }, 201)
+            "grant_types": meta.get("grant_types") or ["authorization_code"],
+            "response_types": meta.get("response_types") or ["code"],
+            "token_endpoint_auth_method": token_endpoint_auth_method,
+            "scope": str(meta.get("scope") or OAUTH_SCOPE),
+        }
+        if client_secret:
+            response["client_secret"] = client_secret
+            response["client_secret_expires_at"] = 0
+        self._send_oauth_json(response, 201)
 
     # ── 主要端點 ──────────────────────────────────────────────────────────────
     def do_POST(self):

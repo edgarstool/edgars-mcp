@@ -240,6 +240,8 @@ class OAuthFlowTests(unittest.TestCase):
             server_http.OAUTH_CLIENTS.clear()
         with server_http.OAUTH_TOKENS_LOCK:
             server_http.OAUTH_ACCESS_TOKENS.clear()
+        with server_http.OAUTH_CIMD_CACHE_LOCK:
+            server_http.OAUTH_CIMD_CACHE.clear()
 
     def _start_server(self, config=None):
         config = config or HandcraftServerConfig(
@@ -264,6 +266,26 @@ class OAuthFlowTests(unittest.TestCase):
             self.assertIn("client_secret_basic", metadata["token_endpoint_auth_methods_supported"])
             self.assertIn("none", metadata["token_endpoint_auth_methods_supported"])
             self.assertEqual(f"https://mcp.example.test/authorize", metadata["authorization_endpoint"])
+            self.assertIn("openid", metadata["scopes_supported"])
+            self.assertIn("mcp", metadata["scopes_supported"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_openid_configuration_advertises_oidc_endpoints(self):
+        server, thread, base = self._start_server()
+        try:
+            with urllib.request.urlopen(f"{base}/.well-known/openid-configuration", timeout=5) as response:
+                metadata = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual("https://mcp.example.test", metadata["issuer"])
+            self.assertEqual(f"https://mcp.example.test/authorize", metadata["authorization_endpoint"])
+            self.assertEqual(f"https://mcp.example.test/token", metadata["token_endpoint"])
+            self.assertEqual(f"https://mcp.example.test/register", metadata["registration_endpoint"])
+            self.assertIn("openid", metadata["scopes_supported"])
+            self.assertIn("profile", metadata["scopes_supported"])
+            self.assertIn("email", metadata["scopes_supported"])
         finally:
             server.shutdown()
             server.server_close()
@@ -498,11 +520,28 @@ class OAuthFlowTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-    def test_chatgpt_url_client_id_pkce_flow_without_client_secret(self):
+    def test_dcr_public_client_registers_without_secret(self):
         server, thread, base = self._start_server()
         try:
-            redirect_uri = "https://chatgpt.com/connector/oauth/callback"
-            client_id = "https://chatgpt.com"
+            redirect_uri = "https://agent.example.test/oauth/callback"
+            register_body = json.dumps({
+                "client_name": "Public Agent",
+                "redirect_uris": [redirect_uri],
+                "token_endpoint_auth_method": "none",
+            }).encode("utf-8")
+            register_req = urllib.request.Request(
+                f"{base}/register",
+                data=register_body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(register_req, timeout=5) as response:
+                registered = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual("none", registered["token_endpoint_auth_method"])
+            self.assertNotIn("client_secret", registered)
+            client_id = registered["client_id"]
+
             verifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"
             challenge = server_http.pkce_s256_challenge(verifier)
             authorize_query = urllib.parse.urlencode({
@@ -511,19 +550,15 @@ class OAuthFlowTests(unittest.TestCase):
                 "redirect_uri": redirect_uri,
                 "scope": "mcp",
                 "resource": "https://mcp.example.test",
-                "state": "chatgpt-url-state",
                 "code_challenge": challenge,
                 "code_challenge_method": "S256",
             })
             opener = urllib.request.build_opener(NoRedirectHandler)
             with self.assertRaises(urllib.error.HTTPError) as raised:
                 opener.open(f"{base}/authorize?{authorize_query}", timeout=5)
-            self.assertEqual(302, raised.exception.code)
-            redirected_query = urllib.parse.parse_qs(
+            code = urllib.parse.parse_qs(
                 urllib.parse.urlparse(raised.exception.headers["Location"]).query
-            )
-            self.assertEqual(["chatgpt-url-state"], redirected_query["state"])
-            code = redirected_query["code"][0]
+            )["code"][0]
 
             token_body = urllib.parse.urlencode({
                 "grant_type": "authorization_code",
@@ -543,6 +578,69 @@ class OAuthFlowTests(unittest.TestCase):
                 token_payload = json.loads(response.read().decode("utf-8"))
 
             self.assertEqual("Bearer", token_payload["token_type"])
+            self.assertTrue(token_payload["access_token"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_cimd_url_client_id_pkce_flow_without_client_secret(self):
+        server, thread, base = self._start_server()
+        try:
+            redirect_uri = "https://chatgpt.com/connector/oauth/callback"
+            client_id = "https://chatgpt.com"
+            metadata = {
+                "client_id": client_id,
+                "client_name": "ChatGPT",
+                "redirect_uris": [redirect_uri],
+                "token_endpoint_auth_method": "none",
+            }
+
+            def fake_fetch(url):
+                self.assertEqual(client_id, url)
+                return metadata, {"cache-control": "max-age=300"}, ""
+
+            with patch.object(server_http, "fetch_cimd_document", side_effect=fake_fetch):
+                verifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"
+                challenge = server_http.pkce_s256_challenge(verifier)
+                authorize_query = urllib.parse.urlencode({
+                    "response_type": "code",
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "scope": "mcp",
+                    "resource": "https://mcp.example.test",
+                    "state": "chatgpt-url-state",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                })
+                opener = urllib.request.build_opener(NoRedirectHandler)
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    opener.open(f"{base}/authorize?{authorize_query}", timeout=5)
+                self.assertEqual(302, raised.exception.code)
+                redirected_query = urllib.parse.parse_qs(
+                    urllib.parse.urlparse(raised.exception.headers["Location"]).query
+                )
+                self.assertEqual(["chatgpt-url-state"], redirected_query["state"])
+                code = redirected_query["code"][0]
+
+                token_body = urllib.parse.urlencode({
+                    "grant_type": "authorization_code",
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "code": code,
+                    "code_verifier": verifier,
+                    "resource": "https://mcp.example.test",
+                }).encode("utf-8")
+                token_req = urllib.request.Request(
+                    f"{base}/token",
+                    data=token_body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(token_req, timeout=5) as response:
+                    token_payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual("Bearer", token_payload["token_type"])
             self.assertEqual("mcp", token_payload["scope"])
             self.assertTrue(token_payload["access_token"])
         finally:
@@ -550,26 +648,78 @@ class OAuthFlowTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-    def test_chatgpt_url_client_id_rejects_unknown_client(self):
+    def test_cimd_rejects_redirect_uri_not_in_metadata(self):
+        server, thread, base = self._start_server()
+        try:
+            client_id = "https://chatgpt.com"
+            metadata = {
+                "client_id": client_id,
+                "client_name": "ChatGPT",
+                "redirect_uris": ["https://chatgpt.com/connector/oauth/callback"],
+                "token_endpoint_auth_method": "none",
+            }
+
+            with patch.object(
+                server_http,
+                "fetch_cimd_document",
+                return_value=(metadata, {}, ""),
+            ):
+                authorize_query = urllib.parse.urlencode({
+                    "response_type": "code",
+                    "client_id": client_id,
+                    "redirect_uri": "https://evil.example/callback",
+                    "scope": "mcp",
+                    "resource": "https://mcp.example.test",
+                    "code_challenge": server_http.pkce_s256_challenge("verifier"),
+                    "code_challenge_method": "S256",
+                })
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    urllib.request.urlopen(f"{base}/authorize?{authorize_query}", timeout=5)
+                self.assertEqual(400, raised.exception.code)
+                payload = json.loads(raised.exception.read().decode("utf-8"))
+                self.assertEqual("invalid_request", payload["error"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_cimd_rejects_client_id_mismatch_in_metadata(self):
+        metadata, error = server_http.validate_cimd_metadata_document(
+            "https://chatgpt.com",
+            {
+                "client_id": "https://evil.example",
+                "client_name": "Evil",
+                "redirect_uris": ["https://chatgpt.com/connector/oauth/callback"],
+            },
+        )
+        self.assertIsNone(metadata)
+        self.assertIn("exactly match", error)
+
+    def test_cimd_url_client_id_rejects_unknown_client(self):
         server, thread, base = self._start_server()
         try:
             redirect_uri = "https://chatgpt.com/connector/oauth/callback"
-            authorize_query = urllib.parse.urlencode({
-                "response_type": "code",
-                "client_id": "https://evil.example",
-                "redirect_uri": redirect_uri,
-                "scope": "mcp",
-                "resource": "https://mcp.example.test",
-                "state": "bad",
-                "code_challenge": server_http.pkce_s256_challenge("verifier"),
-                "code_challenge_method": "S256",
-            })
-            with self.assertRaises(urllib.error.HTTPError) as raised:
-                urllib.request.urlopen(f"{base}/authorize?{authorize_query}", timeout=5)
-            self.assertEqual(400, raised.exception.code)
-            payload = json.loads(raised.exception.read().decode("utf-8"))
-            self.assertEqual("invalid_client", payload["error"])
-            self.assertEqual("unknown client_id", payload["error_description"])
+            with patch.object(
+                server_http,
+                "fetch_cimd_document",
+                return_value=(None, {}, "failed to fetch metadata document: HTTP 404"),
+            ):
+                authorize_query = urllib.parse.urlencode({
+                    "response_type": "code",
+                    "client_id": "https://evil.example",
+                    "redirect_uri": redirect_uri,
+                    "scope": "mcp",
+                    "resource": "https://mcp.example.test",
+                    "state": "bad",
+                    "code_challenge": server_http.pkce_s256_challenge("verifier"),
+                    "code_challenge_method": "S256",
+                })
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    urllib.request.urlopen(f"{base}/authorize?{authorize_query}", timeout=5)
+                self.assertEqual(400, raised.exception.code)
+                payload = json.loads(raised.exception.read().decode("utf-8"))
+                self.assertEqual("invalid_client", payload["error"])
+                self.assertEqual("unknown client_id", payload["error_description"])
         finally:
             server.shutdown()
             server.server_close()

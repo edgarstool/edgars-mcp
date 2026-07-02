@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="edgarsoauth — Edgar 個人 OAuth 授權服務，用於安全連結 Google 帳號與 EDGAR'S 生產力工具。">
-  <title>edgarsoauth — Edgar OAuth 授權服務</title>
+  <meta name="description" content="edgarsoauth — Edgar 個人 AI 工具基礎設施的安全 Google OAuth 授權閘道。">
+  <title>edgarsoauth — Google OAuth 授權</title>
   <link rel="icon" href="assets/logo-brand.png" type="image/png">
   <link rel="apple-touch-icon" href="assets/logo-brand.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -35,13 +35,80 @@
       <img class="hero-logo" src="assets/logo-home.png" alt="EDGAR'S — 青色圖表標誌" width="320" height="90">
       <h1>edgarsoauth</h1>
       <p class="subtitle">
-        Edgar（王世鈞）個人 OAuth 授權服務 — 讓您安全地將 Google 帳號連結至 <strong>EDGAR'S</strong> 生產力與自動化工具鏈。
+        Edgar 個人 AI 工具基礎設施的安全 Google OAuth 授權閘道 — 以 Google 帳號驗證身分，連結至 <strong>EDGAR'S</strong> 受保護的生產力與自動化服務。
       </p>
-      <div class="hero-badges">
-        <span class="badge">Google OAuth 2.0</span>
-        <span class="badge">EDGAR'S Tools</span>
-        <span class="badge">最小權限原則</span>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="https://accounts.google.com/o/oauth2/v2/auth?client_id=746453257716-6l22h93narm0cf1eu5kngtu3uohsvcu8.apps.googleusercontent.com&amp;redirect_uri=https%3A%2F%2Fedgarstools.cloudflareaccess.com%2Fcdn-cgi%2Faccess%2Fcallback&amp;response_type=code&amp;scope=openid%20email%20profile&amp;access_type=online">
+          <svg class="btn-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+          </svg>
+          Continue with Google
+        </a>
+        <a class="btn btn-secondary" href="privacy.html">View Privacy Policy</a>
       </div>
+      <div class="hero-badges">
+        <span class="badge">Google OAuth 2.0 · 最小權限原則</span>
+        <span class="badge">EDGAR'S Tools</span>
+      </div>
+    </section>
+
+    <section class="section access-boundary" id="access-boundary" aria-labelledby="access-heading">
+      <h2 id="access-heading">存取邊界</h2>
+      <p class="section-lead">
+        本頁為公開授權說明；實際工具與 API 端點受 Cloudflare Access 與 Google OAuth 保護。
+      </p>
+      <div class="access-grid">
+        <div class="access-panel access-public">
+          <h3>
+            <span class="access-icon" aria-hidden="true">◇</span>
+            公開
+          </h3>
+          <ul class="access-list">
+            <li><a href="/">首頁</a> <span class="access-path">/</span></li>
+            <li><a href="privacy.html">隱私權政策</a> <span class="access-path">/privacy.html</span></li>
+            <li><a href="terms.html">服務條款</a> <span class="access-path">/terms.html</span></li>
+            <li><a href="https://status.edgars.tools/" rel="noopener noreferrer" target="_blank">服務狀態</a> <span class="access-path">status.edgars.tools</span></li>
+          </ul>
+        </div>
+        <div class="access-panel access-protected">
+          <h3>
+            <span class="access-icon" aria-hidden="true">◆</span>
+            受保護
+          </h3>
+          <ul class="access-list">
+            <li><a href="https://mcp.edgars.tools/mcp" rel="noopener noreferrer">MCP 伺服器</a> <span class="access-path">mcp.edgars.tools/mcp</span></li>
+            <li><span class="access-label">管理後台</span> <span class="access-path">admin.edgars.tools</span></li>
+            <li><a href="https://hooks.edgars.tools/" rel="noopener noreferrer">Webhook 收件匣</a> <span class="access-path">hooks.edgars.tools</span></li>
+            <li><span class="access-label">OAuth 回呼端點</span> <span class="access-path">僅核准客戶端可存取</span></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section oauth-flow" id="oauth-flow" aria-labelledby="oauth-heading">
+      <h2 id="oauth-heading">授權流程</h2>
+      <ol class="flow-steps">
+        <li>
+          <strong>由核准客戶端或本頁啟動</strong> — ChatGPT、Cursor、Cloudflare Access 等已核准的客戶端會引導您授權；您也可點選上方「Continue with Google」以 Google 帳號驗證身分。
+        </li>
+        <li>
+          <strong>Google 同意畫面</strong> — 您將看到 Google 標準 OAuth 同意畫面，僅請求完成授權所需的最小範圍（openid、email、profile）。
+        </li>
+        <li>
+          <strong>連結受保護基礎設施</strong> — 授權完成後，身分將用於存取 MCP、Webhook 與其他受 Cloudflare Access 保護的 EDGAR'S 服務。
+        </li>
+        <li>
+          <strong>隨時可撤銷</strong> — 您可在
+          <a href="https://myaccount.google.com/permissions" rel="noopener noreferrer" target="_blank">Google 帳戶權限頁面</a>
+          隨時移除本應用程式的存取權限。
+        </li>
+      </ol>
+      <p class="flow-note">
+        本頁面不含任何 client secret 或私密憑證。OAuth client_id 為公開資訊；實際 token 交換僅在受保護的伺服器端完成。
+      </p>
     </section>
 
     <section class="brand-showcase" aria-labelledby="brand-heading">
@@ -120,7 +187,7 @@
     <div class="footer-inner">
       <div class="footer-brand">
         <img src="assets/logo-brand.png" alt="" width="26" height="26">
-        <span>&copy; 2026 Edgar（王世鈞）· edgarsoauth · EDGAR'S Tools</span>
+        <span>&copy; 2026 Edgar（王世鈞）· EDGAR'S Tools</span>
       </div>
       <div class="footer-links">
         <a href="index.html">首頁</a>

@@ -10,13 +10,15 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=Instrument+Sans:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=20260702">
 </head>
 <body>
   <header class="site-header">
     <div class="header-inner">
       <a class="brand" href="index.html">
-        <img class="brand-logo" src="assets/logo-home.png" alt="EDGAR'S" width="140" height="40">
+        <span class="brand-mark-wrap" aria-hidden="true">
+          <img class="brand-mark" src="assets/logo-home.png" alt="" width="140" height="40">
+        </span>
         <span class="brand-text">
           <span class="brand-name">edgarsoauth</span>
           <span class="brand-tag">edgars.tools</span>
@@ -32,7 +34,9 @@
 
   <main>
     <section class="hero">
-      <img class="hero-logo" src="assets/logo-home.png" alt="EDGAR'S — 青色圖表標誌" width="320" height="90">
+      <div class="hero-logo-frame">
+        <img class="hero-logo" src="assets/logo-home.png" alt="EDGAR'S — 青色圖表標誌" width="320" height="90">
+      </div>
       <h1>edgarsoauth</h1>
       <p class="subtitle">
         Edgar 個人 AI 工具基礎設施的安全 Google OAuth 授權閘道 — 以 Google 帳號驗證身分，連結至 <strong>EDGAR'S</strong> 受保護的生產力與自動化服務。
@@ -47,7 +51,7 @@
           </svg>
           Continue with Google
         </a>
-        <a class="btn btn-secondary" href="privacy.html">View Privacy Policy</a>
+        <a class="btn btn-secondary" href="/privacy.html">View Privacy Policy</a>
       </div>
       <div class="hero-badges">
         <span class="badge">Google OAuth 2.0 · 最小權限原則</span>
@@ -113,7 +117,7 @@
 
     <section class="brand-showcase" aria-labelledby="brand-heading">
       <div class="brand-showcase-visual">
-        <img class="brand-logo" src="assets/logo-brand.png" alt="EDGAR'S Tools 彩色齒輪品牌標誌" width="240" height="240">
+        <img class="brand-emblem" src="assets/logo-brand.png" alt="EDGAR'S Tools 彩色齒輪品牌標誌" width="240" height="240">
       </div>
       <div class="brand-showcase-copy">
         <span class="brand-label">品牌</span>

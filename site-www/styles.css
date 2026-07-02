@@ -106,10 +106,26 @@ img {
   opacity: 0.95;
 }
 
-.brand-logo {
-  height: 36px;
-  width: auto;
+.brand-mark-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 148px;
+  height: 44px;
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(64, 196, 255, 0.06);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.brand-mark {
+  display: block;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
+  object-position: center center;
   filter: drop-shadow(0 0 10px var(--accent-glow));
 }
 
@@ -167,9 +183,25 @@ main {
   padding: 2.5rem 0 2rem;
 }
 
-.hero-logo {
-  height: clamp(56px, 12vw, 80px);
+.hero-logo-frame {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   margin: 0 auto 1.5rem;
+  padding: 0.85rem 1.75rem;
+  border-radius: 999px;
+  background: rgba(64, 196, 255, 0.06);
+  border: 1px solid var(--border);
+  box-shadow: 0 0 32px rgba(64, 196, 255, 0.08);
+}
+
+.hero-logo {
+  display: block;
+  width: auto;
+  max-width: min(320px, 78vw);
+  height: clamp(48px, 10vw, 72px);
+  object-fit: contain;
+  object-position: center center;
   filter: drop-shadow(0 0 28px var(--accent-glow));
 }
 
@@ -197,9 +229,17 @@ main {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  align-items: center;
+  align-items: stretch;
   gap: 0.85rem;
   margin-bottom: 1.5rem;
+  position: relative;
+  z-index: 2;
+}
+
+a.btn {
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: rgba(64, 196, 255, 0.2);
 }
 
 .btn {
@@ -207,13 +247,17 @@ main {
   align-items: center;
   justify-content: center;
   gap: 0.55rem;
+  min-height: 48px;
   padding: 0.72rem 1.35rem;
   border-radius: 10px;
   font-family: var(--font);
   font-size: 0.95rem;
   font-weight: 600;
+  line-height: 1.2;
   text-decoration: none;
-  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, color 0.2s ease;
 }
 
 .btn:hover {
@@ -303,8 +347,12 @@ main {
   justify-content: center;
 }
 
-.brand-logo {
+.brand-emblem {
   width: min(240px, 80vw);
+  height: auto;
+  aspect-ratio: 1;
+  object-fit: contain;
+  object-position: center center;
   border-radius: 50%;
   box-shadow:
     0 0 0 1px rgba(255, 255, 255, 0.06),
@@ -313,7 +361,7 @@ main {
   transition: transform 0.35s ease, box-shadow 0.35s ease;
 }
 
-.brand-showcase:hover .brand-logo {
+.brand-showcase:hover .brand-emblem {
   transform: scale(1.02);
   box-shadow:
     0 0 0 1px rgba(255, 255, 255, 0.08),
@@ -682,6 +730,15 @@ main {
 
   .brand-showcase-copy .brand-label {
     display: block;
+  }
+
+  .brand-mark-wrap {
+    width: 132px;
+    height: 40px;
+  }
+
+  .hero-logo-frame {
+    padding: 0.7rem 1.25rem;
   }
 
   .hero-actions {

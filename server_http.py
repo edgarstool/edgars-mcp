@@ -1445,6 +1445,9 @@ ALLOWED_HOSTNAMES = {
     "mcp.edgars.tools",
     "chatgpt.com",
     "chat.openai.com",
+    # ChatGPT MCP connector may POST with these Origins after OAuth (CIMD flow).
+    "openai.com",
+    "connector.openai.com",
 }
 
 

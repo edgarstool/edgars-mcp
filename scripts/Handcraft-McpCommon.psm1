@@ -496,19 +496,53 @@ function Get-HandcraftStartupScriptActiveLines {
 
     return @(Get-Content -LiteralPath $Path | Where-Object {
             $line = $_.Trim()
-            $line -and $line -notmatch '^\s*(::|REM)\b'
+            if (-not $line) { return $false }
+            if ($line -match '^\s*::') { return $false }
+            if ($line -match '^\s*REM\b') { return $false }
+            return $true
         })
+}
+
+function Test-HandcraftStartupScriptDeprecated {
+    param([Parameter(Mandatory)][string[]]$ActiveLines)
+
+    $commandLines = @($ActiveLines | Where-Object {
+            $_ -match '(?i)\b(start|cloudflared|tunnel)\b'
+        })
+    if (-not $commandLines) {
+        $commandLines = @($ActiveLines | Where-Object {
+                $_ -notmatch '^\s*@echo\b'
+            })
+    }
+
+    $activeText = ($commandLines -join "`n")
+    return [pscustomobject]@{
+        command_lines = $commandLines
+        uses_deprecated = [bool]($activeText -match '(?i)config\.yml|0e0a1b13|home-tunnel')
+        uses_named_tunnel = [bool]($activeText -match [regex]::Escape($Script:HandcraftDefaults.TunnelName))
+    }
 }
 
 function Test-HandcraftCloudflaredStartup {
     $startupPath = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\edgars-cloudflared-tunnel.cmd"
     $service = Get-Service Cloudflared -ErrorAction SilentlyContinue
+    $deprecatedProcs = @(Get-CloudflaredProcessDetails | Where-Object { $_.uses_deprecated_config })
+
+    if ($deprecatedProcs.Count -gt 0) {
+        return [pscustomobject]@{
+            ok      = $false
+            path    = $startupPath
+            detail  = "仍有 cloudflared 程序使用已刪除的 config.yml / home-tunnel（PID: $($deprecatedProcs.pid -join ', ')）"
+            service = if ($service) { $service.Status.ToString() } else { 'Missing' }
+            deprecated_pids = @($deprecatedProcs | ForEach-Object { $_.pid })
+        }
+    }
 
     if ($service -and $service.Status -eq 'Running') {
         return [pscustomobject]@{
             ok      = $true
             path    = $startupPath
-            detail  = "Windows Cloudflared service running (edgar-local-01-tunnel token)"
+            detail  = "Windows Cloudflared 服務運行中（edgar-local-01-tunnel）"
             service = 'Running'
         }
     }
@@ -517,26 +551,27 @@ function Test-HandcraftCloudflaredStartup {
         return [pscustomobject]@{
             ok      = $false
             path    = $startupPath
-            detail  = "Cloudflared service not running and no login startup script"
+            detail  = "Cloudflared 服務未運行，且找不到開機腳本"
             service = if ($service) { $service.Status.ToString() } else { 'Missing' }
         }
     }
 
-    $activeText = (Get-HandcraftStartupScriptActiveLines -Path $startupPath) -join "`n"
-    if ($activeText -match '(?i)config\.yml|0e0a1b13|home-tunnel') {
+    $scriptCheck = Test-HandcraftStartupScriptDeprecated -ActiveLines @(Get-HandcraftStartupScriptActiveLines -Path $startupPath)
+    if ($scriptCheck.uses_deprecated) {
         return [pscustomobject]@{
             ok      = $false
             path    = $startupPath
-            detail  = "Login startup script still uses deprecated config.yml / home-tunnel"
+            detail  = "開機腳本仍指向已刪除的 config.yml / home-tunnel"
             service = if ($service) { $service.Status.ToString() } else { 'Missing' }
+            command_lines = $scriptCheck.command_lines
         }
     }
 
-    if ($activeText -match 'edgar-local-01-tunnel') {
+    if ($scriptCheck.uses_named_tunnel) {
         return [pscustomobject]@{
             ok      = $true
             path    = $startupPath
-            detail  = "Login startup script OK (edgar-local-01-tunnel fallback)"
+            detail  = "開機腳本 OK（edgar-local-01-tunnel fallback）"
             service = if ($service) { $service.Status.ToString() } else { 'Stopped' }
         }
     }
@@ -544,8 +579,9 @@ function Test-HandcraftCloudflaredStartup {
     return [pscustomobject]@{
         ok      = $null
         path    = $startupPath
-        detail  = "Login startup script exists but tunnel name not confirmed"
+        detail  = "開機腳本存在，但未確認 tunnel 名稱"
         service = if ($service) { $service.Status.ToString() } else { 'Missing' }
+        command_lines = $scriptCheck.command_lines
     }
 }
 
@@ -700,6 +736,7 @@ Export-ModuleMember -Function @(
     'Invoke-HandcraftHttpProbe',
     'Invoke-HandcraftLocalMcpHandshake',
     'Get-HandcraftStartupScriptActiveLines',
+    'Test-HandcraftStartupScriptDeprecated',
     'Test-HandcraftCloudflaredStartup',
     'Test-HandcraftLinearOrchestratorHealthy',
     'Start-HandcraftLinearOrchestrator',

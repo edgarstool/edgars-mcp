@@ -424,6 +424,12 @@ if ($startupCheck.ok -eq $true) {
     Write-Log "  [D] cloudflared startup: PASS — $($startupCheck.detail)" "OK"
 } elseif ($startupCheck.ok -eq $false) {
     Write-Log "  [D] cloudflared startup: FAIL — $($startupCheck.detail)" "ERROR"
+    if ($startupCheck.deprecated_pids) {
+        $stopped = @(Stop-DeprecatedCloudflaredProcesses)
+        if ($stopped.Count -gt 0) {
+            Write-Log "  [D] stopped deprecated cloudflared PIDs: $($stopped -join ', ')" "WARN"
+        }
+    }
 } else {
     Write-Log "  [D] cloudflared startup: WARN — $($startupCheck.detail)" "WARN"
 }

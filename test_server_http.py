@@ -282,7 +282,7 @@ class OAuthFlowTests(unittest.TestCase):
             self.assertEqual("https://mcp.example.test", metadata["issuer"])
             self.assertEqual(f"https://mcp.example.test/authorize", metadata["authorization_endpoint"])
             self.assertEqual(f"https://mcp.example.test/token", metadata["token_endpoint"])
-            self.assertEqual(f"https://mcp.example.test/register", metadata["registration_endpoint"])
+            self.assertNotIn("registration_endpoint", metadata)
             self.assertIn("openid", metadata["scopes_supported"])
             self.assertIn("profile", metadata["scopes_supported"])
             self.assertIn("email", metadata["scopes_supported"])
@@ -385,7 +385,7 @@ class OAuthFlowTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-    def test_register_rejects_missing_redirect_uris(self):
+    def test_register_disabled_by_default(self):
         server, thread, base = self._start_server()
         try:
             body = json.dumps({"client_name": "bad-client"}).encode("utf-8")
@@ -398,6 +398,28 @@ class OAuthFlowTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as raised:
                 urllib.request.urlopen(req, timeout=5)
 
+            self.assertEqual(404, raised.exception.code)
+            payload = json.loads(raised.exception.read().decode("utf-8"))
+            self.assertEqual("registration_not_supported", payload["error"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_register_rejects_missing_redirect_uris_when_dcr_enabled(self):
+        server, thread, base = self._start_server()
+        try:
+            body = json.dumps({"client_name": "bad-client"}).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/register",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with patch.object(server_http, "OAUTH_DCR_ENABLED", True):
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    urllib.request.urlopen(req, timeout=5)
+
             self.assertEqual(400, raised.exception.code)
             payload = json.loads(raised.exception.read().decode("utf-8"))
             self.assertEqual("invalid_client_metadata", payload["error"])
@@ -409,6 +431,9 @@ class OAuthFlowTests(unittest.TestCase):
     def test_authorization_code_pkce_flow_issues_usable_bearer_token(self):
         server, thread, base = self._start_server()
         try:
+            dcr_patch = patch.object(server_http, "OAUTH_DCR_ENABLED", True)
+            dcr_patch.start()
+            self.addCleanup(dcr_patch.stop)
             redirect_uri = "https://chat.openai.com/aip/oauth/callback"
             register_body = json.dumps({
                 "client_name": "ChatGPT",
@@ -498,6 +523,9 @@ class OAuthFlowTests(unittest.TestCase):
     def test_authorization_code_confidential_client_flow_allows_missing_pkce(self):
         server, thread, base = self._start_server()
         try:
+            dcr_patch = patch.object(server_http, "OAUTH_DCR_ENABLED", True)
+            dcr_patch.start()
+            self.addCleanup(dcr_patch.stop)
             redirect_uri = "https://chatgpt.com/connector/oauth/callback-test"
             register_body = json.dumps({
                 "client_name": "ChatGPT",
@@ -559,6 +587,9 @@ class OAuthFlowTests(unittest.TestCase):
     def test_dcr_public_client_registers_without_secret(self):
         server, thread, base = self._start_server()
         try:
+            dcr_patch = patch.object(server_http, "OAUTH_DCR_ENABLED", True)
+            dcr_patch.start()
+            self.addCleanup(dcr_patch.stop)
             redirect_uri = "https://agent.example.test/oauth/callback"
             register_body = json.dumps({
                 "client_name": "Public Agent",

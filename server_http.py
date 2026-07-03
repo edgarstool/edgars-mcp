@@ -281,6 +281,9 @@ OAUTH_STATIC_CLIENT_SECRET = (
     os.getenv("MCP_OAUTH_CLIENT_SECRET", "handcraft-mcp-client-secret").strip()
     or "handcraft-mcp-client-secret"
 )
+# ChatGPT probes POST /register when registration_endpoint is advertised; empty body → 400
+# and the connector aborts before /authorize. Default off — use CIMD (MCP 2025-11-25 preferred).
+OAUTH_DCR_ENABLED = load_bool_env("MCP_OAUTH_DCR_ENABLED", False)
 # CIMD (Client ID Metadata Document) cache — RFC draft + MCP 2025-11-25.
 OAUTH_CIMD_CACHE_LOCK = threading.Lock()
 OAUTH_CIMD_CACHE: dict[str, dict] = {}
@@ -1760,11 +1763,10 @@ def resolve_cimd_oauth_client(client_id_url: str) -> dict | None:
 
 def build_oauth_authorization_server_metadata(base_url: str) -> dict:
     base_url = base_url.rstrip("/")
-    return {
+    metadata = {
         "issuer": base_url,
         "authorization_endpoint": f"{base_url}/authorize",
         "token_endpoint": f"{base_url}/token",
-        "registration_endpoint": f"{base_url}/register",
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],
         "code_challenge_methods_supported": ["S256"],
@@ -1775,6 +1777,9 @@ def build_oauth_authorization_server_metadata(base_url: str) -> dict:
         "scopes_supported": OAUTH_OIDC_SCOPES,
         "subject_types_supported": ["public"],
     }
+    if OAUTH_DCR_ENABLED:
+        metadata["registration_endpoint"] = f"{base_url}/register"
+    return metadata
 
 
 def build_openid_configuration_metadata(base_url: str) -> dict:
@@ -3342,10 +3347,22 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         })
 
     def _handle_register(self) -> None:
+        if not OAUTH_DCR_ENABLED:
+            self._send_oauth_json(
+                oauth_error(
+                    "registration_not_supported",
+                    "Use Client ID Metadata Document (CIMD): pass an HTTPS metadata URL as client_id.",
+                ),
+                404,
+            )
+            return
+
         content_length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(content_length) if content_length > 0 else b""
         meta = parse_request_params(raw, self.headers.get("Content-Type", "application/json"))
         redirect_uris = meta.get("redirect_uris", [])
+        if isinstance(redirect_uris, str) and redirect_uris.strip():
+            redirect_uris = [redirect_uris.strip()]
         if not isinstance(redirect_uris, list) or not redirect_uris:
             self._send_oauth_json(oauth_error("invalid_client_metadata", "redirect_uris must be a non-empty list"), 400)
             return

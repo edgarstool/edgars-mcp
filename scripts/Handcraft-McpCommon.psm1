@@ -262,7 +262,7 @@ function Get-CloudflaredProcessDetails {
     $details = @()
     foreach ($proc in Get-CimInstance Win32_Process -Filter "name='cloudflared.exe'" -ErrorAction SilentlyContinue) {
         $cmd = [string]$proc.CommandLine
-        $usesDeprecatedConfig = $cmd -match '(?i)config\.yml' -or $cmd -match [regex]::Escape($Script:HandcraftDefaults.DeprecatedTunnelId)
+        $usesDeprecatedConfig = $cmd -match '(?i)config\.yml' -or $cmd -match 'home-tunnel' -or $cmd -match [regex]::Escape($Script:HandcraftDefaults.DeprecatedTunnelId)
         $usesNamedTunnel = $cmd -match [regex]::Escape($Script:HandcraftDefaults.TunnelName) -or $cmd -match [regex]::Escape($Script:HandcraftDefaults.TunnelId)
         $details += [pscustomobject]@{
             pid                  = [int]$proc.ProcessId

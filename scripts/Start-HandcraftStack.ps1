@@ -10,6 +10,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+Import-Module (Join-Path $RepoRoot "scripts\Handcraft-McpCommon.psm1") -Force
+$config = Get-HandcraftConfig -LocalBaseUrl $LocalBaseUrl -PublicMcpUrl $PublicMcpUrl
 $ServerPath = Join-Path $RepoRoot "server_http.py"
 $LogDir = Join-Path $RepoRoot "logs"
 $HttpOutLogPath = Join-Path $LogDir "handcraft-http.out.log"
@@ -76,20 +78,7 @@ if (-not (Test-LocalHealth)) {
 }
 
 if (-not $SkipCloudflared) {
-    $cloudflaredService = Get-Service Cloudflared -ErrorAction SilentlyContinue
-    $cloudflaredProcess = Get-Process cloudflared -ErrorAction SilentlyContinue
-    if ($cloudflaredService -and $cloudflaredService.Status -eq "Running") {
-        Write-Verbose "Cloudflared Windows service is already running; skipping manual tunnel start."
-    } elseif (-not $cloudflaredProcess) {
-        $cloudflared = Get-Command cloudflared -ErrorAction Stop
-        Start-Process `
-            -FilePath $cloudflared.Source `
-            -ArgumentList @("tunnel", "run", $TunnelName) `
-            -WorkingDirectory $RepoRoot `
-            -WindowStyle Hidden `
-            -RedirectStandardOutput $CloudflaredOutLogPath `
-            -RedirectStandardError $CloudflaredErrLogPath
-    }
+    $null = Start-HandcraftCloudflared -Config $config
 }
 
 $healthArgs = @(

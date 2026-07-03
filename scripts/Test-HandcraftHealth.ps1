@@ -7,6 +7,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$modulePath = Join-Path $PSScriptRoot "Handcraft-McpCommon.psm1"
+Import-Module $modulePath -Force
+
 function Test-CommandAvailable {
     param([string]$Name)
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
@@ -88,7 +91,8 @@ $checks += [ordered]@{
 $checks += Invoke-JsonProbe -Name "local_health" -Uri $localHealthUrl
 $checks += [ordered]@{
     name = "cloudflared_process"
-    ok = [bool](Get-Process cloudflared -ErrorAction SilentlyContinue)
+    ok = Test-HandcraftCloudflaredHealthy
+    note = "expects Windows Cloudflared service or tunnel run edgar-local-01-tunnel; not deprecated config.yml"
 }
 $checks += [ordered]@{
     name = "cloudflared_command"

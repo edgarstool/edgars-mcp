@@ -250,14 +250,10 @@ function Start-TunnelProcess {
         Start-Sleep -Seconds 2
     }
 
-    $cloudflaredService = Get-Service Cloudflared -ErrorAction SilentlyContinue
-    $cloudflaredProcess = Get-Process cloudflared -ErrorAction SilentlyContinue
-    if ($cloudflaredService -and $cloudflaredService.Status -eq "Running") {
-        Write-Log "Cloudflared Windows service already running — skipping manual tunnel start" "INFO"
-        return $true
-    }
-    if ($cloudflaredProcess) {
-        Write-Log "cloudflared process already running (PID(s): $($cloudflaredProcess.Id -join ', ')) — skipping duplicate start" "INFO"
+    if (Test-HandcraftCloudflaredHealthy) {
+        $existing = @(Get-Process cloudflared -ErrorAction SilentlyContinue)
+        $pidList = if ($existing.Count -gt 0) { $existing.Id -join ', ' } else { "Cloudflared service" }
+        Write-Log "Healthy cloudflared already running ($pidList) — skipping manual tunnel start" "INFO"
         return $true
     }
 

@@ -487,6 +487,150 @@ function Invoke-HandcraftLocalMcpHandshake {
     }
 }
 
+function Get-HandcraftStartupScriptActiveLines {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return @()
+    }
+
+    return @(Get-Content -LiteralPath $Path | Where-Object {
+            $line = $_.Trim()
+            $line -and $line -notmatch '^\s*(::|REM)\b'
+        })
+}
+
+function Test-HandcraftCloudflaredStartup {
+    $startupPath = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\edgars-cloudflared-tunnel.cmd"
+    $service = Get-Service Cloudflared -ErrorAction SilentlyContinue
+
+    if ($service -and $service.Status -eq 'Running') {
+        return [pscustomobject]@{
+            ok      = $true
+            path    = $startupPath
+            detail  = "Windows Cloudflared service running (edgar-local-01-tunnel token)"
+            service = 'Running'
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $startupPath)) {
+        return [pscustomobject]@{
+            ok      = $false
+            path    = $startupPath
+            detail  = "Cloudflared service not running and no login startup script"
+            service = if ($service) { $service.Status.ToString() } else { 'Missing' }
+        }
+    }
+
+    $activeText = (Get-HandcraftStartupScriptActiveLines -Path $startupPath) -join "`n"
+    if ($activeText -match '(?i)config\.yml|0e0a1b13|home-tunnel') {
+        return [pscustomobject]@{
+            ok      = $false
+            path    = $startupPath
+            detail  = "Login startup script still uses deprecated config.yml / home-tunnel"
+            service = if ($service) { $service.Status.ToString() } else { 'Missing' }
+        }
+    }
+
+    if ($activeText -match 'edgar-local-01-tunnel') {
+        return [pscustomobject]@{
+            ok      = $true
+            path    = $startupPath
+            detail  = "Login startup script OK (edgar-local-01-tunnel fallback)"
+            service = if ($service) { $service.Status.ToString() } else { 'Stopped' }
+        }
+    }
+
+    return [pscustomobject]@{
+        ok      = $null
+        path    = $startupPath
+        detail  = "Login startup script exists but tunnel name not confirmed"
+        service = if ($service) { $service.Status.ToString() } else { 'Missing' }
+    }
+}
+
+function Test-HandcraftLinearOrchestratorHealthy {
+    param(
+        [int]$Port = 8645,
+        [string]$HealthUrl = "http://127.0.0.1:8645/healthz",
+        [string]$PublicHealthUrl = "https://webhooks.edgars.tools/healthz",
+        [switch]$SkipPublic
+    )
+
+    $listening = Test-PortListening -Port $Port
+    $localOk = $false
+    $localBody = $null
+
+    if ($listening) {
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $HealthUrl -TimeoutSec 5
+            $localOk = [int]$response.StatusCode -eq 200
+            $localBody = $response.Content
+        } catch {
+            $localOk = $false
+        }
+    }
+
+    $publicOk = $null
+    $publicStatus = $null
+    $publicBody = $null
+    $publicDetail = "skipped"
+
+    if (-not $SkipPublic) {
+        try {
+            $pub = Invoke-WebRequest -UseBasicParsing -Uri $PublicHealthUrl -TimeoutSec 10 -Headers @{ 'Cache-Control' = 'no-cache' }
+            $publicStatus = [int]$pub.StatusCode
+            $publicBody = $pub.Content
+            $publicOk = $publicStatus -eq 200 -and $publicBody -match '"ok"\s*:\s*true'
+            if (-not $publicOk -and $publicBody -eq 'Hello world') {
+                $publicDetail = "stale_cf_cache_or_wrong_backend (purge webhooks.edgars.tools cache)"
+            } else {
+                $publicDetail = "HTTP $publicStatus"
+            }
+        } catch {
+            if ($_.Exception.Response) {
+                $publicStatus = [int]$_.Exception.Response.StatusCode
+                $publicDetail = "HTTP $publicStatus"
+            } else {
+                $publicDetail = $_.Exception.Message
+            }
+            $publicOk = $false
+        }
+    }
+
+    return [pscustomobject]@{
+        ok           = $localOk
+        port         = $Port
+        health_url   = $HealthUrl
+        local_body   = $localBody
+        public_ok    = $publicOk
+        public_url   = if ($SkipPublic) { $null } else { $PublicHealthUrl }
+        public_status = $publicStatus
+        public_body  = $publicBody
+        public_detail = $publicDetail
+        detail       = if ($localOk) { "linear-orchestrator listening on :$Port" } else { "linear-orchestrator not healthy on :$Port" }
+    }
+}
+
+function Start-HandcraftLinearOrchestrator {
+  param(
+    [string]$OrchestratorRoot = "G:\AI_WORK_512\repos\linear-orchestrator",
+    [int]$WaitSeconds = 20
+  )
+
+  $startScript = Join-Path $OrchestratorRoot "scripts\Start-LinearOrchestrator.ps1"
+  if (-not (Test-Path -LiteralPath $startScript)) {
+    throw "Missing linear-orchestrator start script: $startScript"
+  }
+
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $startScript -Wait -WaitSeconds $WaitSeconds
+  if ($LASTEXITCODE -ne 0) {
+    throw "Start-LinearOrchestrator.ps1 failed with exit code $LASTEXITCODE"
+  }
+
+  return Test-HandcraftLinearOrchestratorHealthy
+}
+
 function Rotate-HandcraftLogFile {
     param(
         [Parameter(Mandatory)][string]$LogPath,
@@ -555,5 +699,9 @@ Export-ModuleMember -Function @(
     'Stop-HandcraftByPidFile',
     'Invoke-HandcraftHttpProbe',
     'Invoke-HandcraftLocalMcpHandshake',
+    'Get-HandcraftStartupScriptActiveLines',
+    'Test-HandcraftCloudflaredStartup',
+    'Test-HandcraftLinearOrchestratorHealthy',
+    'Start-HandcraftLinearOrchestrator',
     'Rotate-HandcraftLogFile'
 )

@@ -358,6 +358,9 @@ foreach ($key in $checkResult.cascade.Keys) {
     else                         { $skip++ }
 }
 
+$startupCheck = Test-HandcraftCloudflaredStartup
+$orchCheck = Test-HandcraftLinearOrchestratorHealthy -SkipPublic:$SkipPublic
+
 $finalJson = [ordered]@{
     generatedAt       = $checkResult.checkedAt
     host              = $checkResult.host
@@ -371,6 +374,21 @@ $finalJson = [ordered]@{
     failureCountFile = $FailCountFile
     checkScript       = $PSCommandPath
     runtimeRoot       = $RuntimeRoot
+    startup           = [ordered]@{
+        ok      = $startupCheck.ok
+        path    = $startupCheck.path
+        detail  = $startupCheck.detail
+        service = $startupCheck.service
+    }
+    linearOrchestrator = [ordered]@{
+        ok            = $orchCheck.ok
+        port          = $orchCheck.port
+        health_url    = $orchCheck.health_url
+        public_ok     = $orchCheck.public_ok
+        public_url    = $orchCheck.public_url
+        public_detail = $orchCheck.public_detail
+        detail        = $orchCheck.detail
+    }
 }
 
 $finalJson | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $SummaryJson -Encoding UTF8
@@ -399,6 +417,31 @@ foreach ($prop in @("process", "port", "tcp", "http", "tunnel")) {
 
 Write-Log "JSON written to: $SummaryJson"
 Write-Log "Fail counter file: $FailCountFile (count=$($checkResult.consecutiveFails))"
+
+# ── D. 開機自啟 + linear-orchestrator（webhooks 路徑）────────────────────────
+Write-Log "=== Section D: startup + linear-orchestrator ==="
+if ($startupCheck.ok -eq $true) {
+    Write-Log "  [D] cloudflared startup: PASS — $($startupCheck.detail)" "OK"
+} elseif ($startupCheck.ok -eq $false) {
+    Write-Log "  [D] cloudflared startup: FAIL — $($startupCheck.detail)" "ERROR"
+} else {
+    Write-Log "  [D] cloudflared startup: WARN — $($startupCheck.detail)" "WARN"
+}
+
+if ($orchCheck.ok) {
+    Write-Log "  [D] linear-orchestrator :8645: PASS — $($orchCheck.detail)" "OK"
+} else {
+    Write-Log "  [D] linear-orchestrator :8645: FAIL — $($orchCheck.detail)" "ERROR"
+}
+
+if (-not $SkipPublic -and $null -ne $orchCheck.public_ok) {
+    if ($orchCheck.public_ok) {
+        Write-Log "  [D] public webhooks.edgars.tools/healthz: PASS — $($orchCheck.public_detail)" "OK"
+    } else {
+        Write-Log "  [D] public webhooks.edgars.tools/healthz: FAIL — $($orchCheck.public_detail) body=$($orchCheck.public_body)" "WARN"
+    }
+}
+
 Write-Log "=== MCP Health Check Finished ==="
 
 exit $(if ($checkResult.overallOk) { 0 } else { 1 })

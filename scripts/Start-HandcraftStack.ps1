@@ -81,6 +81,15 @@ if (-not $SkipCloudflared) {
     $null = Start-HandcraftCloudflared -Config $config
 }
 
+$orchestratorScript = Join-Path $RepoRoot "scripts\Linear-Orchestrator.ps1"
+if (Test-Path -LiteralPath $orchestratorScript) {
+    try {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $orchestratorScript -Action start -Wait
+    } catch {
+        Write-Warning "linear-orchestrator autostart failed: $($_.Exception.Message)"
+    }
+}
+
 $healthArgs = @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",

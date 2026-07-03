@@ -287,6 +287,14 @@ OAUTH_CIMD_CACHE: dict[str, dict] = {}
 OAUTH_CIMD_CACHE_TTL_SECONDS = int(os.getenv("MCP_OAUTH_CIMD_CACHE_TTL_SECONDS", "86400"))
 OAUTH_CIMD_FETCH_TIMEOUT_SECONDS = float(os.getenv("MCP_OAUTH_CIMD_FETCH_TIMEOUT_SECONDS", "10"))
 OAUTH_CIMD_MAX_BYTES = int(os.getenv("MCP_OAUTH_CIMD_MAX_BYTES", str(64 * 1024)))
+OAUTH_AUTH_CHATGPT_CIMD_URL = (
+    os.getenv(
+        "MCP_OAUTH_AUTH_CHATGPT_CIMD_URL",
+        "https://auth.edgars.tools/.well-known/oauth-client/chatgpt.json",
+    ).strip()
+    or "https://auth.edgars.tools/.well-known/oauth-client/chatgpt.json"
+)
+CHATGPT_CONNECTOR_REDIRECT_PREFIX = "https://chatgpt.com/connector/oauth/"
 OAUTH_OIDC_SCOPES = ["openid", "profile", "email", OAUTH_SCOPE]
 CLOUDFLARE_ACCESS_JWKS_LOCK = threading.Lock()
 CLOUDFLARE_ACCESS_JWKS_CLIENTS: dict[str, object] = {}
@@ -1623,6 +1631,45 @@ def _parse_cimd_http_cache_control(cache_control: str) -> int | None:
     return None
 
 
+def is_auth_edgars_chatgpt_cimd_url(client_id_url: str) -> bool:
+    return client_id_url.rstrip("/") == OAUTH_AUTH_CHATGPT_CIMD_URL.rstrip("/")
+
+
+def auth_edgars_chatgpt_cimd_bootstrap_metadata() -> dict:
+    """Local bootstrap for auth.edgars.tools ChatGPT CIMD when fetch is unavailable."""
+    return {
+        "client_id": OAUTH_AUTH_CHATGPT_CIMD_URL,
+        "client_name": "EDGAR'S Tools ChatGPT Connector",
+        "grant_types": ["authorization_code"],
+        "response_types": ["code"],
+        "scope": "mcp",
+        "token_endpoint_auth_method": "none",
+        "application_type": "web",
+        "client_uri": "https://www.edgars.tools/",
+        "logo_uri": "https://www.edgars.tools/assets/logo-brand.png",
+        "tos_uri": "https://www.edgars.tools/terms.html",
+        "policy_uri": "https://www.edgars.tools/privacy.html",
+        "redirect_uris": [CHATGPT_CONNECTOR_REDIRECT_PREFIX],
+    }
+
+
+def is_chatgpt_connector_redirect_uri(redirect_uri: str) -> bool:
+    return redirect_uri.startswith(CHATGPT_CONNECTOR_REDIRECT_PREFIX)
+
+
+def oauth_redirect_uri_matches_registered(client: dict, redirect_uri: str) -> bool:
+    registered = client.get("redirect_uris") or []
+    if redirect_uri in registered:
+        return True
+    for entry in registered:
+        if isinstance(entry, str) and entry.endswith("/") and redirect_uri.startswith(entry):
+            return True
+    for prefix in client.get("redirect_uri_prefixes") or []:
+        if isinstance(prefix, str) and redirect_uri.startswith(prefix):
+            return True
+    return False
+
+
 def validate_cimd_metadata_document(client_id_url: str, metadata: dict) -> tuple[dict | None, str]:
     if not isinstance(metadata, dict):
         return None, "metadata document must be a JSON object"
@@ -1640,14 +1687,20 @@ def validate_cimd_metadata_document(client_id_url: str, metadata: dict) -> tuple
     auth_method = str(metadata.get("token_endpoint_auth_method") or "none").strip() or "none"
     if auth_method not in {"none", "client_secret_post", "client_secret_basic"}:
         return None, "unsupported token_endpoint_auth_method in metadata document"
-    return {
+    client = {
         "client_id": client_id_url,
         "client_name": client_name.strip(),
         "client_secret": "",
         "redirect_uris": redirect_uris,
         "token_endpoint_auth_method": auth_method,
         "source": "cimd",
-    }, ""
+    }
+    if is_auth_edgars_chatgpt_cimd_url(client_id_url):
+        if auth_method != "none":
+            return None, "auth.edgars.tools ChatGPT CIMD must use token_endpoint_auth_method none"
+        client["redirect_uri_prefixes"] = [CHATGPT_CONNECTOR_REDIRECT_PREFIX]
+        client["chatgpt_public_client"] = True
+    return client, ""
 
 
 def fetch_cimd_document(client_id_url: str) -> tuple[dict | None, dict[str, str], str]:
@@ -1689,7 +1742,11 @@ def resolve_cimd_oauth_client(client_id_url: str) -> dict | None:
 
     metadata, response_headers, fetch_error = fetch_cimd_document(client_id_url)
     if fetch_error or not isinstance(metadata, dict):
-        return None
+        if is_auth_edgars_chatgpt_cimd_url(client_id_url):
+            metadata = auth_edgars_chatgpt_cimd_bootstrap_metadata()
+            response_headers = {}
+        else:
+            return None
     client, validation_error = validate_cimd_metadata_document(client_id_url, metadata)
     if validation_error or not client:
         return None
@@ -1756,9 +1813,11 @@ def get_oauth_client(client_id: str) -> dict | None:
 def oauth_redirect_uri_allowed(client: dict, redirect_uri: str) -> bool:
     if not is_safe_oauth_redirect_uri(redirect_uri):
         return False
+    if client.get("chatgpt_public_client") and not is_chatgpt_connector_redirect_uri(redirect_uri):
+        return False
     if client.get("allow_dynamic_redirect"):
         return True
-    return redirect_uri in set(client.get("redirect_uris") or [])
+    return oauth_redirect_uri_matches_registered(client, redirect_uri)
 
 
 def pkce_s256_challenge(verifier: str) -> str:

@@ -1560,12 +1560,14 @@ def is_safe_oauth_redirect_uri(redirect_uri: str) -> bool:
 
 
 def is_https_url_client_id(client_id: str) -> bool:
+    """True when client_id is an HTTPS URL (CIMD per MCP 2025-11-25).
+
+    Query strings and fragments are allowed — ChatGPT per-connector metadata URLs
+    use client_id like https://chatgpt.com/oauth/{id}/client.json?token_endpoint_auth_method=none
+    and the metadata document's client_id must match that URL exactly.
+    """
     parsed = urllib.parse.urlparse(client_id)
-    if parsed.scheme != "https" or not parsed.netloc:
-        return False
-    if parsed.query or parsed.fragment:
-        return False
-    return True
+    return parsed.scheme == "https" and bool(parsed.netloc)
 
 
 def is_safe_cimd_fetch_target(url: str) -> bool:
@@ -1648,7 +1650,7 @@ def validate_cimd_metadata_document(client_id_url: str, metadata: dict) -> tuple
 def fetch_cimd_document(client_id_url: str) -> tuple[dict | None, dict[str, str], str]:
     """Fetch and validate a Client ID Metadata Document. Returns (metadata, response_headers, error)."""
     if not is_https_url_client_id(client_id_url):
-        return None, {}, "client_id must be an HTTPS URL without query or fragment"
+        return None, {}, "client_id must be an HTTPS URL"
     if not is_safe_cimd_fetch_target(client_id_url):
         return None, {}, "metadata URL is not allowed"
 

@@ -761,6 +761,78 @@ class OAuthFlowTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    def test_chatgpt_per_connector_cimd_client_id_with_query_string(self):
+        """ChatGPT uses per-connector CIMD URLs with ?token_endpoint_auth_method=none."""
+        server, thread, base = self._start_server()
+        try:
+            connector_id = "d6xcjw4BjhSO"
+            client_id = (
+                f"https://chatgpt.com/oauth/{connector_id}/client.json"
+                "?token_endpoint_auth_method=none"
+            )
+            redirect_uri = f"https://chatgpt.com/connector/oauth/{connector_id}"
+            metadata = {
+                "client_id": client_id,
+                "client_name": "ChatGPT",
+                "redirect_uris": [redirect_uri],
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+                "token_endpoint_auth_method": "none",
+            }
+
+            def fake_fetch(url):
+                self.assertEqual(client_id, url)
+                return metadata, {"cache-control": "max-age=300"}, ""
+
+            with patch.object(server_http, "fetch_cimd_document", side_effect=fake_fetch):
+                verifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"
+                challenge = server_http.pkce_s256_challenge(verifier)
+                authorize_query = urllib.parse.urlencode({
+                    "response_type": "code",
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "scope": "mcp",
+                    "resource": "https://mcp.example.test/mcp",
+                    "state": "oauth_s_chatgpt_test",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    "ui_locales": "zh-TW",
+                })
+                opener = urllib.request.build_opener(NoRedirectHandler)
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    opener.open(f"{base}/authorize?{authorize_query}", timeout=5)
+                self.assertEqual(302, raised.exception.code)
+                location = raised.exception.headers["Location"]
+                self.assertTrue(location.startswith(redirect_uri))
+                redirected_query = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
+                self.assertEqual(["oauth_s_chatgpt_test"], redirected_query["state"])
+                code = redirected_query["code"][0]
+
+                token_body = urllib.parse.urlencode({
+                    "grant_type": "authorization_code",
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "code": code,
+                    "code_verifier": verifier,
+                    "resource": "https://mcp.example.test/mcp",
+                }).encode("utf-8")
+                token_req = urllib.request.Request(
+                    f"{base}/token",
+                    data=token_body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(token_req, timeout=5) as response:
+                    token_payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual("Bearer", token_payload["token_type"])
+            self.assertEqual("mcp", token_payload["scope"])
+            self.assertTrue(token_payload["access_token"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_static_handcraft_client_pkce_allows_missing_client_secret(self):
         server, thread, base = self._start_server()
         try:

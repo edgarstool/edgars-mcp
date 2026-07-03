@@ -9,6 +9,9 @@ $Script:HandcraftDefaults = [ordered]@{
     Port              = 8765
     LocalBaseUrl      = "http://127.0.0.1:8765"
     PublicMcpUrl      = "https://mcp.edgars.tools/mcp"
+    TunnelName        = "edgar-local-01-tunnel"
+    TunnelId          = "5361a5cd-20f7-4639-95f1-92c1b28d31e1"
+    DeprecatedTunnelId = "0e0a1b13-db47-4d0c-9fa4-4fc7d269cbbf"
     CloudflaredConfig = Join-Path $env:USERPROFILE ".cloudflared\config.yml"
     DopplerProject    = "handcraft-mcp"
     DopplerConfig     = "prd"
@@ -41,6 +44,9 @@ function Get-HandcraftConfig {
         LocalHealthUrl     = "$base/health"
         LocalMcpUrl        = "$base/mcp"
         PublicMcpUrl       = if ($PublicMcpUrl) { $PublicMcpUrl } else { $Script:HandcraftDefaults.PublicMcpUrl }
+        TunnelName         = $Script:HandcraftDefaults.TunnelName
+        TunnelId           = $Script:HandcraftDefaults.TunnelId
+        DeprecatedTunnelId = $Script:HandcraftDefaults.DeprecatedTunnelId
         CloudflaredConfig  = $Script:HandcraftDefaults.CloudflaredConfig
         DopplerProject     = $Script:HandcraftDefaults.DopplerProject
         DopplerConfig      = $Script:HandcraftDefaults.DopplerConfig
@@ -252,31 +258,79 @@ function Start-HandcraftHttpServer {
     }
 }
 
+function Get-CloudflaredProcessDetails {
+    $details = @()
+    foreach ($proc in Get-CimInstance Win32_Process -Filter "name='cloudflared.exe'" -ErrorAction SilentlyContinue) {
+        $cmd = [string]$proc.CommandLine
+        $usesDeprecatedConfig = $cmd -match '(?i)config\.yml' -or $cmd -match [regex]::Escape($Script:HandcraftDefaults.DeprecatedTunnelId)
+        $usesNamedTunnel = $cmd -match [regex]::Escape($Script:HandcraftDefaults.TunnelName) -or $cmd -match [regex]::Escape($Script:HandcraftDefaults.TunnelId)
+        $details += [pscustomobject]@{
+            pid                  = [int]$proc.ProcessId
+            command_line         = $cmd
+            uses_deprecated_config = $usesDeprecatedConfig
+            uses_named_tunnel    = $usesNamedTunnel
+        }
+    }
+    return ,$details
+}
+
+function Stop-DeprecatedCloudflaredProcesses {
+    $stopped = @()
+    foreach ($detail in Get-CloudflaredProcessDetails) {
+        if (-not $detail.uses_deprecated_config) { continue }
+        Stop-Process -Id $detail.pid -Force -ErrorAction SilentlyContinue
+        $stopped += $detail.pid
+    }
+    return ,$stopped
+}
+
+function Test-HandcraftCloudflaredHealthy {
+    $service = Get-Service Cloudflared -ErrorAction SilentlyContinue
+    if ($service -and $service.Status -eq 'Running') {
+        return $true
+    }
+
+    $details = Get-CloudflaredProcessDetails
+    if (-not $details) {
+        return $false
+    }
+
+    if (@($details | Where-Object { $_.uses_deprecated_config }).Count -gt 0) {
+        return $false
+    }
+
+    return @($details | Where-Object { $_.uses_named_tunnel }).Count -gt 0
+}
+
 function Start-HandcraftCloudflared {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Config
     )
 
-    $existing = Get-Process cloudflared -ErrorAction SilentlyContinue
-    if ($existing) {
-        $pidValue = @($existing | Select-Object -First 1)[0].Id
-        Write-HandcraftPidFile -Path $Config.CloudflaredPidFile -ProcessId $pidValue -Kind "cloudflared"
+    $stoppedDeprecated = @(Stop-DeprecatedCloudflaredProcesses)
+    if ($stoppedDeprecated.Count -gt 0) {
+        Start-Sleep -Seconds 2
+    }
+
+    if (Test-HandcraftCloudflaredHealthy) {
+        $existing = @(Get-Process cloudflared -ErrorAction SilentlyContinue)
+        $pidValue = if ($existing.Count -gt 0) { $existing[0].Id } else { $null }
+        if ($pidValue) {
+            Write-HandcraftPidFile -Path $Config.CloudflaredPidFile -ProcessId $pidValue -Kind "cloudflared"
+        }
         return [pscustomobject]@{
             started = $false
             already_running = $true
             pid = $pidValue
+            stopped_deprecated = $stoppedDeprecated
         }
-    }
-
-    if (-not (Test-Path -LiteralPath $Config.CloudflaredConfig)) {
-        throw "Cloudflared config not found: $($Config.CloudflaredConfig)"
     }
 
     $cloudflared = Get-Command cloudflared -ErrorAction Stop
     $process = Start-Process `
         -FilePath $cloudflared.Source `
-        -ArgumentList @("tunnel", "--config", $Config.CloudflaredConfig, "run") `
+        -ArgumentList @("tunnel", "run", $Config.TunnelName) `
         -WorkingDirectory $Config.RepoRoot `
         -WindowStyle Hidden `
         -PassThru `
@@ -289,6 +343,8 @@ function Start-HandcraftCloudflared {
         started = $true
         already_running = $false
         pid = $process.Id
+        stopped_deprecated = $stoppedDeprecated
+        tunnel_name = $Config.TunnelName
     }
 }
 
@@ -492,6 +548,9 @@ Export-ModuleMember -Function @(
     'Wait-HandcraftHealth',
     'Get-PythonLaunchSpec',
     'Start-HandcraftHttpServer',
+    'Get-CloudflaredProcessDetails',
+    'Stop-DeprecatedCloudflaredProcesses',
+    'Test-HandcraftCloudflaredHealthy',
     'Start-HandcraftCloudflared',
     'Stop-HandcraftByPidFile',
     'Invoke-HandcraftHttpProbe',

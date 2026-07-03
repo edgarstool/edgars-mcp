@@ -84,7 +84,8 @@ $infraChecks += [ordered]@{
 }
 $infraChecks += [ordered]@{
     name = "cloudflared_process"
-    ok   = [bool](Get-Process cloudflared -ErrorAction SilentlyContinue)
+    ok   = Test-HandcraftCloudflaredHealthy
+    note = "expects Windows Cloudflared service or tunnel run edgar-local-01-tunnel; not deprecated config.yml"
 }
 $infraChecks += [ordered]@{
     name = "pid_file"

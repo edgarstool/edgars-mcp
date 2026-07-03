@@ -332,7 +332,7 @@ ALLOWED_HOSTNAMES = {"localhost", "127.0.0.1", "mcp.edgars.tools", "new.domain.c
 | 對外網址 | `https://mcp.edgars.tools` |
 | 本機目標 | `http://localhost:8765` |
 
-> **Deprecated**：`~/.cloudflared/config.yml` 內的 `home-tunnel`（`0e0a1b13-...`）已停用。`Start-HandcraftStack.ps1` 不再用該 yaml；若 Windows 服務 `Cloudflared` 已在跑，腳本不會重複啟動 tunnel。
+> **Deprecated**：`~/.cloudflared/config.yml` 內的 `home-tunnel`（`0e0a1b13-...`）已停用，Cloudflare 上該 tunnel 已不存在。`start-mcp.ps1` / `Handcraft-McpCommon.psm1` 現改為 `cloudflared tunnel run edgar-local-01-tunnel`（或偵測 Windows 服務 `Cloudflared`），**不要**再用 `config.yml` 啟動。若看到 log `Tunnel not found` 且 command line 含 `config.yml`，請結束該程序，保留服務或正確的 named tunnel。
 
 Tunnel 由 `cloudflared` 常駐管理（建議用 Windows 服務或 `cloudflared tunnel run edgar-local-01-tunnel`）。確認狀態：
 

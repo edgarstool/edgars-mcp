@@ -18,3 +18,9 @@ logs/
 poke-hermes-bridge/
 config/linear-oauth-token.json
 
+
+# 第三方套件（可重裝，不進版控）
+node_modules/
+**/node_modules/
+# 瀏覽器暫存 dump
+.playwright-mcp/

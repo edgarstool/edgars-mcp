@@ -202,7 +202,13 @@ CODEX_DEFAULT_WORKDIR = r"C:\Users\EdgarsTool"
 AGENT_TIMEOUT_SECONDS = int(os.getenv("MCP_AGENT_TIMEOUT_SECONDS", "300"))
 
 PORT = int(os.getenv("MCP_PORT", "8765"))
-PROTOCOL_VERSION = "2025-11-25"
+PROTOCOL_VERSION = "2025-11-25"          # 舊世代握手預設（保留相容）
+LATEST_PROTOCOL_VERSION = "2026-07-28"   # 新世代（server/discover）
+SUPPORTED_PROTOCOL_VERSIONS = ["2026-07-28", "2025-11-25"]
+SERVER_INSTRUCTIONS = (
+    "Edgar 的本地 MCP（mcp-handcraft）：檔案系統、Git、系統指令、瀏覽器、Obsidian、"
+    "Linear、Notion、AI 代理委派、媒體生成等 70+ 工具。"
+)
 MCP_PATH = "/mcp"
 HEALTH_PATH = "/health"
 PACKAGE_WEBHOOK_PATH = "/webhook/package"
@@ -2246,13 +2252,37 @@ def run_smart_agent(task: str, working_dir: str) -> tuple[str, bool, list[dict]]
 
 # ─── Request Handlers（與 stdio 版邏輯相同，改為 return 而非 send）────────────
 
+def build_server_capabilities() -> dict:
+    """本 server 目前只暴露 tools 這一類基本能力。"""
+    return {"tools": {"listChanged": False}}
+
+
 def handle_initialize(req_id, params: dict) -> dict:
+    """舊世代握手（2025-11-25 及更早）。新世代客戶端改走 server/discover。"""
     client_version = params.get("protocolVersion", PROTOCOL_VERSION)
     log(f"initialize: client protocolVersion={client_version}")
     return make_response(req_id, {
         "protocolVersion": client_version,
-        "capabilities": {"tools": {}},
+        "capabilities": build_server_capabilities(),
         "serverInfo": SERVER_INFO,
+        "instructions": SERVER_INSTRUCTIONS,
+    })
+
+
+def handle_discover(req_id, params: dict) -> dict:
+    """新世代（2026-07-28）探測：一次回傳版本、能力、身分、說明。
+    這是讓現代客戶端（Claude / ChatGPT 連接器）落在 2026-07-28 的開關；
+    舊客戶端不會呼叫它，仍走上面的 initialize，兩邊都相容。"""
+    log("server/discover")
+    return make_response(req_id, {
+        "protocolVersion": LATEST_PROTOCOL_VERSION,
+        "supportedVersions": SUPPORTED_PROTOCOL_VERSIONS,
+        "capabilities": build_server_capabilities(),
+        "serverInfo": SERVER_INFO,
+        "instructions": SERVER_INSTRUCTIONS,
+        # 這份結果不常變、對所有呼叫者相同 → 可快取（2026 快取提示）
+        "ttlMs": 60000,
+        "cacheScope": "public",
     })
 
 
@@ -2263,7 +2293,8 @@ def handle_ping(req_id, params: dict) -> dict:
 
 def handle_tools_list(req_id, params: dict) -> dict:
     log(f"tools/list: returning {len(TOOLS)} tool(s)")
-    return make_response(req_id, {"tools": TOOLS})
+    # 工具清單不常變、對所有呼叫者相同 → 可快取（2026 快取提示）
+    return make_response(req_id, {"tools": TOOLS, "ttlMs": 60000, "cacheScope": "public"})
 
 
 def handle_tools_call(req_id, params: dict) -> dict:
@@ -2645,10 +2676,11 @@ def handle_notion_get_page(req_id, arguments: dict) -> dict:
 
 
 REQUEST_HANDLERS = {
-    "initialize":  handle_initialize,
-    "ping":        handle_ping,
-    "tools/list":  handle_tools_list,
-    "tools/call":  handle_tools_call,
+    "initialize":      handle_initialize,
+    "server/discover": handle_discover,   # 新世代 2026-07-28 探測
+    "ping":            handle_ping,
+    "tools/list":      handle_tools_list,
+    "tools/call":      handle_tools_call,
 }
 
 

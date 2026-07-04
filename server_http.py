@@ -2988,10 +2988,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self._handle_authorize(parsed.query)
         elif path == HEALTH_PATH:
             if self._requires_cloudflare_access_for_request(path):
-                claims = self._authenticate_public_request_via_cloudflare_access()
-                if claims is False:
-                    return
-                if claims is None and not self._authenticate_bearer_request():
+                if not self._ensure_mcp_request_authorized():
                     return
             self._handle_health()
         elif path == LINEAR_OAUTH_AUTHORIZE_PATH:
@@ -3549,19 +3546,52 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         return bool(config.mcp_api_token)
 
     def _ensure_mcp_request_authorized(self) -> bool:
-        access_claims = None
-        if self._requires_cloudflare_access_for_request(MCP_PATH):
-            access_claims = self._authenticate_public_request_via_cloudflare_access()
-            if access_claims is False:
-                return False
+        """全綠授權責任鏈：Cloudflare Access JWT 或 Bearer（靜態 / 內建 OAuth / CIMD）
+        任一種有效即放行；只有所有方法都沒有有效憑證時才回 401。
 
-        if access_claims is None:
-            if not self._authenticate_bearer_request():
-                return False
-        elif isinstance(access_claims, dict):
-            access_identity = access_claims.get("email") or access_claims.get("sub") or "cloudflare-access-user"
-            log(f"Cloudflare Access authenticated request: {access_identity}")
-        return True
+        修正重點：舊版在主網域上把 CF Access 與 Bearer 設成互斥，且 bearer fallback
+        預設關閉，導致帶「正確 Bearer OAuth token」的客戶端（Claude、ChatGPT 連接器）
+        也被誤擋成 401。改成責任鏈後，不管客戶端用哪種正統方法都會通過。
+        """
+        config = self.server.config
+
+        # 完全未要求授權的設定（純本機 / 開發）→ 維持原行為，直接放行。
+        if not self._mcp_auth_required():
+            return True
+
+        # 方法 1：Cloudflare Access JWT（有帶且驗過就綠）
+        access_jwt = self.headers.get("Cf-Access-Jwt-Assertion", "").strip()
+        if access_jwt and config.cloudflare_access_enabled:
+            try:
+                claims = verify_cloudflare_access_jwt(access_jwt, config)
+                ident = claims.get("email") or claims.get("sub") or "cloudflare-access-user"
+                log(f"Cloudflare Access authenticated request: {ident}")
+                return True
+            except CloudflareAccessAuthError as exc:
+                log(f"Cloudflare Access JWT rejected, trying bearer: {exc}")
+
+        # 方法 2：Bearer token（靜態 MCP_API_TOKEN / 內建 OAuth / CIMD 發出的）
+        auth = self.headers.get("Authorization", "")
+        has_bearer = auth[:7].lower() == "bearer "
+        if has_bearer and bearer_token_is_authorized(auth[7:].strip(), config.mcp_api_token):
+            return True
+
+        # 全部方法皆無有效憑證 → 回最合適的 401（含 discovery 指標）
+        if self._requires_cloudflare_access_for_request(MCP_PATH) and not has_bearer:
+            self._send_cloudflare_access_unauthorized(
+                "This endpoint accepts a Cloudflare Access session or a valid bearer token. "
+                "Complete Managed OAuth in your MCP client and retry."
+            )
+            return False
+        self._send_mcp_unauthorized(
+            error="invalid_token",
+            description=(
+                "Missing credential. Authorize this MCP app to continue."
+                if not auth
+                else "Bearer token is invalid or expired. Re-authorize this MCP app."
+            ),
+        )
+        return False
 
     def _requires_cloudflare_access_for_request(self, path: str) -> bool:
         config = self.server.config

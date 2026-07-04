@@ -1,0 +1,14 @@
+﻿{
+    "log_path":  "C:\\Users\\EdgarsTool\\Projects\\mcp-handcraft\\logs\\cache-trace.jsonl",
+    "archive_dir":  "C:\\Users\\EdgarsTool\\Projects\\mcp-handcraft\\logs\\archive\\cache-trace",
+    "rotated":  false,
+    "reason":  "log_missing",
+    "archive_path":  null,
+    "checkpoint_path":  null,
+    "retained_archives":  [
+
+                          ],
+    "retired_archives":  [
+
+                         ]
+}

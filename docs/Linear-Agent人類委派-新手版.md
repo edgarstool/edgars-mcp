@@ -6,6 +6,8 @@ lang: zh-TW
 
 > 最後更新：2026-06-30  
 > 問題現象：在 Linear 把 issue **委派（Delegate）** 給「Hermes Agent」後，畫面顯示 **Did not respond**（沒有回應）。
+>
+> **硬護欄：這份文件的正式 webhook 入口是 `webhooks.edgars.tools`（gateway ingress），不是 `hooks.edgars.tools`（Cloudflare Worker inbox）。**
 
 ---
 

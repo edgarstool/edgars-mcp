@@ -7,7 +7,8 @@ Edgar 的本地 MCP（Model Context Protocol）Server。
 **目前工具數量：70 個**（最後校對：2026-06-29）
 
 > 不懂 Doppler 要填什麼？請看 **[Doppler 設定指南（新手版）](docs/DOPPLER-設定指南-新手版.md)**。  
-> 搞不清 mcp / webhooks / hooks 哪個是哪個？請看 **[網域分工（新手版）](docs/網域分工-新手版.md)**。
+> 搞不清 mcp / webhooks / hooks 哪個是哪個？請看 **[網域分工（新手版）](docs/網域分工-新手版.md)**。  
+> 想讓 MCP **自己定時檢查、壞了自動修**？請看 **[自動巡邏（新手版）](docs/自動巡邏-新手版.md)**。
 
 ---
 

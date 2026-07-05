@@ -6,6 +6,8 @@ lang: zh-TW
 
 > 最後更新：2026-06-30  
 > 這份文件告訴你：**Linear 的「Hermes Agent」App 要怎麼接好**，你只要照步驟點、貼密碼就好。
+>
+> **硬護欄：OAuth / authorize / callback / status 全都在 `mcp.edgars.tools`；Linear Agent webhook 走 `webhooks.edgars.tools`；`hooks.edgars.tools` 是另一條 Worker inbox。**
 
 ---
 
@@ -25,7 +27,8 @@ Linear 有一種 **OAuth App**（授權應用程式），讓 Hermes 可以：
 | `https://mcp.edgars.tools/linear/oauth/status` | 檢查有沒有接成功（看 JSON） |
 
 Webhook（事件通知）在 manifest 裡是 **關閉的**（`enabled: false`）。  
-目前 Hermes 實際收 webhook 走的是 **webhooks.edgars.tools**（本機 tunnel → Windows `:8645`）。
+目前 Hermes 實際收 webhook 走的是 **webhooks.edgars.tools**（本機 tunnel → Windows `:8645`）。  
+**硬護欄：`webhooks.edgars.tools` 是 gateway ingress；`hooks.edgars.tools` 是 Cloudflare Worker inbox，不要混填。**
 
 ---
 

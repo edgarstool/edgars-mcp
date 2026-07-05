@@ -84,7 +84,8 @@ $infraChecks += [ordered]@{
 }
 $infraChecks += [ordered]@{
     name = "cloudflared_process"
-    ok   = [bool](Get-Process cloudflared -ErrorAction SilentlyContinue)
+    ok   = Test-HandcraftCloudflaredHealthy
+    note = "expects Windows Cloudflared service or tunnel run edgar-local-01-tunnel; not deprecated config.yml"
 }
 $infraChecks += [ordered]@{
     name = "pid_file"
@@ -97,12 +98,41 @@ $infraChecks += [ordered]@{
 
 if (-not $SkipPublic) {
     $publicProbe = Invoke-HandcraftHttpProbe -Name "public_mcp_get" -Uri $config.PublicMcpUrl -TimeoutSec $TimeoutSec
-    if ($publicProbe.ok -and $publicProbe.detail -eq "cloudflare_access_login") {
-        $publicProbe.note = "reachable_access_protected"
+    $publicBody = $null
+    try {
+        $publicResponse = Invoke-WebRequest -UseBasicParsing -Uri $config.PublicMcpUrl -TimeoutSec $TimeoutSec `
+            -Headers @{ "Cache-Control" = "no-cache" }
+        $publicBody = [string]$publicResponse.Content
+        if ($null -eq $publicProbe.status) {
+            $publicProbe.status = [int]$publicResponse.StatusCode
+        }
+    } catch {
+        if ($_.Exception.Response) {
+            try {
+                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                $publicBody = [string]$reader.ReadToEnd()
+                $reader.Close()
+                $publicProbe.status = [int]$_.Exception.Response.StatusCode
+            } catch {
+                $publicBody = $null
+            }
+        }
     }
-    if (-not $publicProbe.ok -and $publicProbe.status -in @(302, 401, 403, 405)) {
+
+    if ($publicProbe.ok -and $publicBody -eq "Hello world") {
+        $publicProbe.ok = $false
+        $publicProbe.detail = "wrong_backend_hello_world"
+        $publicProbe.note = "Cloudflare Worker route *.edgars.tools/* (script edgars) is intercepting tunnel traffic; remove or narrow that route in Dashboard"
+    } elseif ($publicProbe.ok -and $publicBody -match '"server"\s*:|oauth-protected-resource|Unauthorized') {
+        $publicProbe.note = "reachable_mcp_or_oauth"
+    } elseif ($publicProbe.ok -and $publicProbe.detail -eq "cloudflare_access_login") {
+        $publicProbe.note = "reachable_access_protected"
+    } elseif (-not $publicProbe.ok -and $publicProbe.status -in @(302, 401, 403, 405)) {
         $publicProbe.ok = $true
         $publicProbe.note = "reachable_auth_required"
+    }
+    if ($publicBody) {
+        $publicProbe.body_preview = if ($publicBody.Length -gt 120) { $publicBody.Substring(0, 120) + "..." } else { $publicBody }
     }
     $externalChecks += $publicProbe
 }

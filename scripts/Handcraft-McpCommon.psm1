@@ -9,6 +9,9 @@ $Script:HandcraftDefaults = [ordered]@{
     Port              = 8765
     LocalBaseUrl      = "http://127.0.0.1:8765"
     PublicMcpUrl      = "https://mcp.edgars.tools/mcp"
+    TunnelName        = "edgar-local-01-tunnel"
+    TunnelId          = "5361a5cd-20f7-4639-95f1-92c1b28d31e1"
+    DeprecatedTunnelId = "0e0a1b13-db47-4d0c-9fa4-4fc7d269cbbf"
     CloudflaredConfig = Join-Path $env:USERPROFILE ".cloudflared\config.yml"
     DopplerProject    = "handcraft-mcp"
     DopplerConfig     = "prd"
@@ -41,6 +44,9 @@ function Get-HandcraftConfig {
         LocalHealthUrl     = "$base/health"
         LocalMcpUrl        = "$base/mcp"
         PublicMcpUrl       = if ($PublicMcpUrl) { $PublicMcpUrl } else { $Script:HandcraftDefaults.PublicMcpUrl }
+        TunnelName         = $Script:HandcraftDefaults.TunnelName
+        TunnelId           = $Script:HandcraftDefaults.TunnelId
+        DeprecatedTunnelId = $Script:HandcraftDefaults.DeprecatedTunnelId
         CloudflaredConfig  = $Script:HandcraftDefaults.CloudflaredConfig
         DopplerProject     = $Script:HandcraftDefaults.DopplerProject
         DopplerConfig      = $Script:HandcraftDefaults.DopplerConfig
@@ -252,31 +258,79 @@ function Start-HandcraftHttpServer {
     }
 }
 
+function Get-CloudflaredProcessDetails {
+    $details = @()
+    foreach ($proc in Get-CimInstance Win32_Process -Filter "name='cloudflared.exe'" -ErrorAction SilentlyContinue) {
+        $cmd = [string]$proc.CommandLine
+        $usesDeprecatedConfig = $cmd -match '(?i)config\.yml' -or $cmd -match 'home-tunnel' -or $cmd -match [regex]::Escape($Script:HandcraftDefaults.DeprecatedTunnelId)
+        $usesNamedTunnel = $cmd -match [regex]::Escape($Script:HandcraftDefaults.TunnelName) -or $cmd -match [regex]::Escape($Script:HandcraftDefaults.TunnelId)
+        $details += [pscustomobject]@{
+            pid                  = [int]$proc.ProcessId
+            command_line         = $cmd
+            uses_deprecated_config = $usesDeprecatedConfig
+            uses_named_tunnel    = $usesNamedTunnel
+        }
+    }
+    return ,$details
+}
+
+function Stop-DeprecatedCloudflaredProcesses {
+    $stopped = @()
+    foreach ($detail in Get-CloudflaredProcessDetails) {
+        if (-not $detail.uses_deprecated_config) { continue }
+        Stop-Process -Id $detail.pid -Force -ErrorAction SilentlyContinue
+        $stopped += $detail.pid
+    }
+    return ,$stopped
+}
+
+function Test-HandcraftCloudflaredHealthy {
+    $service = Get-Service Cloudflared -ErrorAction SilentlyContinue
+    if ($service -and $service.Status -eq 'Running') {
+        return $true
+    }
+
+    $details = Get-CloudflaredProcessDetails
+    if (-not $details) {
+        return $false
+    }
+
+    if (@($details | Where-Object { $_.uses_deprecated_config }).Count -gt 0) {
+        return $false
+    }
+
+    return @($details | Where-Object { $_.uses_named_tunnel }).Count -gt 0
+}
+
 function Start-HandcraftCloudflared {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Config
     )
 
-    $existing = Get-Process cloudflared -ErrorAction SilentlyContinue
-    if ($existing) {
-        $pidValue = @($existing | Select-Object -First 1)[0].Id
-        Write-HandcraftPidFile -Path $Config.CloudflaredPidFile -ProcessId $pidValue -Kind "cloudflared"
+    $stoppedDeprecated = @(Stop-DeprecatedCloudflaredProcesses)
+    if ($stoppedDeprecated.Count -gt 0) {
+        Start-Sleep -Seconds 2
+    }
+
+    if (Test-HandcraftCloudflaredHealthy) {
+        $existing = @(Get-Process cloudflared -ErrorAction SilentlyContinue)
+        $pidValue = if ($existing.Count -gt 0) { $existing[0].Id } else { $null }
+        if ($pidValue) {
+            Write-HandcraftPidFile -Path $Config.CloudflaredPidFile -ProcessId $pidValue -Kind "cloudflared"
+        }
         return [pscustomobject]@{
             started = $false
             already_running = $true
             pid = $pidValue
+            stopped_deprecated = $stoppedDeprecated
         }
-    }
-
-    if (-not (Test-Path -LiteralPath $Config.CloudflaredConfig)) {
-        throw "Cloudflared config not found: $($Config.CloudflaredConfig)"
     }
 
     $cloudflared = Get-Command cloudflared -ErrorAction Stop
     $process = Start-Process `
         -FilePath $cloudflared.Source `
-        -ArgumentList @("tunnel", "--config", $Config.CloudflaredConfig, "run") `
+        -ArgumentList @("tunnel", "run", $Config.TunnelName) `
         -WorkingDirectory $Config.RepoRoot `
         -WindowStyle Hidden `
         -PassThru `
@@ -289,6 +343,8 @@ function Start-HandcraftCloudflared {
         started = $true
         already_running = $false
         pid = $process.Id
+        stopped_deprecated = $stoppedDeprecated
+        tunnel_name = $Config.TunnelName
     }
 }
 
@@ -431,6 +487,186 @@ function Invoke-HandcraftLocalMcpHandshake {
     }
 }
 
+function Get-HandcraftStartupScriptActiveLines {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return @()
+    }
+
+    return @(Get-Content -LiteralPath $Path | Where-Object {
+            $line = $_.Trim()
+            if (-not $line) { return $false }
+            if ($line -match '^\s*::') { return $false }
+            if ($line -match '^\s*REM\b') { return $false }
+            return $true
+        })
+}
+
+function Test-HandcraftStartupScriptDeprecated {
+    param([Parameter(Mandatory)][string[]]$ActiveLines)
+
+    $commandLines = @($ActiveLines | Where-Object {
+            $_ -match '(?i)\b(start|cloudflared|tunnel)\b'
+        })
+    if (-not $commandLines) {
+        $commandLines = @($ActiveLines | Where-Object {
+                $_ -notmatch '^\s*@echo\b'
+            })
+    }
+
+    $activeText = ($commandLines -join "`n")
+    return [pscustomobject]@{
+        command_lines = $commandLines
+        uses_deprecated = [bool]($activeText -match '(?i)config\.yml|0e0a1b13|home-tunnel')
+        uses_named_tunnel = [bool]($activeText -match [regex]::Escape($Script:HandcraftDefaults.TunnelName))
+    }
+}
+
+function Test-HandcraftCloudflaredStartup {
+    $startupPath = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\edgars-cloudflared-tunnel.cmd"
+    $service = Get-Service Cloudflared -ErrorAction SilentlyContinue
+    $deprecatedProcs = @(Get-CloudflaredProcessDetails | Where-Object { $_.uses_deprecated_config })
+
+    if ($deprecatedProcs.Count -gt 0) {
+        return [pscustomobject]@{
+            ok      = $false
+            path    = $startupPath
+            detail  = "仍有 cloudflared 程序使用已刪除的 config.yml / home-tunnel（PID: $($deprecatedProcs.pid -join ', ')）"
+            service = if ($service) { $service.Status.ToString() } else { 'Missing' }
+            deprecated_pids = @($deprecatedProcs | ForEach-Object { $_.pid })
+        }
+    }
+
+    if ($service -and $service.Status -eq 'Running') {
+        return [pscustomobject]@{
+            ok      = $true
+            path    = $startupPath
+            detail  = "Windows Cloudflared 服務運行中（edgar-local-01-tunnel）"
+            service = 'Running'
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $startupPath)) {
+        return [pscustomobject]@{
+            ok      = $false
+            path    = $startupPath
+            detail  = "Cloudflared 服務未運行，且找不到開機腳本"
+            service = if ($service) { $service.Status.ToString() } else { 'Missing' }
+        }
+    }
+
+    $scriptCheck = Test-HandcraftStartupScriptDeprecated -ActiveLines @(Get-HandcraftStartupScriptActiveLines -Path $startupPath)
+    if ($scriptCheck.uses_deprecated) {
+        return [pscustomobject]@{
+            ok      = $false
+            path    = $startupPath
+            detail  = "開機腳本仍指向已刪除的 config.yml / home-tunnel"
+            service = if ($service) { $service.Status.ToString() } else { 'Missing' }
+            command_lines = $scriptCheck.command_lines
+        }
+    }
+
+    if ($scriptCheck.uses_named_tunnel) {
+        return [pscustomobject]@{
+            ok      = $true
+            path    = $startupPath
+            detail  = "開機腳本 OK（edgar-local-01-tunnel fallback）"
+            service = if ($service) { $service.Status.ToString() } else { 'Stopped' }
+        }
+    }
+
+    return [pscustomobject]@{
+        ok      = $null
+        path    = $startupPath
+        detail  = "開機腳本存在，但未確認 tunnel 名稱"
+        service = if ($service) { $service.Status.ToString() } else { 'Missing' }
+        command_lines = $scriptCheck.command_lines
+    }
+}
+
+function Test-HandcraftLinearOrchestratorHealthy {
+    param(
+        [int]$Port = 8645,
+        [string]$HealthUrl = "http://127.0.0.1:8645/healthz",
+        [string]$PublicHealthUrl = "https://webhooks.edgars.tools/healthz",
+        [switch]$SkipPublic
+    )
+
+    $listening = Test-PortListening -Port $Port
+    $localOk = $false
+    $localBody = $null
+
+    if ($listening) {
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $HealthUrl -TimeoutSec 5
+            $localOk = [int]$response.StatusCode -eq 200
+            $localBody = $response.Content
+        } catch {
+            $localOk = $false
+        }
+    }
+
+    $publicOk = $null
+    $publicStatus = $null
+    $publicBody = $null
+    $publicDetail = "skipped"
+
+    if (-not $SkipPublic) {
+        try {
+            $pub = Invoke-WebRequest -UseBasicParsing -Uri $PublicHealthUrl -TimeoutSec 10 -Headers @{ 'Cache-Control' = 'no-cache' }
+            $publicStatus = [int]$pub.StatusCode
+            $publicBody = $pub.Content
+            $publicOk = $publicStatus -eq 200 -and $publicBody -match '"ok"\s*:\s*true'
+            if (-not $publicOk -and $publicBody -eq 'Hello world') {
+                $publicDetail = "stale_cf_cache_or_wrong_backend (purge webhooks.edgars.tools cache)"
+            } else {
+                $publicDetail = "HTTP $publicStatus"
+            }
+        } catch {
+            if ($_.Exception.Response) {
+                $publicStatus = [int]$_.Exception.Response.StatusCode
+                $publicDetail = "HTTP $publicStatus"
+            } else {
+                $publicDetail = $_.Exception.Message
+            }
+            $publicOk = $false
+        }
+    }
+
+    return [pscustomobject]@{
+        ok           = $localOk
+        port         = $Port
+        health_url   = $HealthUrl
+        local_body   = $localBody
+        public_ok    = $publicOk
+        public_url   = if ($SkipPublic) { $null } else { $PublicHealthUrl }
+        public_status = $publicStatus
+        public_body  = $publicBody
+        public_detail = $publicDetail
+        detail       = if ($localOk) { "linear-orchestrator listening on :$Port" } else { "linear-orchestrator not healthy on :$Port" }
+    }
+}
+
+function Start-HandcraftLinearOrchestrator {
+  param(
+    [string]$OrchestratorRoot = "G:\AI_WORK_512\repos\linear-orchestrator",
+    [int]$WaitSeconds = 20
+  )
+
+  $startScript = Join-Path $OrchestratorRoot "scripts\Start-LinearOrchestrator.ps1"
+  if (-not (Test-Path -LiteralPath $startScript)) {
+    throw "Missing linear-orchestrator start script: $startScript"
+  }
+
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $startScript -Wait -WaitSeconds $WaitSeconds
+  if ($LASTEXITCODE -ne 0) {
+    throw "Start-LinearOrchestrator.ps1 failed with exit code $LASTEXITCODE"
+  }
+
+  return Test-HandcraftLinearOrchestratorHealthy
+}
+
 function Rotate-HandcraftLogFile {
     param(
         [Parameter(Mandatory)][string]$LogPath,
@@ -492,9 +728,17 @@ Export-ModuleMember -Function @(
     'Wait-HandcraftHealth',
     'Get-PythonLaunchSpec',
     'Start-HandcraftHttpServer',
+    'Get-CloudflaredProcessDetails',
+    'Stop-DeprecatedCloudflaredProcesses',
+    'Test-HandcraftCloudflaredHealthy',
     'Start-HandcraftCloudflared',
     'Stop-HandcraftByPidFile',
     'Invoke-HandcraftHttpProbe',
     'Invoke-HandcraftLocalMcpHandshake',
+    'Get-HandcraftStartupScriptActiveLines',
+    'Test-HandcraftStartupScriptDeprecated',
+    'Test-HandcraftCloudflaredStartup',
+    'Test-HandcraftLinearOrchestratorHealthy',
+    'Start-HandcraftLinearOrchestrator',
     'Rotate-HandcraftLogFile'
 )

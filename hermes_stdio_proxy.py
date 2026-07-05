@@ -3,6 +3,13 @@ Hermes stdio bridge for the handcraft HTTP MCP endpoint.
 
 Hermes can launch local MCP servers over stdio. This proxy keeps that local
 stdio contract while forwarding JSON-RPC requests to server_http.py.
+
+Turn-Aware Context Compaction
+------------------------------
+When a tools/call payload includes a ``messages`` list, this proxy validates
+that any proposed context compaction has not silently discarded thinking/
+reasoning blocks.  Warnings are emitted to stderr so they are visible in
+Hermes logs without interrupting the request flow.
 """
 
 import json
@@ -10,6 +17,8 @@ import os
 import sys
 import urllib.error
 import urllib.request
+
+from context_compaction import validate_compaction
 
 DEFAULT_MCP_URL = "http://127.0.0.1:8765/mcp"
 MCP_URL = os.getenv("HERMES_HANDCRAFT_MCP_URL", DEFAULT_MCP_URL)
@@ -155,6 +164,36 @@ def forward_to_http(payload: dict, timeout: float = REQUEST_TIMEOUT_SECONDS) -> 
         if response.status == 202 or not raw:
             return None
         return json.loads(raw.decode("utf-8"))
+
+
+def _extract_messages_from_payload(payload: dict) -> list[dict] | None:
+    """Return the ``messages`` list from a tools/call payload, or None."""
+    if not isinstance(payload, dict):
+        return None
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        return None
+    arguments = params.get("arguments")
+    if not isinstance(arguments, dict):
+        return None
+    messages = arguments.get("messages")
+    if isinstance(messages, list):
+        return messages
+    return None
+
+
+def check_compaction_warnings(payload: dict, compacted_messages: list[dict]) -> None:
+    """Log warnings if *compacted_messages* dropped thinking blocks vs *payload*.
+
+    Compares the ``messages`` list inside *payload* (the original turns) with
+    *compacted_messages* (the proposed replacement) and emits a stderr warning
+    for each issue found by :func:`context_compaction.validate_compaction`.
+    """
+    original_messages = _extract_messages_from_payload(payload)
+    if original_messages is None:
+        return
+    for warning in validate_compaction(original_messages, compacted_messages):
+        log(f"[compaction] {warning}")
 
 
 def handle_line(line: str) -> None:

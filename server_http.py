@@ -3643,14 +3643,28 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         )
 
     def _send_cloudflare_access_unauthorized(self, description: str) -> None:
-        self._send_json(
+        body = json.dumps(
             {
                 "ok": False,
                 "error": "cloudflare_access_required",
                 "error_description": description,
             },
-            status=401,
+            ensure_ascii=False,
+        ).encode("utf-8")
+        self.send_response(401)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header(
+            "WWW-Authenticate",
+            make_www_authenticate_header(
+                self.server.config.base_url,
+                error="invalid_token",
+                description=description,
+            ),
         )
+        self._add_cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
 
     def _authenticate_public_request_via_cloudflare_access(self):
         access_jwt = self.headers.get("Cf-Access-Jwt-Assertion", "").strip()

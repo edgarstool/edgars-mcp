@@ -4,7 +4,7 @@
       "command": "py",
       "args": [
         "-3",
-        "V:\\projects\\mcp-handcraft\\stdio_proxy.py"
+        "V:\\projects\\edgars-mcp\\stdio_proxy.py"
       ],
       "env": {
         "MCP_URL": "https://mcp.edgars.tools/mcp",

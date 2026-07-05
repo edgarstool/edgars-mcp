@@ -67,8 +67,8 @@ class HermesPreflightTests(unittest.TestCase):
 
         def fake_urlopen(request, timeout):
             captured["timeout"] = timeout
-            captured["client_id"] = request.get_header("Cf-Access-Client-Id")
-            captured["client_secret"] = request.get_header("Cf-Access-Client-Secret")
+            captured["client_id"] = request.headers.get("Cf-access-client-id")
+            captured["client_secret"] = request.headers.get("Cf-access-client-secret")
             captured["payload"] = json.loads(request.data.decode("utf-8"))
             return FakeHTTPResponse()
 

@@ -83,14 +83,14 @@ npx mcp-add \
         "--project", "handcraft-mcp",
         "--config", "prd",
         "--",
-        "py", "-3", "V:\\projects\\mcp-handcraft\\stdio_proxy.py"
+        "py", "-3", "V:\\projects\\edgars-mcp\\stdio_proxy.py"
       ]
     }
   }
 }
 ```
 
-等價啟動命令：`V:\projects\mcp-handcraft\run_stdio.cmd`
+等價啟動命令：`V:\projects\edgars-mcp\run_stdio.cmd`
 
 `stdio_proxy.py` 會從 Doppler/env 讀 `MCP_API_TOKEN`，轉送到 `http://127.0.0.1:8765/mcp`。
 
@@ -186,7 +186,7 @@ npx mcp-add \
 ```
 
 **範例：**
-> 請用 claude_code_agent 幫我分析 V:\projects\mcp-handcraft\server_http.py 的結構
+> 請用 claude_code_agent 幫我分析 V:\projects\edgars-mcp\server_http.py 的結構
 
 ---
 

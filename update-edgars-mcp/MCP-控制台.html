@@ -1,0 +1,78 @@
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>edgars mcp 控制台</title>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--bd:#2b3240;--tx:#e6edf3;--mut:#9aa7b4;--grn:#2ea043;--grnbg:#12331f;--blu:#388bfd;--amb:#d29922}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font-family:"Segoe UI",system-ui,"Microsoft JhengHei",sans-serif;line-height:1.6}
+.wrap{max-width:980px;margin:0 auto;padding:28px 20px 60px}
+h1{font-size:24px;margin:0 0 4px}.sub{color:var(--mut);margin:0 0 24px}
+.grid{display:grid;gap:14px}.g4{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}.g3{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px 18px}
+.card h3{margin:0 0 8px;font-size:13px;color:var(--mut);font-weight:600;letter-spacing:.03em}
+.big{font-size:20px;font-weight:600}.mono{font-family:ui-monospace,Consolas,monospace;font-size:13px;word-break:break-all}
+.chip{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;margin:3px 4px 0 0}
+.ok{background:var(--grnbg);color:#4ac26b;border:1px solid #2ea04355}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--grn);display:inline-block;margin-right:6px;vertical-align:middle}
+.sec{margin:26px 0 10px;font-size:15px;font-weight:600}
+a.btn{display:inline-block;background:#21262d;border:1px solid var(--bd);color:var(--tx);text-decoration:none;padding:8px 14px;border-radius:8px;font-size:13px;margin:4px 6px 0 0}
+a.btn:hover{border-color:var(--blu)}
+.tool{background:#0f141b;border:1px solid var(--bd);border-radius:10px;padding:12px 14px}
+.tool b{font-size:14px}.tool p{margin:4px 0 0;color:var(--mut);font-size:12px}
+.mtr{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--bd);font-size:14px}
+.mtr:last-child{border:0}.pill{color:var(--amb);font-size:12px}
+.foot{color:var(--mut);font-size:12px;margin-top:30px;text-align:center}
+</style></head><body><div class="wrap">
+<h1>🛠️ edgars mcp 控制台</h1>
+<p class="sub">mcp-handcraft · 統一 MCP 端點 · 最後更新 2026-07-04</p>
+
+<div class="grid g4">
+  <div class="card"><h3>對外端點</h3><div class="mono">https://mcp.edgars.tools/mcp</div></div>
+  <div class="card"><h3>本機端點</h3><div class="mono">http://127.0.0.1:8765/mcp</div></div>
+  <div class="card"><h3>協定世代</h3><div class="big">2026-07-28</div><span class="pill">PR #26 合併後生效</span></div>
+  <div class="card"><h3>狀態</h3><div class="big"><span class="dot"></span>設計為運作中</div><span class="pill">開 /health 實查</span></div>
+</div>
+
+<div class="sec">🔓 授權（全綠：任一有效即通過）</div>
+<div class="card">
+  <span class="chip ok">✔ Cloudflare Access 登入</span>
+  <span class="chip ok">✔ Bearer OAuth token</span>
+  <span class="chip ok">✔ 靜態 API token</span>
+  <span class="chip ok">✔ CIMD 客戶端</span>
+  <p style="color:var(--mut);font-size:13px;margin:10px 0 0">不管客戶端用哪種正統方法都能過；完全沒帶憑證才回 401。</p>
+</div>
+
+<div class="sec">🧰 工具分類（約 70 個）</div>
+<div class="grid g3">
+  <div class="tool"><b>檔案系統</b><p>讀 / 寫 / 搬 / 刪 / 列目錄</p></div>
+  <div class="tool"><b>Git</b><p>狀態 / commit / 分支 / diff</p></div>
+  <div class="tool"><b>系統指令</b><p>shell / PowerShell</p></div>
+  <div class="tool"><b>瀏覽器</b><p>自動化 / 抓網頁</p></div>
+  <div class="tool"><b>AI 代理委派</b><p>codex / gemini / claude_code / smart</p></div>
+  <div class="tool"><b>媒體生成</b><p>圖 / 影片 / 語音 / 音樂（mmx_*）</p></div>
+  <div class="tool"><b>知識庫</b><p>Obsidian / Notion</p></div>
+  <div class="tool"><b>專案</b><p>Linear（OAuth 委派）</p></div>
+  <div class="tool"><b>整合</b><p>Warp / Cursor / Factory.ai / Cloudflare</p></div>
+</div>
+
+<div class="sec">🗓️ 維護排程（已設 Windows 排程）</div>
+<div class="card">
+  <div class="mtr"><span>一週快速健檢</span><span class="pill">2026/7/11 09:00</span></div>
+  <div class="mtr"><span>30 天維護更新</span><span class="pill">2026/8/3 09:00</span></div>
+  <div class="mtr"><span>詳細清單</span><span class="pill">Obsidian：MCP-大改版與維護指南</span></div>
+</div>
+
+<div class="sec">🔀 進行中的 PR</div>
+<div class="card">
+  <div class="mtr"><span>#26 大改版：授權全綠 + 2026-07-28</span><a class="btn" href="https://github.com/edgarstool/edgars-mcp/pull/26">開啟</a></div>
+  <div class="mtr"><span>#27 清肥肉：停止追蹤 node_modules</span><a class="btn" href="https://github.com/edgarstool/edgars-mcp/pull/27">開啟</a></div>
+</div>
+
+<div class="sec">⚡ 快速連結</div>
+<div class="card">
+  <a class="btn" href="https://mcp.edgars.tools/health">健康檢查 /health</a>
+  <a class="btn" href="https://mcp.edgars.tools/.well-known/oauth-protected-resource/mcp">授權發現文件</a>
+  <a class="btn" href="https://github.com/edgarstool/edgars-mcp">GitHub Repo</a>
+</div>
+
+<p class="foot">此為靜態總覽（離線可看）。要「即時」數據（線上工具數、健康狀態）可再做成連線版儀表板。</p>
+</div></body></html>

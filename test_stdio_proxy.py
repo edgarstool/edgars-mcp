@@ -48,8 +48,8 @@ class StdioProxyPreflightTests(unittest.TestCase):
 
         def fake_urlopen(req, timeout):
             captured["timeout"] = timeout
-            captured["client_id"] = req.get_header("Cf-Access-Client-Id")
-            captured["client_secret"] = req.get_header("Cf-Access-Client-Secret")
+            captured["client_id"] = req.headers.get("Cf-access-client-id")
+            captured["client_secret"] = req.headers.get("Cf-access-client-secret")
             body = json.dumps({"jsonrpc": "2.0", "id": "stdio-preflight", "result": {}}).encode()
             class FakeResp:
                 status = 200

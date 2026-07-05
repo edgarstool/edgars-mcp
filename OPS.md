@@ -57,13 +57,13 @@ Cloudflare Access（建議 public 模式）
 
 ### 啟動 HTTP server（常用）
 ```cmd
-cd V:\projects\mcp-handcraft
+cd V:\projects\edgars-mcp
 run_http.cmd
 ```
 
 ### 恢復完整 public MCP path（:8765 + cloudflared + /mcp）
 ```powershell
-cd V:\projects\mcp-handcraft
+cd V:\projects\edgars-mcp
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-HandcraftStack.ps1
 ```
 
@@ -77,7 +77,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-HandcraftSta
 
 ### 只做健康檢查
 ```powershell
-cd V:\projects\mcp-handcraft
+cd V:\projects\edgars-mcp
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftHealth.ps1
 ```
 
@@ -360,7 +360,7 @@ HTTP server 的 log 輸出到 stderr（執行中的視窗）：
 
 若要存到檔案：
 ```cmd
-run_http.cmd 2> V:\projects\mcp-handcraft\mcp.log
+run_http.cmd 2> V:\projects\edgars-mcp\mcp.log
 ```
 
 ---
@@ -458,7 +458,7 @@ Windows Scheduled Task:
 
 - Task name: `McpHandcraftCacheTraceRotation`
 - Cadence: hourly
-- Action: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "V:\projects\mcp-handcraft\scripts\Run-CacheTraceRotation.ps1"`
+- Action: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "V:\projects\edgars-mcp\scripts\Run-CacheTraceRotation.ps1"`
 
 Use `-WhatIf` to preview:
 
@@ -503,7 +503,7 @@ doppler login
 
 **Q：確認 Doppler 綁定正確**
 ```bash
-cd V:\projects\mcp-handcraft
+cd V:\projects\edgars-mcp
 doppler configure
 ```
 應顯示 `project=handcraft-mcp config=prd`。

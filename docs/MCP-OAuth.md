@@ -102,6 +102,6 @@ Content-Type: application/json
 ## 驗證
 
 ```powershell
-cd V:\projects\mcp-handcraft
+cd V:\projects\edgars-mcp
 python -m unittest test_server_http.OAuthFlowTests -v
 ```

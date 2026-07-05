@@ -1026,7 +1026,7 @@ class CloudflareAccessModeTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-    def test_public_mcp_ignores_spoofed_forwarded_host_when_access_mode_enabled(self):
+    def test_public_mcp_accepts_bearer_even_with_spoofed_forwarded_host(self):
         server, thread, base = self._start_server()
         try:
             body = json.dumps({
@@ -1046,12 +1046,11 @@ class CloudflareAccessModeTests(unittest.TestCase):
                 },
                 method="POST",
             )
-            with self.assertRaises(urllib.error.HTTPError) as raised:
-                urllib.request.urlopen(req, timeout=5)
+            with urllib.request.urlopen(req, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
 
-            self.assertEqual(401, raised.exception.code)
-            payload = json.loads(raised.exception.read().decode("utf-8"))
-            self.assertEqual("cloudflare_access_required", payload["error"])
+            self.assertEqual(200, response.status)
+            self.assertIn("tools", payload["result"])
         finally:
             server.shutdown()
             server.server_close()

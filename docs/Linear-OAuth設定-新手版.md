@@ -72,7 +72,7 @@ Webhook（事件通知）在 manifest 裡是 **關閉的**（`enabled: false`）
 
 1. 在 Cursor 或 PowerShell 執行（或請 AI 幫你跑）：
    ```powershell
-   cd V:\projects\mcp-handcraft
+   cd V:\projects\edgars-mcp
    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-mcp.ps1 -Force
    ```
 2. 用瀏覽器打開：**[https://mcp.edgars.tools/linear/oauth/authorize](https://mcp.edgars.tools/linear/oauth/authorize)**

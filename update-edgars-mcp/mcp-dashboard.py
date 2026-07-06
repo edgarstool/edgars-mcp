@@ -230,32 +230,46 @@ function chip(ok,txtOk,txtBad,warn){
   const t = ok ? txtOk : txtBad;
   return '<span class="dot '+cls+'"></span><span class="big '+(ok?'ok':(warn?'warn':'bad'))+'">'+t+'</span>';
 }
+function pick(obj, key, fallback='—'){
+  if(!obj || obj[key] === undefined || obj[key] === null || obj[key] === '') return fallback;
+  return obj[key];
+}
 async function refresh(){
   try{
     const r = await fetch('/api/status'); const s = await r.json();
     document.getElementById('upd').textContent = '最後更新 ' + s.time;
     const h = s.local.health || {};
     const auth = h.auth || {};
+    const linear = h.linear_oauth || {};
+    const healthReady = s.local.http === 200 && !!s.local.health;
+    const webhookText = Array.isArray(h.webhooks) ? h.webhooks.join('、') : (h.webhooks ? String(h.webhooks) : '—');
     const cards = [
       ['MCP 伺服器', chip(s.local.ok, '運作中', s.port_8765 ? 'health 異常' : '停止')],
       ['ChatGPT OAuth readiness', chip(s.external.oauth_ready, 'PRM '+s.external.prm_http+' / MCP '+s.external.mcp_http, (s.external.prm_error || s.external.mcp_error || ('PRM '+s.external.prm_http+' / MCP '+s.external.mcp_http)))],
       ['外網 mcp.edgars.tools', chip(s.external.reachable, 'MCP HTTP '+s.external.mcp_http, s.external.mcp_error || ('HTTP '+s.external.mcp_http), !s.external.oauth_ready && s.external.reachable)],
       ['Cloudflared 隧道', chip(s.cloudflared, '服務 Running', '服務未執行')],
       ['Claude Desktop', chip(s.claude_procs>0, s.claude_procs+' 個 process', '未執行')],
-      ['協定版本', '<div class="big">'+(h.protocolVersion||'—')+'</div>'],
-      ['OAuth 有效 token', '<div class="big">'+(auth.oauth_active_tokens!==undefined?auth.oauth_active_tokens:'—')+'</div>'],
+      ['協定版本', '<div class="big">'+pick(h, 'protocolVersion')+'</div>'],
+      ['Built-in OAuth token', '<div class="big">'+pick(auth, 'oauth_active_tokens')+'</div>'],
+      ['Linear OAuth', chip(!!linear.token_present, 'token 已存在', 'token 未存在', !linear.configured)],
       ['API token 設定', chip(!!auth.mcp_api_token_configured, '已設定', '未設定', true)],
       ['啟動腳本', chip(Object.values(s.startup_scripts).every(Boolean), '兩支都在', '有缺！')]
     ];
     document.getElementById('cards').innerHTML =
       cards.map(c=>'<div class="card"><h3>'+c[0]+'</h3>'+c[1]+'</div>').join('');
     const rows = [];
-    if(h.server) rows.push(['名稱 / 版本', h.server.name+' v'+h.server.version]);
-    if(h.public) rows.push(['對外 MCP URL', h.public.mcp_url]);
-    if(h.local) rows.push(['本機監聽', h.local.host+':'+h.local.port+h.local.mcp_path]);
-    rows.push(['OAuth 模式', auth.oauth_mode||'—']);
-    rows.push(['Cloudflare Access', auth.cloudflare_access_enabled?'啟用':'停用（用其他授權法）']);
-    if(h.webhooks) rows.push(['Webhooks', h.webhooks.join('、')]);
+    if(!healthReady){
+      rows.push(['/health 狀態', '無法解析或 schema 不符']);
+      rows.push(['HTTP', String(s.local.http ?? '—')]);
+      rows.push(['錯誤', s.local.error || '—']);
+    } else {
+      rows.push(['名稱 / 版本', pick(h.server, 'name')+' v'+pick(h.server, 'version')]);
+      rows.push(['對外 MCP URL', pick(h.public, 'mcp_url')]);
+      rows.push(['本機監聽', pick(h.local, 'host')+':'+pick(h.local, 'port')+pick(h.local, 'mcp_path')]);
+      rows.push(['OAuth 模式', pick(auth, 'oauth_mode')]);
+      rows.push(['Cloudflare Access', auth.cloudflare_access_enabled?'啟用':'停用（用其他授權法）']);
+      rows.push(['Webhooks', webhookText]);
+    }
     document.getElementById('healthDetail').innerHTML =
       rows.map(r=>'<div class="kv"><span>'+r[0]+'</span><span class="mono">'+r[1]+'</span></div>').join('');
   }catch(e){

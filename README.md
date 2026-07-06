@@ -236,7 +236,7 @@ https://mcp.edgars.tools/.well-known/oauth-protected-resource
 | `copilot_agent` | 委派任務給 GitHub Copilot CLI（本機改 code、跑指令） |
 | `droid_agent` | 委派任務給 Factory Droid CLI（`droid exec`） |
 | `ollama_agent` | 委派任務給本地 Ollama 模型（離線可用） |
-| `smart_agent` | 智慧選擇最適合的 agent 執行任務 |
+| `smart_agent` | 智慧輪替：Gemini → Copilot → Droid → Codex → Claude Code |
 | `agent_job_status` | 查詢背景 agent job 進度 |
 | `agent_job_list` | 列出所有背景 jobs |
 | `agent_job_cleanup` | 清除已完成的舊 jobs |

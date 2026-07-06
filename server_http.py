@@ -547,8 +547,8 @@ TOOLS = [
         "name": "smart_agent",
         "description": (
             "Runs a task through a fallback chain of local AI agents. "
-            "Starts with Gemini for speed, then falls back to Codex, then Claude Code "
-            "when quota limits, timeouts, or transient upstream failures occur. "
+            "Order: Gemini → GitHub Copilot → Factory Droid → Codex → Claude Code. "
+            "Falls back on quota limits, timeouts, missing CLIs, or transient upstream failures. "
             "Use this as the default tool for local execution when the user wants the server "
             "to handle agent rotation automatically, especially for file edits, shell commands, "
             "or any task that may outlive a single HTTP request. Prefer async=true for remote clients."
@@ -2347,12 +2347,28 @@ def summarize_error_reason(output: str) -> str:
     return "error"
 
 
+_TRANSIENT_FALLBACK_REASONS = frozenset({
+    "quota_exceeded",
+    "timeout",
+    "rate_limited",
+    "connection_aborted",
+    "upstream_error",
+})
+
+
 def should_fallback(tool_name: str, output: str, is_error: bool) -> bool:
     if not is_error:
         return False
+    if tool_name == "claude_code_agent":
+        return False
+
+    lowered = (output or "").lower()
+    if "command not found" in lowered:
+        return True
+
     reason = summarize_error_reason(output)
-    if tool_name == "gemini_agent":
-        return reason in {"quota_exceeded", "timeout", "rate_limited", "connection_aborted", "upstream_error"}
+    if tool_name in {"gemini_agent", "copilot_agent", "droid_agent"}:
+        return reason in _TRANSIENT_FALLBACK_REASONS
     if tool_name == "codex_agent":
         return reason in {"timeout", "connection_aborted", "upstream_error"}
     return False
@@ -2362,6 +2378,8 @@ def run_smart_agent(task: str, working_dir: str) -> tuple[str, bool, list[dict]]
     attempts = []
     runners = [
         ("gemini_agent", run_gemini_task),
+        ("copilot_agent", run_copilot_task),
+        ("droid_agent", run_droid_task),
         ("codex_agent", run_codex_task),
         ("claude_code_agent", run_claude_code_task),
     ]

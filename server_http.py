@@ -195,6 +195,8 @@ VAULT_ROOT      = _resolve_vault_root()
 CODEX_CMD = r"C:\Users\EdgarsTool\AppData\Roaming\npm\codex.cmd"
 CLAUDE_CMD = shutil.which("claude") or "claude"
 GEMINI_CMD = shutil.which("gemini") or "gemini"
+COPILOT_CMD = shutil.which("copilot") or r"C:\Users\EdgarsTool\AppData\Roaming\npm\copilot.cmd"
+DROID_CMD = shutil.which("droid") or r"C:\Users\EdgarsTool\bin\droid.exe"
 OLLAMA_CMD = r"C:\Users\EdgarsTool\AppData\Local\Programs\Ollama\ollama.exe"
 OLLAMA_HOST_RAW = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").strip()
 OLLAMA_HOST = OLLAMA_HOST_RAW if OLLAMA_HOST_RAW.startswith(("http://", "https://")) else f"http://{OLLAMA_HOST_RAW}"
@@ -428,6 +430,72 @@ TOOLS = [
         },
     },
     {
+        "name": "copilot_agent",
+        "description": (
+            "Delegates a task to the GitHub Copilot CLI running on the local machine. "
+            "Copilot can edit files, run shell commands, and search the codebase. "
+            "Use for GitHub-centric coding tasks when Codex or Claude Code are unavailable. "
+            "Returns Copilot's final response."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "The task or instruction for GitHub Copilot CLI to execute.",
+                },
+                "working_dir": {
+                    "type": "string",
+                    "description": (
+                        f"Working directory for Copilot to operate in "
+                        f"(default: {CODEX_DEFAULT_WORKDIR})"
+                    ),
+                },
+                "async": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, starts the task in the background and returns a job_id "
+                        "immediately. Recommended for multi-minute tasks."
+                    ),
+                },
+            },
+            "required": ["task"],
+        },
+    },
+    {
+        "name": "droid_agent",
+        "description": (
+            "Delegates a task to Factory Droid CLI (droid exec) on the local machine. "
+            "Droid autonomously plans, writes code, runs shell commands, and edits files. "
+            "Use for Factory.ai Droid workflows and complex local coding tasks. "
+            "Returns Droid's final response."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "The task or instruction for Droid to execute.",
+                },
+                "working_dir": {
+                    "type": "string",
+                    "description": (
+                        f"Working directory for Droid to operate in "
+                        f"(default: {CODEX_DEFAULT_WORKDIR})"
+                    ),
+                },
+                "async": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, starts the task in the background and returns a job_id "
+                        "immediately. Recommended for multi-minute tasks."
+                    ),
+                },
+            },
+            "required": ["task"],
+        },
+    },
+    {
         "name": "agent_job_status",
         "description": (
             "Checks the status of a background agent job started with async=true. "
@@ -438,7 +506,7 @@ TOOLS = [
             "properties": {
                 "job_id": {
                     "type": "string",
-                    "description": "The job_id returned by codex_agent, gemini_agent, or claude_code_agent.",
+                    "description": "The job_id returned by codex_agent, gemini_agent, claude_code_agent, copilot_agent, or droid_agent.",
                 },
             },
             "required": ["job_id"],
@@ -2200,6 +2268,70 @@ def run_claude_code_task(task: str, working_dir: str) -> tuple[str, bool]:
         return f"Failed to run Claude Code: {exc}", True
 
 
+def run_copilot_task(task: str, working_dir: str) -> tuple[str, bool]:
+    log(f"copilot_agent: task={task!r} workdir={working_dir!r}")
+
+    try:
+        result = run_agent_command(
+            [
+                "cmd.exe",
+                "/c",
+                COPILOT_CMD,
+                "-p",
+                task,
+                "-C",
+                working_dir,
+                "--allow-all-tools",
+            ],
+            cwd=working_dir,
+        )
+        log(f"copilot_agent: exit_code={result.returncode}")
+
+        return finalize_agent_output(
+            result,
+            fallback_label="GitHub Copilot",
+        )
+    except subprocess.TimeoutExpired:
+        return f"copilot_agent timed out after {AGENT_TIMEOUT_SECONDS} seconds", True
+    except FileNotFoundError:
+        return f"Error: copilot command not found at {COPILOT_CMD}", True
+    except Exception as exc:
+        return f"Failed to run GitHub Copilot: {exc}", True
+
+
+def run_droid_task(task: str, working_dir: str) -> tuple[str, bool]:
+    log(f"droid_agent: task={task!r} workdir={working_dir!r}")
+
+    try:
+        result = run_agent_command(
+            [
+                "cmd.exe",
+                "/c",
+                DROID_CMD,
+                "exec",
+                task,
+                "--cwd",
+                working_dir,
+                "--skip-permissions-unsafe",
+                "--output-format",
+                "text",
+            ],
+            cwd=working_dir,
+        )
+        log(f"droid_agent: exit_code={result.returncode}")
+
+        return finalize_agent_output(
+            result,
+            fallback_label="Factory Droid",
+        )
+    except subprocess.TimeoutExpired:
+        return f"droid_agent timed out after {AGENT_TIMEOUT_SECONDS} seconds", True
+    except FileNotFoundError:
+        return f"Error: droid command not found at {DROID_CMD}", True
+    except Exception as exc:
+        return f"Failed to run Factory Droid: {exc}", True
+
+
 def summarize_error_reason(output: str) -> str:
     lowered = (output or "").lower()
     if "quota exceeded" in lowered or "terminalquotaerror" in lowered or "retry in" in lowered:
@@ -2315,6 +2447,12 @@ def handle_tools_call(req_id, params: dict) -> dict:
 
     if name == "claude_code_agent":
         return handle_claude_code_agent(req_id, arguments)
+
+    if name == "copilot_agent":
+        return handle_copilot_agent(req_id, arguments)
+
+    if name == "droid_agent":
+        return handle_droid_agent(req_id, arguments)
 
     if name == "agent_job_status":
         return handle_agent_job_status(req_id, arguments)
@@ -2497,6 +2635,26 @@ def handle_claude_code_agent(req_id, arguments: dict) -> dict:
 
     task, working_dir = sync_args
     output, is_error = run_claude_code_task(task, working_dir)
+    return make_response(req_id, make_tool_text_response(output, is_error=is_error))
+
+
+def handle_copilot_agent(req_id, arguments: dict) -> dict:
+    sync_args, async_response = maybe_start_async_job(req_id, arguments, "copilot_agent", run_copilot_task)
+    if async_response is not None:
+        return async_response
+
+    task, working_dir = sync_args
+    output, is_error = run_copilot_task(task, working_dir)
+    return make_response(req_id, make_tool_text_response(output, is_error=is_error))
+
+
+def handle_droid_agent(req_id, arguments: dict) -> dict:
+    sync_args, async_response = maybe_start_async_job(req_id, arguments, "droid_agent", run_droid_task)
+    if async_response is not None:
+        return async_response
+
+    task, working_dir = sync_args
+    output, is_error = run_droid_task(task, working_dir)
     return make_response(req_id, make_tool_text_response(output, is_error=is_error))
 
 

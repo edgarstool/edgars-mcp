@@ -4,7 +4,7 @@ Edgar 的本地 MCP（Model Context Protocol）Server。
 
 讓任何支援 MCP 的 AI（Claude、OpenClaw 等）能透過 HTTP 直接操作本機電腦，包含：檔案系統、Git、系統指令、瀏覽器、Obsidian Vault、Linear、Notion、Warp、Cursor、Factory.ai、AI 代理委派、免費圖片生成。
 
-**目前工具數量：70 個**（最後校對：2026-06-29）
+**目前工具數量：72 個**（最後校對：2026-07-06）
 
 > 不懂 Doppler 要填什麼？請看 **[Doppler 設定指南（新手版）](docs/DOPPLER-設定指南-新手版.md)**。  
 > 搞不清 mcp / webhooks / hooks 哪個是哪個？請看 **[網域分工（新手版）](docs/網域分工-新手版.md)**。
@@ -224,15 +224,17 @@ https://mcp.edgars.tools/.well-known/oauth-protected-resource
 
 ---
 
-## 工具總覽（70 個）
+## 工具總覽（72 個）
 
-### 🤖 AI 代理（8）
+### 🤖 AI 代理（10）
 
 | 工具 | 說明 |
 |------|------|
 | `codex_agent` | 委派任務給 Codex AI（程式碼實作、檔案編輯） |
 | `gemini_agent` | 委派任務給 Gemini CLI（快速通用任務） |
 | `claude_code_agent` | 委派任務給 Claude Code（複雜重構、多檔操作） |
+| `copilot_agent` | 委派任務給 GitHub Copilot CLI（本機改 code、跑指令） |
+| `droid_agent` | 委派任務給 Factory Droid CLI（`droid exec`） |
 | `ollama_agent` | 委派任務給本地 Ollama 模型（離線可用） |
 | `smart_agent` | 智慧選擇最適合的 agent 執行任務 |
 | `agent_job_status` | 查詢背景 agent job 進度 |

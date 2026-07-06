@@ -1839,6 +1839,108 @@ class ClaudeCodeAgentSmokeTests(unittest.TestCase):
         self.assertIsNone(kwargs["env_overrides"]["ANTHROPIC_API_KEY"])
 
 
+class CopilotDroidAgentTests(unittest.TestCase):
+    def test_copilot_and_droid_tools_are_registered(self):
+        names = {tool["name"] for tool in TOOLS}
+        self.assertIn("copilot_agent", names)
+        self.assertIn("droid_agent", names)
+
+    def test_copilot_agent_missing_task_returns_tool_error(self):
+        response = server_http.handle_copilot_agent(req_id=1, arguments={})
+        self.assertTrue(tool_is_error(response))
+        self.assertEqual("Error: task is required", tool_text(response))
+
+    def test_droid_agent_missing_task_returns_tool_error(self):
+        response = server_http.handle_droid_agent(req_id=1, arguments={})
+        self.assertTrue(tool_is_error(response))
+        self.assertEqual("Error: task is required", tool_text(response))
+
+    def test_copilot_agent_invokes_cli_with_prompt_and_workdir(self):
+        completed = subprocess.CompletedProcess(
+            args=["copilot", "-p", "say hi"],
+            returncode=0,
+            stdout="hello from copilot\n",
+            stderr="",
+        )
+        calls = []
+        original_run_agent_command = server_http.run_agent_command
+        try:
+            def fake_run_agent_command(*args, **kwargs):
+                calls.append((args, kwargs))
+                return completed
+
+            server_http.run_agent_command = fake_run_agent_command
+            response = server_http.handle_tools_call(
+                req_id=1,
+                params={
+                    "name": "copilot_agent",
+                    "arguments": {
+                        "task": "say hi",
+                        "working_dir": "C:/tmp",
+                    },
+                },
+            )
+        finally:
+            server_http.run_agent_command = original_run_agent_command
+
+        self.assertFalse(tool_is_error(response))
+        self.assertEqual("hello from copilot", tool_text(response))
+        command = calls[0][0][0]
+        self.assertEqual(
+            ["cmd.exe", "/c", server_http.COPILOT_CMD, "-p", "say hi", "-C", "C:/tmp", "--allow-all-tools"],
+            command,
+        )
+        self.assertEqual("C:/tmp", calls[0][1]["cwd"])
+
+    def test_droid_agent_invokes_exec_with_workdir(self):
+        completed = subprocess.CompletedProcess(
+            args=["droid", "exec", "say hi"],
+            returncode=0,
+            stdout="Done. Output: hello from droid\n",
+            stderr="",
+        )
+        calls = []
+        original_run_agent_command = server_http.run_agent_command
+        try:
+            def fake_run_agent_command(*args, **kwargs):
+                calls.append((args, kwargs))
+                return completed
+
+            server_http.run_agent_command = fake_run_agent_command
+            response = server_http.handle_tools_call(
+                req_id=1,
+                params={
+                    "name": "droid_agent",
+                    "arguments": {
+                        "task": "say hi",
+                        "working_dir": "C:/tmp",
+                    },
+                },
+            )
+        finally:
+            server_http.run_agent_command = original_run_agent_command
+
+        self.assertFalse(tool_is_error(response))
+        self.assertIn("hello from droid", tool_text(response))
+        command = calls[0][0][0]
+        self.assertEqual(
+            [
+                "cmd.exe",
+                "/c",
+                server_http.DROID_CMD,
+                "exec",
+                "say hi",
+                "--cwd",
+                "C:/tmp",
+                "--skip-permissions-unsafe",
+                "--output-format",
+                "text",
+            ],
+            command,
+        )
+        self.assertEqual("C:/tmp", calls[0][1]["cwd"])
+
+
 class ExternalApiIntegrationTests(unittest.TestCase):
     def test_warp_cursor_factory_tools_are_registered(self):
         names = {tool["name"] for tool in TOOLS}

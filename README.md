@@ -218,6 +218,7 @@ https://mcp.edgars.tools/.well-known/oauth-protected-resource
 詳細版請看：
 
 - [docs/MCP-CLIENT-AUTH-最小正式方案.md](docs/MCP-CLIENT-AUTH-最小正式方案.md)
+- [docs/CHATGPT-OAUTH-INCIDENT-2026-07-06.md](docs/CHATGPT-OAUTH-INCIDENT-2026-07-06.md)
 - [config/mcp.local.example.json](config/mcp.local.example.json)
 - [config/mcp.remote.stdio.example.json](config/mcp.remote.stdio.example.json)
 
@@ -510,7 +511,8 @@ https://mcp.edgars.tools/mcp
 
 注意：
 
-- public `/mcp` 在 Access 開啟後，探測可能會看到 **401 / 302 / Cloudflare Access login**，這不一定代表壞掉。
+- public `/mcp` 在 Access 開啟後，探測可能會看到 **401 / 302 / Cloudflare Access login**，這代表 edge 可達，但**不等於 ChatGPT OAuth 已可用**。
+- 若目標是 ChatGPT Connector / OAuth 全綠，還必須另外確認 `/.well-known/oauth-protected-resource` 可匿名讀取並回 `200`。
 - 若要強制保護 direct URL，請直接在 `mcp.edgars.tools` 掛 Access，不要只靠 portal 隱藏。
 
 OpenAI Secure MCP Tunnel 是另一條私有路徑：`tunnel-client` 從本機 outbound 連到 OpenAI，OpenAI 產品透過 OpenAI-hosted tunnel endpoint 呼叫本機 MCP。它不需要 `mcp.edgars.tools`，也不需要開 inbound firewall port。

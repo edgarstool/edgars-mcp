@@ -4,7 +4,8 @@ edgars mcp 即時控制台
 本機小伺服器：只綁 127.0.0.1:8788，不對外開放、不需要登入。
 即時數據來源：
   - http://127.0.0.1:8765/health   （MCP 本機健康資訊）
-  - https://mcp.edgars.tools/mcp   （外網探測，403 = 邊界防護正常）
+  - https://mcp.edgars.tools/mcp   （外網 MCP 探測）
+  - https://mcp.edgars.tools/.well-known/oauth-protected-resource （ChatGPT OAuth discovery 探測）
   - Windows 服務 / process 狀態
   - V:\\projects\\edgars-mcp\\logs\\ 的 log 檔即時 tail
 啟動：雙擊「MCP-即時控制台.cmd」，或 py -3 MCP-即時控制台.py
@@ -25,6 +26,7 @@ BIND_HOST = "127.0.0.1"
 BIND_PORT = 8788
 MCP_HEALTH_URL = "http://127.0.0.1:8765/health"
 MCP_EXTERNAL_URL = "https://mcp.edgars.tools/mcp"
+MCP_PRM_URL = "https://mcp.edgars.tools/.well-known/oauth-protected-resource"
 LOGS_DIR = r"V:\projects\edgars-mcp\logs"
 STARTUP_DIR = os.path.join(
     os.environ.get("APPDATA", r"C:\Users\EdgarsTool\AppData\Roaming"),
@@ -77,10 +79,17 @@ def collect_status() -> dict:
     result["local"] = {"http": code, "error": err, "health": health,
                        "ok": bool(health and health.get("ok"))}
 
-    # 2. 外網探測（403 = Cloudflare 邊界防護正常）
+    # 2. 外網探測
     code2, _, err2 = _http_get(MCP_EXTERNAL_URL, 8)
-    result["external"] = {"http": code2, "error": err2,
-                          "ok": code2 in (200, 401, 403, 405, 406)}
+    code3, _, err3 = _http_get(MCP_PRM_URL, 8)
+    result["external"] = {
+        "mcp_http": code2,
+        "mcp_error": err2,
+        "prm_http": code3,
+        "prm_error": err3,
+        "reachable": code2 in (200, 401, 405, 406),
+        "oauth_ready": code3 == 200 and code2 in (200, 401, 405, 406),
+    }
 
     # 3. port 8765
     result["port_8765"] = _port_listening(8765)
@@ -229,7 +238,8 @@ async function refresh(){
     const auth = h.auth || {};
     const cards = [
       ['MCP 伺服器', chip(s.local.ok, '運作中', s.port_8765 ? 'health 異常' : '停止')],
-      ['外網 mcp.edgars.tools', chip(s.external.ok, 'HTTP '+s.external.http+'（防護正常）', s.external.error || ('HTTP '+s.external.http))],
+      ['ChatGPT OAuth readiness', chip(s.external.oauth_ready, 'PRM '+s.external.prm_http+' / MCP '+s.external.mcp_http, (s.external.prm_error || s.external.mcp_error || ('PRM '+s.external.prm_http+' / MCP '+s.external.mcp_http)))],
+      ['外網 mcp.edgars.tools', chip(s.external.reachable, 'MCP HTTP '+s.external.mcp_http, s.external.mcp_error || ('HTTP '+s.external.mcp_http), !s.external.oauth_ready && s.external.reachable)],
       ['Cloudflared 隧道', chip(s.cloudflared, '服務 Running', '服務未執行')],
       ['Claude Desktop', chip(s.claude_procs>0, s.claude_procs+' 個 process', '未執行')],
       ['協定版本', '<div class="big">'+(h.protocolVersion||'—')+'</div>'],

@@ -1957,14 +1957,14 @@ class SmartAgentChainTests(unittest.TestCase):
     def test_smart_agent_chain_order(self):
         call_order = []
         original = {
-            "gemini": server_http.run_gemini_task,
+            "kilo": server_http.run_kilo_task,
             "copilot": server_http.run_copilot_task,
             "droid": server_http.run_droid_task,
             "codex": server_http.run_codex_task,
             "claude": server_http.run_claude_code_task,
         }
         try:
-            server_http.run_gemini_task = lambda t, w: (call_order.append("gemini_agent"), ("quota exceeded", True))[1]
+            server_http.run_kilo_task = lambda t, w: (call_order.append("kilo_agent"), ("quota exceeded", True))[1]
             server_http.run_copilot_task = lambda t, w: (call_order.append("copilot_agent"), ("timeout", True))[1]
             server_http.run_droid_task = lambda t, w: (call_order.append("droid_agent"), ("ok from droid", False))[1]
             server_http.run_codex_task = lambda t, w: ("should not run", False)
@@ -1972,7 +1972,7 @@ class SmartAgentChainTests(unittest.TestCase):
 
             output, is_error, attempts = server_http.run_smart_agent("task", "C:/tmp")
         finally:
-            server_http.run_gemini_task = original["gemini"]
+            server_http.run_kilo_task = original["kilo"]
             server_http.run_copilot_task = original["copilot"]
             server_http.run_droid_task = original["droid"]
             server_http.run_codex_task = original["codex"]
@@ -1980,9 +1980,9 @@ class SmartAgentChainTests(unittest.TestCase):
 
         self.assertFalse(is_error)
         self.assertEqual("ok from droid", output)
-        self.assertEqual(["gemini_agent", "copilot_agent", "droid_agent"], call_order)
+        self.assertEqual(["kilo_agent", "copilot_agent", "droid_agent"], call_order)
         self.assertEqual(
-            ["gemini_agent", "copilot_agent", "droid_agent"],
+            ["kilo_agent", "copilot_agent", "droid_agent"],
             [attempt["tool"] for attempt in attempts],
         )
 

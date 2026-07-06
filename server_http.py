@@ -215,8 +215,8 @@ CODEX_CMD = (
     shutil.which("codex")
     or r"C:\Users\EdgarsTool\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe"
 )
+KILO_CMD = shutil.which("kilo") or r"C:\Users\EdgarsTool\AppData\Roaming\npm\kilo.cmd"
 CLAUDE_CMD = shutil.which("claude") or "claude"
-GEMINI_CMD = shutil.which("gemini") or "gemini"
 COPILOT_CMD = shutil.which("copilot") or r"C:\Users\EdgarsTool\AppData\Roaming\npm\copilot.cmd"
 DROID_CMD = shutil.which("droid") or r"C:\Users\EdgarsTool\bin\droid.exe"
 OLLAMA_CMD = r"C:\Users\EdgarsTool\AppData\Local\Programs\Ollama\ollama.exe"
@@ -369,11 +369,11 @@ TOOLS = [
         },
     },
     {
-        "name": "gemini_agent",
+        "name": "kilo_agent",
         "description": (
-            "Delegates a task to the Gemini CLI AI agent running on the local machine. "
-            "Fast response (under 30 seconds). Best for quick coding tasks, file operations, "
-            "shell commands, and general automation on the local Windows machine. "
+            "Delegates a task to the Kilo CLI AI agent running on the local machine. "
+            "Fast response for quick coding tasks, file operations, shell commands, "
+            "and general automation on the local Windows machine. "
             "Use this as the default agent for most tasks."
         ),
         "inputSchema": {
@@ -381,12 +381,12 @@ TOOLS = [
             "properties": {
                 "task": {
                     "type": "string",
-                    "description": "The task or instruction for Gemini to execute",
+                    "description": "The task or instruction for Kilo to execute",
                 },
                 "working_dir": {
                     "type": "string",
                     "description": (
-                        f"Working directory for Gemini to operate in "
+                        f"Working directory for Kilo to operate in "
                         f"(default: {CODEX_DEFAULT_WORKDIR})"
                     ),
                 },
@@ -528,7 +528,7 @@ TOOLS = [
             "properties": {
                 "job_id": {
                     "type": "string",
-                    "description": "The job_id returned by codex_agent, gemini_agent, claude_code_agent, copilot_agent, or droid_agent.",
+                    "description": "The job_id returned by codex_agent, kilo_agent, claude_code_agent, copilot_agent, or droid_agent.",
                 },
             },
             "required": ["job_id"],
@@ -569,7 +569,7 @@ TOOLS = [
         "name": "smart_agent",
         "description": (
             "Runs a task through a fallback chain of local AI agents. "
-            "Order: Gemini → GitHub Copilot → Factory Droid → Codex → Claude Code. "
+            "Order: Kilo → GitHub Copilot → Factory Droid → Codex → Claude Code. "
             "Falls back on quota limits, timeouts, missing CLIs, or transient upstream failures. "
             "Use this as the default tool for local execution when the user wants the server "
             "to handle agent rotation automatically, especially for file edits, shell commands, "
@@ -2355,26 +2355,35 @@ def run_codex_task(task: str, working_dir: str) -> tuple[str, bool]:
             pass
 
 
-def run_gemini_task(task: str, working_dir: str) -> tuple[str, bool]:
-    log(f"gemini_agent: task={task!r} workdir={working_dir!r}")
+def run_kilo_task(task: str, working_dir: str) -> tuple[str, bool]:
+    log(f"kilo_agent: task={task!r} workdir={working_dir!r}")
 
     try:
         result = run_agent_command(
-            ["cmd.exe", "/c", GEMINI_CMD, "-p", task],
+            [
+                "cmd.exe",
+                "/c",
+                KILO_CMD,
+                "run",
+                "--auto",
+                "--dir",
+                working_dir,
+                task,
+            ],
             cwd=working_dir,
         )
-        log(f"gemini_agent: exit_code={result.returncode}")
+        log(f"kilo_agent: exit_code={result.returncode}")
 
         return finalize_agent_output(
             result,
-            fallback_label="Gemini",
+            fallback_label="Kilo",
         )
     except subprocess.TimeoutExpired:
-        return f"gemini_agent timed out after {AGENT_TIMEOUT_SECONDS} seconds", True
+        return f"kilo_agent timed out after {AGENT_TIMEOUT_SECONDS} seconds", True
     except FileNotFoundError:
-        return f"Error: gemini command not found at {GEMINI_CMD}", True
+        return f"Error: kilo command not found at {KILO_CMD}", True
     except Exception as exc:
-        return f"Failed to run Gemini: {exc}", True
+        return f"Failed to run Kilo: {exc}", True
 
 
 def run_claude_code_task(task: str, working_dir: str) -> tuple[str, bool]:
@@ -2511,7 +2520,7 @@ def should_fallback(tool_name: str, output: str, is_error: bool) -> bool:
         return True
 
     reason = summarize_error_reason(output)
-    if tool_name in {"gemini_agent", "copilot_agent", "droid_agent"}:
+    if tool_name in {"kilo_agent", "copilot_agent", "droid_agent"}:
         return reason in _TRANSIENT_FALLBACK_REASONS
     if tool_name == "codex_agent":
         return reason in {"timeout", "connection_aborted", "upstream_error"}
@@ -2521,7 +2530,7 @@ def should_fallback(tool_name: str, output: str, is_error: bool) -> bool:
 def run_smart_agent(task: str, working_dir: str) -> tuple[str, bool, list[dict]]:
     attempts = []
     runners = [
-        ("gemini_agent", run_gemini_task),
+        ("kilo_agent", run_kilo_task),
         ("copilot_agent", run_copilot_task),
         ("droid_agent", run_droid_task),
         ("codex_agent", run_codex_task),
@@ -2611,8 +2620,8 @@ def handle_tools_call(req_id, params: dict) -> dict:
     if name == "codex_agent":
         return handle_codex_agent(req_id, arguments)
 
-    if name == "gemini_agent":
-        return handle_gemini_agent(req_id, arguments)
+    if name == "kilo_agent":
+        return handle_kilo_agent(req_id, arguments)
 
     if name == "claude_code_agent":
         return handle_claude_code_agent(req_id, arguments)
@@ -2799,13 +2808,13 @@ def handle_codex_agent(req_id, arguments: dict) -> dict:
     return make_response(req_id, make_tool_text_response(output, is_error=is_error))
 
 
-def handle_gemini_agent(req_id, arguments: dict) -> dict:
-    sync_args, async_response = maybe_start_async_job(req_id, arguments, "gemini_agent", run_gemini_task)
+def handle_kilo_agent(req_id, arguments: dict) -> dict:
+    sync_args, async_response = maybe_start_async_job(req_id, arguments, "kilo_agent", run_kilo_task)
     if async_response is not None:
         return async_response
 
     task, working_dir = sync_args
-    output, is_error = run_gemini_task(task, working_dir)
+    output, is_error = run_kilo_task(task, working_dir)
     return make_response(req_id, make_tool_text_response(output, is_error=is_error))
 
 

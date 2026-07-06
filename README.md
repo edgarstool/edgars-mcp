@@ -146,7 +146,7 @@ Stop-Process -Id <OwningProcessId> -Force
 |------|------|
 | Python | 3.11+ |
 | Doppler | secrets 管理，project `handcraft-mcp`，config `prd` |
-| Playwright | `playwright install chromium`（browser 工具需要） |
+| Playwright | `powershell -File .\scripts\setup-playwright.ps1`（browser 工具需要；含 pip + Chromium） |
 | Claude Code | `winget install Anthropic.ClaudeCode` + `claude auth login` |
 | Ollama | 本地模型執行環境 |
 | mmx CLI | MiniMax 媒體生成 |

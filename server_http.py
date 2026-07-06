@@ -6094,7 +6094,15 @@ def _run_visible_browser_op(fn):
 
 def _pw_launch():
     """Import playwright sync API lazily."""
-    from playwright.sync_api import sync_playwright  # noqa: PLC0415
+    try:
+        from playwright.sync_api import sync_playwright  # noqa: PLC0415
+    except ImportError as exc:
+        raise RuntimeError(
+            "Playwright is not installed for the MCP Python. Run:\n"
+            "  cd V:\\projects\\edgars-mcp\n"
+            "  py -3 -m pip install playwright\n"
+            "  py -3 -m playwright install chromium"
+        ) from exc
     return sync_playwright
 
 

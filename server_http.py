@@ -211,7 +211,10 @@ BROWSER_VISIBLE_TOOL_NAMES = {
 }
 _mcp_auth_kind: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_auth_kind", default="unknown")
 
-CODEX_CMD = r"C:\Users\EdgarsTool\AppData\Roaming\npm\codex.cmd"
+CODEX_CMD = (
+    shutil.which("codex")
+    or r"C:\Users\EdgarsTool\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe"
+)
 CLAUDE_CMD = shutil.which("claude") or "claude"
 GEMINI_CMD = shutil.which("gemini") or "gemini"
 COPILOT_CMD = shutil.which("copilot") or r"C:\Users\EdgarsTool\AppData\Roaming\npm\copilot.cmd"
@@ -1606,6 +1609,50 @@ def _normalize_tool_descriptor(tool: dict) -> dict:
 
 TOOLS = [_normalize_tool_descriptor(tool) for tool in TOOLS]
 
+# Tools hidden from tools/list and rejected on tools/call until re-enabled.
+DEFAULT_DISABLED_TOOL_NAMES = frozenset({
+    "mmx_image_generate",
+    "mmx_video_generate",
+    "mmx_speech_synthesize",
+    "mmx_music_generate",
+    "mmx_vision_describe",
+    "mmx_search_query",
+    "mmx_text_chat",
+    "mmx_quota_show",
+    "tracktw_carriers",
+    "tracktw_package_status",
+})
+
+
+def _parse_tool_name_csv(env_value: str) -> set[str]:
+    return {part.strip() for part in env_value.split(",") if part.strip()}
+
+
+def get_disabled_tool_names() -> frozenset[str]:
+    disabled = set(DEFAULT_DISABLED_TOOL_NAMES)
+    disabled.update(_parse_tool_name_csv(os.getenv("MCP_DISABLED_TOOLS", "")))
+    enabled_override = _parse_tool_name_csv(os.getenv("MCP_ENABLED_TOOLS", ""))
+    if enabled_override:
+        disabled -= enabled_override
+    return frozenset(disabled)
+
+
+def is_tool_disabled(name: str) -> bool:
+    return name in get_disabled_tool_names()
+
+
+def disabled_tool_message(name: str) -> str:
+    return (
+        f"Tool '{name}' is temporarily disabled on this server. "
+        "Set MCP_ENABLED_TOOLS to re-enable specific tools."
+    )
+
+
+def active_tools() -> list[dict]:
+    disabled = get_disabled_tool_names()
+    return [tool for tool in TOOLS if tool.get("name") not in disabled]
+
+
 # ── Origin 白名單（防 DNS rebinding，spec 強制要求）────────────────────────────
 # 允許 localhost / 127.0.0.1 任意 port，供本地開發 + MCP Inspector 使用。
 # Cloudflare Tunnel 接入後，瀏覽器 origin 會是 tunnel domain，需另行加入。
@@ -2539,9 +2586,10 @@ def handle_ping(req_id, params: dict) -> dict:
 
 
 def handle_tools_list(req_id, params: dict) -> dict:
-    log(f"tools/list: returning {len(TOOLS)} tool(s)")
+    tools = active_tools()
+    log(f"tools/list: returning {len(tools)} tool(s) ({len(TOOLS) - len(tools)} disabled)")
     # 工具清單不常變、對所有呼叫者相同 → 可快取（2026 快取提示）
-    return make_response(req_id, {"tools": TOOLS, "ttlMs": 60000, "cacheScope": "public"})
+    return make_response(req_id, {"tools": tools, "ttlMs": 60000, "cacheScope": "public"})
 
 
 def handle_tools_call(req_id, params: dict) -> dict:
@@ -2549,6 +2597,12 @@ def handle_tools_call(req_id, params: dict) -> dict:
     arguments = params.get("arguments", {})
     cleanup_expired_jobs()
     log(f"tools/call: name={name} arguments={arguments}")
+
+    if name and is_tool_disabled(name):
+        return make_response(
+            req_id,
+            make_tool_text_response(disabled_tool_message(name), is_error=True),
+        )
 
     if name == "echo":
         message = arguments.get("message", "")

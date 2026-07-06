@@ -1404,12 +1404,24 @@ class DiscordWebhookTests(unittest.TestCase):
 
 
 class TrackTWTests(unittest.TestCase):
-    def test_tracktw_schema_is_registered(self):
+    def test_tracktw_schema_is_registered_but_disabled_by_default(self):
+        all_names = {tool["name"] for tool in TOOLS}
         listed_tools = handle_tools_list(req_id=1, params={})["result"]["tools"]
-        names = {tool["name"] for tool in listed_tools}
+        listed_names = {tool["name"] for tool in listed_tools}
 
-        self.assertIn("tracktw_carriers", names)
-        self.assertIn("tracktw_package_status", names)
+        self.assertIn("tracktw_carriers", all_names)
+        self.assertIn("tracktw_package_status", all_names)
+        self.assertNotIn("tracktw_carriers", listed_names)
+        self.assertNotIn("tracktw_package_status", listed_names)
+
+    def test_disabled_tool_call_returns_error(self):
+        response = handle_tools_call(
+            req_id=1,
+            params={"name": "tracktw_carriers", "arguments": {}},
+        )
+
+        self.assertTrue(tool_is_error(response))
+        self.assertIn("temporarily disabled", tool_text(response))
 
     def test_tracktw_package_status_formats_timeline_and_eta(self):
         tracking_data = {

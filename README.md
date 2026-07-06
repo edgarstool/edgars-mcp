@@ -4,7 +4,7 @@ Edgar 的本地 MCP（Model Context Protocol）Server。
 
 讓任何支援 MCP 的 AI（Claude、OpenClaw 等）能透過 HTTP 直接操作本機電腦，包含：檔案系統、Git、系統指令、瀏覽器、Obsidian Vault、Linear、Notion、Warp、Cursor、Factory.ai、AI 代理委派、免費圖片生成。
 
-**目前工具數量：72 個**（最後校對：2026-07-06）
+**目前工具數量：78 個**（最後校對：2026-07-06）
 
 > 不懂 Doppler 要填什麼？請看 **[Doppler 設定指南（新手版）](docs/DOPPLER-設定指南-新手版.md)**。  
 > 搞不清 mcp / webhooks / hooks 哪個是哪個？請看 **[網域分工（新手版）](docs/網域分工-新手版.md)**。
@@ -224,7 +224,7 @@ https://mcp.edgars.tools/.well-known/oauth-protected-resource
 
 ---
 
-## 工具總覽（72 個）
+## 工具總覽（78 個）
 
 ### 🤖 AI 代理（10）
 
@@ -282,15 +282,23 @@ https://mcp.edgars.tools/.well-known/oauth-protected-resource
 
 ---
 
-### 🌐 瀏覽器（3）
+### 🌐 瀏覽器（9）
 
 | 工具 | 說明 |
 |------|------|
-| `browser_screenshot` | 對網頁截圖，存到 `.screenshots/` |
-| `browser_get_text` | 擷取網頁純文字內容 |
-| `browser_run_script` | 在網頁上執行 JavaScript |
+| `browser_screenshot` | 對網頁截圖，存到 `.screenshots/`（headless） |
+| `browser_get_text` | 擷取網頁純文字內容（headless） |
+| `browser_run_script` | 在網頁上執行 JavaScript（headless） |
+| `browser_visible_open` | 跳出可見 Chrome 視窗並開啟 URL（本機信任客戶端） |
+| `browser_visible_navigate` | 在可見 session 內換網址 |
+| `browser_visible_click` | 在可見 session 內點擊元素 |
+| `browser_visible_type` | 在可見 session 內輸入文字 |
+| `browser_visible_screenshot` | 對目前可見 session 截圖 |
+| `browser_visible_close` | 關閉可見瀏覽器 |
 
-> 需要 Playwright + Chromium：`playwright install chromium`
+> headless 工具需要 Playwright + Chromium：`playwright install chromium`  
+> 可見瀏覽器預設用本機已安裝的 Chrome（`BROWSER_VISIBLE_CHANNEL=chrome`）。  
+> 遠端 OAuth 客戶端（例如 ChatGPT）無法叫出桌面瀏覽器；Cursor / Hermes stdio 可以。
 
 ---
 

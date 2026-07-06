@@ -79,6 +79,7 @@ def build_request(payload: dict) -> urllib.request.Request:
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
+        "X-Handcraft-Client-Mode": "stdio-local",
     }
     auth_token = load_auth_token()
     if auth_token:

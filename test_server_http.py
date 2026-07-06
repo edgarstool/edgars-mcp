@@ -2185,5 +2185,62 @@ class ExternalApiIntegrationTests(unittest.TestCase):
             self.assertFalse(server_http.verify_linear_webhook_signature(body, "bad"))
 
 
+class VisibleBrowserTests(unittest.TestCase):
+    def test_visible_browser_tools_are_registered(self):
+        listed_tools = handle_tools_list(req_id=1, params={})["result"]["tools"]
+        names = {tool["name"] for tool in listed_tools}
+        for tool_name in server_http.BROWSER_VISIBLE_TOOL_NAMES:
+            self.assertIn(tool_name, names)
+
+    def test_visible_browser_open_requires_url(self):
+        token = server_http._mcp_auth_kind.set("static")
+        try:
+            response = server_http.handle_browser_visible_open(req_id=1, arguments={})
+        finally:
+            server_http._mcp_auth_kind.reset(token)
+
+        self.assertTrue(tool_is_error(response))
+        self.assertEqual("Error: url is required", tool_text(response))
+
+    def test_visible_browser_blocks_remote_oauth_clients(self):
+        token = server_http._mcp_auth_kind.set("oauth")
+        try:
+            response = server_http.handle_browser_visible_open(
+                req_id=1,
+                arguments={"url": "https://example.com"},
+            )
+        finally:
+            server_http._mcp_auth_kind.reset(token)
+
+        self.assertTrue(tool_is_error(response))
+        self.assertIn("visible browser tools are limited", tool_text(response))
+
+    def test_visible_browser_open_uses_executor(self):
+        token = server_http._mcp_auth_kind.set("static")
+        try:
+            with patch.object(server_http, "_run_visible_browser_op", return_value=("https://example.com/", "Example")) as run_op:
+                response = server_http.handle_browser_visible_open(
+                    req_id=1,
+                    arguments={"url": "https://example.com"},
+                )
+        finally:
+            server_http._mcp_auth_kind.reset(token)
+
+        self.assertFalse(tool_is_error(response))
+        self.assertIn("Visible browser opened.", tool_text(response))
+        run_op.assert_called_once()
+
+    def test_visible_browser_close_when_not_open(self):
+        token = server_http._mcp_auth_kind.set("static")
+        try:
+            with patch.object(server_http, "_run_visible_browser_op", side_effect=lambda fn: fn()):
+                response = server_http.handle_browser_visible_close(req_id=1, arguments={})
+        finally:
+            server_http._mcp_auth_kind.reset(token)
+
+        self.assertFalse(tool_is_error(response))
+        self.assertEqual("Visible browser closed.", tool_text(response))
+
+
 if __name__ == "__main__":
     unittest.main()

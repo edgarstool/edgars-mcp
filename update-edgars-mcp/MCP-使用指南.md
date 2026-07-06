@@ -56,8 +56,23 @@ Notion、Linear、Obsidian、Warp、Cursor、Factory.ai、Cloudflare、Google（
 | 其他整合 | Warp、Cursor、Factory.ai、Cloudflare |
 
 ## 五、儀表板
-我另外做了一個 **MCP 控制台儀表板**（`MCP-控制台.html`），用瀏覽器打開就能看：
-端點、授權狀態、工具分類、健康檢查、維護排程、PR 連結。放在你資料夾裡，雙擊即可開。
+現在有兩個檔，但角色不同：
+
+1. **真正的即時控制台：`mcp-dashboard.py`**
+   - 會在本機開 `http://127.0.0.1:8788/`
+   - 即時讀：
+     - `http://127.0.0.1:8765/health`
+     - `https://mcp.edgars.tools/mcp`
+     - `https://mcp.edgars.tools/.well-known/oauth-protected-resource`
+     - Windows 服務 / process 狀態
+     - `V:\projects\edgars-mcp\logs\` 的 log tail
+   - 啟動方式：雙擊 `MCP-即時控制台.cmd`
+
+2. **入口說明頁：`MCP-控制台.html`**
+   - 這份現在不是狀態真相來源，只是入口頁
+   - 用來快速開 `http://127.0.0.1:8788/`、看資料來源、看排錯順序
+
+> 簡單講：**要看真實健康狀態，看 `mcp-dashboard.py` 跑出來的 live dashboard；不要再把 `MCP-控制台.html` 當成即時狀態頁。**
 
 ## 六、常見狀況
 - **連不上/紅**：先確認 server 在跑（`/health`）、token 對不對、Cloudflare Tunnel 有沒有通。

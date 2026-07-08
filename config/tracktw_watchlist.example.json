@@ -1,0 +1,15 @@
+{
+  "watch": [
+    {
+      "tracking_number": "TEST-POLL-001-NOOP",
+      "carrier_name": "7-Eleven店到店",
+      "label": "demo 單（驗證 polling 鏈路用）"
+    }
+  ],
+  "_comment": "把想追的單加在 watch 陣列。carrier_name 用 tracktw_carriers 工具或 GET /carrier/available 看。修改後存檔即生效。",
+  "_examples": [
+    { "tracking_number": "T1234567890", "carrier_name": "黑貓宅急便" },
+    { "tracking_number": "F1234567890123", "carrier_name": "全家店到店" },
+    { "tracking_number": "L1234567890", "carrier_name": "萊爾富店到店" }
+  ]
+}

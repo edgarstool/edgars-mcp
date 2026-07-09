@@ -1,5 +1,6 @@
 const SERVICE_NAME = "edgars-status";
 const MCP_EXTERNAL_URL = "https://mcp.edgars.tools/mcp";
+const MCP_PRM_URL = "https://mcp.edgars.tools/.well-known/oauth-protected-resource";
 const HOOKS_HEALTH_URL = "https://hooks.edgars.tools/health";
 const MCP_LOCAL_ORIGIN = "127.0.0.1:8765";
 const LOCAL_HOST_ALIAS = "EdgarsTool / edgar-local-01";
@@ -18,6 +19,53 @@ function textStatus(label, state, detail) {
 
 async function probeMcpExternal() {
   try {
+    const [mcpResponse, prmResponse] = await Promise.all([
+      fetch(MCP_EXTERNAL_URL, {
+        method: "GET",
+        redirect: "manual",
+        cf: { cacheTtl: 0, cacheEverything: false },
+      }),
+      fetch(MCP_PRM_URL, {
+        method: "GET",
+        redirect: "manual",
+        cf: { cacheTtl: 0, cacheEverything: false },
+      }),
+    ]);
+    const mitigated = mcpResponse.headers.get("cf-mitigated");
+
+    if (prmResponse.status === 200 && [200, 401, 405, 406].includes(mcpResponse.status)) {
+      return textStatus(
+        "mcp chatgpt oauth",
+        "ok",
+        `PRM ${prmResponse.status} / MCP ${mcpResponse.status}`,
+      );
+    }
+    if (mcpResponse.status === 401 && prmResponse.status !== 200) {
+      return textStatus(
+        "mcp chatgpt oauth",
+        "warning",
+        `MCP 401 but PRM ${prmResponse.status} (discovery not ready)`,
+      );
+    }
+    if (mcpResponse.status === 403 && mitigated === "challenge") {
+      return textStatus(
+        "mcp chatgpt oauth",
+        "warning",
+        `MCP 403 challenge / PRM ${prmResponse.status} (edge blocking discovery)`,
+      );
+    }
+    return textStatus(
+      "mcp chatgpt oauth",
+      "warning",
+      `PRM ${prmResponse.status} / MCP ${mcpResponse.status}`,
+    );
+  } catch (error) {
+    return textStatus("mcp chatgpt oauth", "error", error.message);
+  }
+}
+
+async function probeMcpExternalReachability() {
+  try {
     const response = await fetch(MCP_EXTERNAL_URL, {
       method: "GET",
       redirect: "manual",
@@ -25,7 +73,7 @@ async function probeMcpExternal() {
     });
     const mitigated = response.headers.get("cf-mitigated");
     if (response.status === 401) {
-      return textStatus("mcp external", "protected", "401 Unauthorized (expected)");
+      return textStatus("mcp external", "protected", "401 Unauthorized (edge reachable)");
     }
     if (response.status === 403 && mitigated === "challenge") {
       return textStatus("mcp external", "protected", "403 challenge (Access/WAF protected)");
@@ -73,8 +121,9 @@ function verificationStatus(secretValue, label) {
 }
 
 async function buildStatus(env) {
-  const [mcpExternal, hooksHealth] = await Promise.all([
+  const [mcpChatGptOauth, mcpExternal, hooksHealth] = await Promise.all([
     probeMcpExternal(),
+    probeMcpExternalReachability(),
     probeHooksHealth(),
   ]);
   return {
@@ -82,6 +131,7 @@ async function buildStatus(env) {
     service: SERVICE_NAME,
     version: "EDGAR-OS v1.0",
     checks: [
+      mcpChatGptOauth,
       mcpExternal,
       localOriginStatus(),
       hooksHealth,

@@ -18,9 +18,11 @@ import json
 import os
 import subprocess
 import tempfile
+import contextvars
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 import shutil
 import base64
 import hashlib
@@ -191,10 +193,29 @@ def _resolve_vault_root() -> Path:
 SCREENSHOTS_DIR = REPO_ROOT / ".screenshots"
 REPORTS_DIR     = REPO_ROOT / "reports"
 VAULT_ROOT      = _resolve_vault_root()
+BROWSER_VISIBLE_IDLE_MS = int(os.getenv("BROWSER_VISIBLE_IDLE_MS", str(30 * 60 * 1000)))
+BROWSER_VISIBLE_SLOW_MO_DEFAULT = int(os.getenv("BROWSER_VISIBLE_SLOW_MO", "300"))
+BROWSER_VISIBLE_OP_TIMEOUT_SEC = int(os.getenv("BROWSER_VISIBLE_OP_TIMEOUT_SEC", "120"))
+BROWSER_VISIBLE_LOCAL_ONLY = os.getenv("BROWSER_VISIBLE_LOCAL_ONLY", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)
+BROWSER_VISIBLE_TOOL_NAMES = {
+    "browser_visible_open",
+    "browser_visible_navigate",
+    "browser_visible_click",
+    "browser_visible_type",
+    "browser_visible_screenshot",
+    "browser_visible_close",
+}
+_mcp_auth_kind: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_auth_kind", default="unknown")
 
 CODEX_CMD = r"C:\Users\EdgarsTool\AppData\Roaming\npm\codex.cmd"
 CLAUDE_CMD = shutil.which("claude") or "claude"
 GEMINI_CMD = shutil.which("gemini") or "gemini"
+COPILOT_CMD = shutil.which("copilot") or r"C:\Users\EdgarsTool\AppData\Roaming\npm\copilot.cmd"
+DROID_CMD = shutil.which("droid") or r"C:\Users\EdgarsTool\bin\droid.exe"
 OLLAMA_CMD = r"C:\Users\EdgarsTool\AppData\Local\Programs\Ollama\ollama.exe"
 OLLAMA_HOST_RAW = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").strip()
 OLLAMA_HOST = OLLAMA_HOST_RAW if OLLAMA_HOST_RAW.startswith(("http://", "https://")) else f"http://{OLLAMA_HOST_RAW}"
@@ -207,7 +228,7 @@ LATEST_PROTOCOL_VERSION = "2026-07-28"   # 新世代（server/discover）
 SUPPORTED_PROTOCOL_VERSIONS = ["2026-07-28", "2025-11-25"]
 SERVER_INSTRUCTIONS = (
     "Edgar 的本地 MCP（mcp-handcraft）：檔案系統、Git、系統指令、瀏覽器、Obsidian、"
-    "Linear、Notion、AI 代理委派、媒體生成等 70+ 工具。"
+    "Linear、Notion、AI 代理委派、媒體生成等 78+ 工具。"
 )
 MCP_PATH = "/mcp"
 HEALTH_PATH = "/health"
@@ -428,6 +449,72 @@ TOOLS = [
         },
     },
     {
+        "name": "copilot_agent",
+        "description": (
+            "Delegates a task to the GitHub Copilot CLI running on the local machine. "
+            "Copilot can edit files, run shell commands, and search the codebase. "
+            "Use for GitHub-centric coding tasks when Codex or Claude Code are unavailable. "
+            "Returns Copilot's final response."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "The task or instruction for GitHub Copilot CLI to execute.",
+                },
+                "working_dir": {
+                    "type": "string",
+                    "description": (
+                        f"Working directory for Copilot to operate in "
+                        f"(default: {CODEX_DEFAULT_WORKDIR})"
+                    ),
+                },
+                "async": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, starts the task in the background and returns a job_id "
+                        "immediately. Recommended for multi-minute tasks."
+                    ),
+                },
+            },
+            "required": ["task"],
+        },
+    },
+    {
+        "name": "droid_agent",
+        "description": (
+            "Delegates a task to Factory Droid CLI (droid exec) on the local machine. "
+            "Droid autonomously plans, writes code, runs shell commands, and edits files. "
+            "Use for Factory.ai Droid workflows and complex local coding tasks. "
+            "Returns Droid's final response."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "The task or instruction for Droid to execute.",
+                },
+                "working_dir": {
+                    "type": "string",
+                    "description": (
+                        f"Working directory for Droid to operate in "
+                        f"(default: {CODEX_DEFAULT_WORKDIR})"
+                    ),
+                },
+                "async": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, starts the task in the background and returns a job_id "
+                        "immediately. Recommended for multi-minute tasks."
+                    ),
+                },
+            },
+            "required": ["task"],
+        },
+    },
+    {
         "name": "agent_job_status",
         "description": (
             "Checks the status of a background agent job started with async=true. "
@@ -438,7 +525,7 @@ TOOLS = [
             "properties": {
                 "job_id": {
                     "type": "string",
-                    "description": "The job_id returned by codex_agent, gemini_agent, or claude_code_agent.",
+                    "description": "The job_id returned by codex_agent, gemini_agent, claude_code_agent, copilot_agent, or droid_agent.",
                 },
             },
             "required": ["job_id"],
@@ -479,8 +566,8 @@ TOOLS = [
         "name": "smart_agent",
         "description": (
             "Runs a task through a fallback chain of local AI agents. "
-            "Starts with Gemini for speed, then falls back to Codex, then Claude Code "
-            "when quota limits, timeouts, or transient upstream failures occur. "
+            "Order: Gemini → GitHub Copilot → Factory Droid → Codex → Claude Code. "
+            "Falls back on quota limits, timeouts, missing CLIs, or transient upstream failures. "
             "Use this as the default tool for local execution when the user wants the server "
             "to handle agent rotation automatically, especially for file edits, shell commands, "
             "or any task that may outlive a single HTTP request. Prefer async=true for remote clients."
@@ -938,6 +1025,78 @@ TOOLS = [
             "required": ["url", "script"],
         },
     },
+    {
+        "name": "browser_visible_open",
+        "description": (
+            "Open a visible Chrome window (headed mode) and navigate to a URL. "
+            "Keeps one shared session for follow-up visible actions. Local/trusted MCP clients only."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to open"},
+                "slow_mo": {
+                    "type": "integer",
+                    "description": "Milliseconds to slow each Playwright action so the user can watch (default: 300)",
+                },
+                "wait_ms": {"type": "integer", "description": "Extra wait after load in ms (default: 2000)"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "browser_visible_navigate",
+        "description": "Navigate the existing visible browser session to another URL.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to open"},
+                "wait_ms": {"type": "integer", "description": "Extra wait after load in ms (default: 2000)"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "browser_visible_click",
+        "description": "Click an element in the visible browser session by CSS selector or visible text.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector to click"},
+                "text": {"type": "string", "description": "Visible text to click (used when selector is empty)"},
+                "wait_ms": {"type": "integer", "description": "Wait after click in ms (default: 500)"},
+            },
+        },
+    },
+    {
+        "name": "browser_visible_type",
+        "description": "Type into an input in the visible browser session.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector for the input"},
+                "text": {"type": "string", "description": "Text to type"},
+                "press_enter": {"type": "boolean", "description": "Press Enter after typing (default: false)"},
+                "clear_first": {"type": "boolean", "description": "Clear the field before typing (default: true)"},
+            },
+            "required": ["selector", "text"],
+        },
+    },
+    {
+        "name": "browser_visible_screenshot",
+        "description": "Capture a screenshot from the current visible browser session and save it under .screenshots/.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "full_page": {"type": "boolean", "description": "Capture full page scroll height (default: false)"},
+            },
+        },
+    },
+    {
+        "name": "browser_visible_close",
+        "description": "Close the visible browser session and release Playwright resources.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
     # ── Obsidian Vault 工具 ───────────────────────────────────────────────────
     {
         "name": "vault_read",
@@ -1359,6 +1518,7 @@ READ_ONLY_TOOL_NAMES = {
     "git_diff",
     "browser_get_text",
     "browser_run_script",
+    "browser_visible_screenshot",
     "vault_read",
     "vault_list",
     "vault_search",
@@ -1390,6 +1550,11 @@ DESTRUCTIVE_TOOL_NAMES = {
     "linear_update_issue",
     "warp_agent_run_create",
     "cursor_agent_create",
+    "browser_visible_open",
+    "browser_visible_navigate",
+    "browser_visible_click",
+    "browser_visible_type",
+    "browser_visible_close",
 }
 
 DEFAULT_TEXT_OUTPUT_SCHEMA = {
@@ -2200,6 +2365,70 @@ def run_claude_code_task(task: str, working_dir: str) -> tuple[str, bool]:
         return f"Failed to run Claude Code: {exc}", True
 
 
+def run_copilot_task(task: str, working_dir: str) -> tuple[str, bool]:
+    log(f"copilot_agent: task={task!r} workdir={working_dir!r}")
+
+    try:
+        result = run_agent_command(
+            [
+                "cmd.exe",
+                "/c",
+                COPILOT_CMD,
+                "-p",
+                task,
+                "-C",
+                working_dir,
+                "--allow-all-tools",
+            ],
+            cwd=working_dir,
+        )
+        log(f"copilot_agent: exit_code={result.returncode}")
+
+        return finalize_agent_output(
+            result,
+            fallback_label="GitHub Copilot",
+        )
+    except subprocess.TimeoutExpired:
+        return f"copilot_agent timed out after {AGENT_TIMEOUT_SECONDS} seconds", True
+    except FileNotFoundError:
+        return f"Error: copilot command not found at {COPILOT_CMD}", True
+    except Exception as exc:
+        return f"Failed to run GitHub Copilot: {exc}", True
+
+
+def run_droid_task(task: str, working_dir: str) -> tuple[str, bool]:
+    log(f"droid_agent: task={task!r} workdir={working_dir!r}")
+
+    try:
+        result = run_agent_command(
+            [
+                "cmd.exe",
+                "/c",
+                DROID_CMD,
+                "exec",
+                task,
+                "--cwd",
+                working_dir,
+                "--skip-permissions-unsafe",
+                "--output-format",
+                "text",
+            ],
+            cwd=working_dir,
+        )
+        log(f"droid_agent: exit_code={result.returncode}")
+
+        return finalize_agent_output(
+            result,
+            fallback_label="Factory Droid",
+        )
+    except subprocess.TimeoutExpired:
+        return f"droid_agent timed out after {AGENT_TIMEOUT_SECONDS} seconds", True
+    except FileNotFoundError:
+        return f"Error: droid command not found at {DROID_CMD}", True
+    except Exception as exc:
+        return f"Failed to run Factory Droid: {exc}", True
+
+
 def summarize_error_reason(output: str) -> str:
     lowered = (output or "").lower()
     if "quota exceeded" in lowered or "terminalquotaerror" in lowered or "retry in" in lowered:
@@ -2215,12 +2444,28 @@ def summarize_error_reason(output: str) -> str:
     return "error"
 
 
+_TRANSIENT_FALLBACK_REASONS = frozenset({
+    "quota_exceeded",
+    "timeout",
+    "rate_limited",
+    "connection_aborted",
+    "upstream_error",
+})
+
+
 def should_fallback(tool_name: str, output: str, is_error: bool) -> bool:
     if not is_error:
         return False
+    if tool_name == "claude_code_agent":
+        return False
+
+    lowered = (output or "").lower()
+    if "command not found" in lowered:
+        return True
+
     reason = summarize_error_reason(output)
-    if tool_name == "gemini_agent":
-        return reason in {"quota_exceeded", "timeout", "rate_limited", "connection_aborted", "upstream_error"}
+    if tool_name in {"gemini_agent", "copilot_agent", "droid_agent"}:
+        return reason in _TRANSIENT_FALLBACK_REASONS
     if tool_name == "codex_agent":
         return reason in {"timeout", "connection_aborted", "upstream_error"}
     return False
@@ -2230,6 +2475,8 @@ def run_smart_agent(task: str, working_dir: str) -> tuple[str, bool, list[dict]]
     attempts = []
     runners = [
         ("gemini_agent", run_gemini_task),
+        ("copilot_agent", run_copilot_task),
+        ("droid_agent", run_droid_task),
         ("codex_agent", run_codex_task),
         ("claude_code_agent", run_claude_code_task),
     ]
@@ -2316,6 +2563,12 @@ def handle_tools_call(req_id, params: dict) -> dict:
     if name == "claude_code_agent":
         return handle_claude_code_agent(req_id, arguments)
 
+    if name == "copilot_agent":
+        return handle_copilot_agent(req_id, arguments)
+
+    if name == "droid_agent":
+        return handle_droid_agent(req_id, arguments)
+
     if name == "agent_job_status":
         return handle_agent_job_status(req_id, arguments)
 
@@ -2401,6 +2654,18 @@ def handle_tools_call(req_id, params: dict) -> dict:
         return handle_browser_get_text(req_id, arguments)
     if name == "browser_run_script":
         return handle_browser_run_script(req_id, arguments)
+    if name == "browser_visible_open":
+        return handle_browser_visible_open(req_id, arguments)
+    if name == "browser_visible_navigate":
+        return handle_browser_visible_navigate(req_id, arguments)
+    if name == "browser_visible_click":
+        return handle_browser_visible_click(req_id, arguments)
+    if name == "browser_visible_type":
+        return handle_browser_visible_type(req_id, arguments)
+    if name == "browser_visible_screenshot":
+        return handle_browser_visible_screenshot(req_id, arguments)
+    if name == "browser_visible_close":
+        return handle_browser_visible_close(req_id, arguments)
 
     # ── Obsidian
     if name == "vault_read":              return handle_vault_read(req_id, arguments)
@@ -2497,6 +2762,26 @@ def handle_claude_code_agent(req_id, arguments: dict) -> dict:
 
     task, working_dir = sync_args
     output, is_error = run_claude_code_task(task, working_dir)
+    return make_response(req_id, make_tool_text_response(output, is_error=is_error))
+
+
+def handle_copilot_agent(req_id, arguments: dict) -> dict:
+    sync_args, async_response = maybe_start_async_job(req_id, arguments, "copilot_agent", run_copilot_task)
+    if async_response is not None:
+        return async_response
+
+    task, working_dir = sync_args
+    output, is_error = run_copilot_task(task, working_dir)
+    return make_response(req_id, make_tool_text_response(output, is_error=is_error))
+
+
+def handle_droid_agent(req_id, arguments: dict) -> dict:
+    sync_args, async_response = maybe_start_async_job(req_id, arguments, "droid_agent", run_droid_task)
+    if async_response is not None:
+        return async_response
+
+    task, working_dir = sync_args
+    output, is_error = run_droid_task(task, working_dir)
     return make_response(req_id, make_tool_text_response(output, is_error=is_error))
 
 
@@ -3418,7 +3703,12 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return
 
         # ── Dispatch ──────────────────────────────────────────────────────────
-        response = dispatch(msg)
+        auth_kind = self._detect_mcp_auth_kind()
+        auth_token = _mcp_auth_kind.set(auth_kind)
+        try:
+            response = dispatch(msg)
+        finally:
+            _mcp_auth_kind.reset(auth_token)
 
         if response is None:
             # Notification → 202 Accepted, 不回 body
@@ -3576,6 +3866,30 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         if self._builtin_oauth_enabled_for_request():
             return True
         return bool(config.mcp_api_token)
+
+    def _detect_mcp_auth_kind(self) -> str:
+        config = self.server.config
+        if self.headers.get("X-Handcraft-Client-Mode", "").strip().lower() == "stdio-local":
+            return "static"
+        if not self._mcp_auth_required():
+            return "none"
+
+        access_jwt = self.headers.get("Cf-Access-Jwt-Assertion", "").strip()
+        if access_jwt and config.cloudflare_access_enabled:
+            try:
+                verify_cloudflare_access_jwt(access_jwt, config)
+                return "cf_access"
+            except CloudflareAccessAuthError:
+                pass
+
+        auth = self.headers.get("Authorization", "")
+        if auth[:7].lower() == "bearer ":
+            token = auth[7:].strip()
+            if config.mcp_api_token and hmac.compare_digest(token, config.mcp_api_token):
+                return "static"
+            if oauth_access_token_is_valid(token):
+                return "oauth"
+        return "unknown"
 
     def _ensure_mcp_request_authorized(self) -> bool:
         """全綠授權責任鏈：Cloudflare Access JWT 或 Bearer（靜態 / 內建 OAuth / CIMD）
@@ -5670,9 +5984,125 @@ def handle_image_generate_free(req_id, arguments: dict) -> dict:
 
 # ─── Playwright Handlers ─────────────────────────────────────────────────────
 
+_VISIBLE_BROWSER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcp-visible-browser")
+
+
+class _VisibleBrowserRuntime:
+    def __init__(self) -> None:
+        self.playwright = None
+        self.browser = None
+        self.page = None
+        self.last_activity = 0.0
+        self.slow_mo = BROWSER_VISIBLE_SLOW_MO_DEFAULT
+
+
+_VISIBLE_BROWSER_RUNTIME = _VisibleBrowserRuntime()
+
+
+def _visible_browser_permitted() -> bool:
+    if not BROWSER_VISIBLE_LOCAL_ONLY:
+        return True
+    return _mcp_auth_kind.get("unknown") in {"none", "static", "cf_access"}
+
+
+def _visible_browser_access_error() -> str:
+    return (
+        "Error: visible browser tools are limited to trusted local MCP clients "
+        "(Cursor/Hermes stdio). Remote OAuth clients such as ChatGPT cannot open a desktop browser."
+    )
+
+
+def _visible_browser_touch_activity() -> None:
+    _VISIBLE_BROWSER_RUNTIME.last_activity = time.time() * 1000
+
+
+def _visible_browser_close_unlocked() -> None:
+    runtime = _VISIBLE_BROWSER_RUNTIME
+    if runtime.browser is not None:
+        try:
+            runtime.browser.close()
+        except Exception:
+            pass
+    if runtime.playwright is not None:
+        try:
+            runtime.playwright.stop()
+        except Exception:
+            pass
+    runtime.browser = None
+    runtime.playwright = None
+    runtime.page = None
+    runtime.last_activity = 0.0
+
+
+def _visible_browser_check_idle_unlocked() -> None:
+    runtime = _VISIBLE_BROWSER_RUNTIME
+    if runtime.browser is None or not runtime.last_activity:
+        return
+    idle_ms = (time.time() * 1000) - runtime.last_activity
+    if idle_ms > BROWSER_VISIBLE_IDLE_MS:
+        _visible_browser_close_unlocked()
+
+
+def _visible_browser_require_page_unlocked() -> None:
+    _visible_browser_check_idle_unlocked()
+    if _VISIBLE_BROWSER_RUNTIME.page is None:
+        raise RuntimeError("No visible browser session is open. Call browser_visible_open first.")
+
+
+def _visible_browser_launch_unlocked(slow_mo: int) -> None:
+    sync_playwright = _pw_launch()
+    _visible_browser_close_unlocked()
+    runtime = _VISIBLE_BROWSER_RUNTIME
+    runtime.playwright = sync_playwright().start()
+    launch_kwargs = {"headless": False, "slow_mo": slow_mo}
+    channel = os.getenv("BROWSER_VISIBLE_CHANNEL", "chrome").strip()
+    try:
+        if channel:
+            runtime.browser = runtime.playwright.chromium.launch(channel=channel, **launch_kwargs)
+        else:
+            runtime.browser = runtime.playwright.chromium.launch(**launch_kwargs)
+    except Exception:
+        runtime.browser = runtime.playwright.chromium.launch(headless=False, slow_mo=slow_mo)
+    runtime.page = runtime.browser.new_page()
+    runtime.slow_mo = slow_mo
+    _visible_browser_touch_activity()
+
+
+def _visible_browser_goto_unlocked(url: str, wait_ms: int) -> tuple[str, str]:
+    _visible_browser_require_page_unlocked()
+    page = _VISIBLE_BROWSER_RUNTIME.page
+    assert page is not None
+    page.goto(url, timeout=30000)
+    page.wait_for_load_state("networkidle", timeout=15000)
+    if wait_ms:
+        page.wait_for_timeout(wait_ms)
+    _visible_browser_touch_activity()
+    return page.url, page.title()
+
+
+def _visible_browser_status_unlocked() -> str:
+    runtime = _VISIBLE_BROWSER_RUNTIME
+    if runtime.page is None:
+        return "Visible browser: closed"
+    return f"Visible browser: open\nURL: {runtime.page.url}\nTitle: {runtime.page.title()}"
+
+
+def _run_visible_browser_op(fn):
+    future = _VISIBLE_BROWSER_EXECUTOR.submit(fn)
+    return future.result(timeout=BROWSER_VISIBLE_OP_TIMEOUT_SEC)
+
+
 def _pw_launch():
     """Import playwright sync API lazily."""
-    from playwright.sync_api import sync_playwright  # noqa: PLC0415
+    try:
+        from playwright.sync_api import sync_playwright  # noqa: PLC0415
+    except ImportError as exc:
+        raise RuntimeError(
+            "Playwright is not installed for the MCP Python. Run:\n"
+            "  cd V:\\projects\\edgars-mcp\n"
+            "  py -3 -m pip install playwright\n"
+            "  py -3 -m playwright install chromium"
+        ) from exc
     return sync_playwright
 
 
@@ -5758,6 +6188,155 @@ def handle_browser_run_script(req_id, arguments: dict) -> dict:
         return make_response(req_id, make_tool_text_response(
             f"URL: {url}\nScript result:\n{result_str}"
         ))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(f"Error: {e}", is_error=True))
+
+
+def handle_browser_visible_open(req_id, arguments: dict) -> dict:
+    if not _visible_browser_permitted():
+        return make_response(req_id, make_tool_text_response(_visible_browser_access_error(), is_error=True))
+
+    url = arguments.get("url", "").strip()
+    wait_ms = int(arguments.get("wait_ms", 2000))
+    slow_mo = int(arguments.get("slow_mo", BROWSER_VISIBLE_SLOW_MO_DEFAULT))
+    if not url:
+        return make_response(req_id, make_tool_text_response("Error: url is required", is_error=True))
+
+    try:
+        def op() -> tuple[str, str]:
+            _visible_browser_launch_unlocked(slow_mo)
+            return _visible_browser_goto_unlocked(url, wait_ms)
+
+        final_url, title = _run_visible_browser_op(op)
+        return make_response(req_id, make_tool_text_response(
+            f"Visible browser opened.\nRequested URL: {url}\nCurrent URL: {final_url}\nTitle: {title}\n"
+            f"slow_mo={slow_mo}ms"
+        ))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(f"Error: {e}", is_error=True))
+
+
+def handle_browser_visible_navigate(req_id, arguments: dict) -> dict:
+    if not _visible_browser_permitted():
+        return make_response(req_id, make_tool_text_response(_visible_browser_access_error(), is_error=True))
+
+    url = arguments.get("url", "").strip()
+    wait_ms = int(arguments.get("wait_ms", 2000))
+    if not url:
+        return make_response(req_id, make_tool_text_response("Error: url is required", is_error=True))
+
+    try:
+        final_url, title = _run_visible_browser_op(lambda: _visible_browser_goto_unlocked(url, wait_ms))
+        return make_response(req_id, make_tool_text_response(
+            f"Visible browser navigated.\nURL: {final_url}\nTitle: {title}"
+        ))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(f"Error: {e}", is_error=True))
+
+
+def handle_browser_visible_click(req_id, arguments: dict) -> dict:
+    if not _visible_browser_permitted():
+        return make_response(req_id, make_tool_text_response(_visible_browser_access_error(), is_error=True))
+
+    selector = arguments.get("selector", "").strip()
+    text = arguments.get("text", "").strip()
+    wait_ms = int(arguments.get("wait_ms", 500))
+    if not selector and not text:
+        return make_response(
+            req_id,
+            make_tool_text_response("Error: selector or text is required", is_error=True),
+        )
+
+    try:
+        def op() -> tuple[str, str]:
+            _visible_browser_require_page_unlocked()
+            page = _VISIBLE_BROWSER_RUNTIME.page
+            assert page is not None
+            if selector:
+                page.locator(selector).first.click(timeout=10000)
+            else:
+                page.get_by_text(text, exact=False).first.click(timeout=10000)
+            if wait_ms:
+                page.wait_for_timeout(wait_ms)
+            _visible_browser_touch_activity()
+            return page.url, page.title()
+
+        final_url, title = _run_visible_browser_op(op)
+        target = selector or f"text={text}"
+        return make_response(req_id, make_tool_text_response(
+            f"Clicked: {target}\nURL: {final_url}\nTitle: {title}"
+        ))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(f"Error: {e}", is_error=True))
+
+
+def handle_browser_visible_type(req_id, arguments: dict) -> dict:
+    if not _visible_browser_permitted():
+        return make_response(req_id, make_tool_text_response(_visible_browser_access_error(), is_error=True))
+
+    selector = arguments.get("selector", "").strip()
+    text = arguments.get("text", "")
+    press_enter = bool(arguments.get("press_enter", False))
+    clear_first = bool(arguments.get("clear_first", True))
+    if not selector:
+        return make_response(req_id, make_tool_text_response("Error: selector is required", is_error=True))
+
+    try:
+        def op() -> tuple[str, str]:
+            _visible_browser_require_page_unlocked()
+            page = _VISIBLE_BROWSER_RUNTIME.page
+            assert page is not None
+            locator = page.locator(selector).first
+            if clear_first:
+                locator.fill(text, timeout=10000)
+            else:
+                locator.type(text, timeout=10000)
+            if press_enter:
+                locator.press("Enter")
+            _visible_browser_touch_activity()
+            return page.url, page.title()
+
+        final_url, title = _run_visible_browser_op(op)
+        return make_response(req_id, make_tool_text_response(
+            f"Typed into: {selector}\nURL: {final_url}\nTitle: {title}"
+        ))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(f"Error: {e}", is_error=True))
+
+
+def handle_browser_visible_screenshot(req_id, arguments: dict) -> dict:
+    if not _visible_browser_permitted():
+        return make_response(req_id, make_tool_text_response(_visible_browser_access_error(), is_error=True))
+
+    full_page = bool(arguments.get("full_page", False))
+
+    try:
+        def op() -> tuple[str, str, str]:
+            _visible_browser_require_page_unlocked()
+            page = _VISIBLE_BROWSER_RUNTIME.page
+            assert page is not None
+            SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            fname = SCREENSHOTS_DIR / f"visible_{ts}.png"
+            page.screenshot(path=str(fname), full_page=full_page)
+            _visible_browser_touch_activity()
+            return str(fname), page.url, page.title()
+
+        fname, final_url, title = _run_visible_browser_op(op)
+        return make_response(req_id, make_tool_text_response(
+            f"Visible screenshot saved: {fname}\nURL: {final_url}\nTitle: {title}"
+        ))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response(f"Error: {e}", is_error=True))
+
+
+def handle_browser_visible_close(req_id, arguments: dict) -> dict:  # pylint: disable=unused-argument
+    if not _visible_browser_permitted():
+        return make_response(req_id, make_tool_text_response(_visible_browser_access_error(), is_error=True))
+
+    try:
+        _run_visible_browser_op(_visible_browser_close_unlocked)
+        return make_response(req_id, make_tool_text_response("Visible browser closed."))
     except Exception as e:
         return make_response(req_id, make_tool_text_response(f"Error: {e}", is_error=True))
 

@@ -7,7 +7,7 @@
   檢查項目：
   - 本機：port、/health、可選 MCP tools/list handshake
   - 基礎設施：doppler、cloudflared 程序
-  - 外網：public /mcp GET（預設 https://mcp.edgars.tools/mcp）
+  - 外網：public /mcp GET + OAuth discovery PRM（預設 https://mcp.edgars.tools/mcp）
 
   Exit code: 0 = 全部通過；1 = 有失敗項目
 
@@ -96,15 +96,23 @@ $infraChecks += [ordered]@{
 }
 
 if (-not $SkipPublic) {
+    $publicBaseUrl = ($config.PublicMcpUrl -replace "/mcp$", "")
     $publicProbe = Invoke-HandcraftHttpProbe -Name "public_mcp_get" -Uri $config.PublicMcpUrl -TimeoutSec $TimeoutSec
     if ($publicProbe.ok -and $publicProbe.detail -eq "cloudflare_access_login") {
         $publicProbe.note = "reachable_access_protected"
     }
-    if (-not $publicProbe.ok -and $publicProbe.status -in @(302, 401, 403, 405)) {
+    if (-not $publicProbe.ok -and $publicProbe.status -in @(302, 401, 405, 406)) {
         $publicProbe.ok = $true
         $publicProbe.note = "reachable_auth_required"
     }
     $externalChecks += $publicProbe
+
+    $publicPrmProbe = Invoke-HandcraftHttpProbe -Name "public_prm" -Uri "$publicBaseUrl/.well-known/oauth-protected-resource" -TimeoutSec $TimeoutSec
+    if (-not $publicPrmProbe.ok -and $publicPrmProbe.status -eq 200) {
+        $publicPrmProbe.ok = $true
+        $publicPrmProbe.note = "oauth_discovery_ready"
+    }
+    $externalChecks += $publicPrmProbe
 }
 
 $checks = $localChecks + $infraChecks + $externalChecks

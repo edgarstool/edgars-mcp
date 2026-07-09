@@ -4,7 +4,8 @@ edgars mcp 即時控制台
 本機小伺服器：只綁 127.0.0.1:8788，不對外開放、不需要登入。
 即時數據來源：
   - http://127.0.0.1:8765/health   （MCP 本機健康資訊）
-  - https://mcp.edgars.tools/mcp   （外網探測，403 = 邊界防護正常）
+  - https://mcp.edgars.tools/mcp   （外網 MCP 探測）
+  - https://mcp.edgars.tools/.well-known/oauth-protected-resource （ChatGPT OAuth discovery 探測）
   - Windows 服務 / process 狀態
   - V:\\projects\\edgars-mcp\\logs\\ 的 log 檔即時 tail
 啟動：雙擊「MCP-即時控制台.cmd」，或 py -3 MCP-即時控制台.py
@@ -25,6 +26,7 @@ BIND_HOST = "127.0.0.1"
 BIND_PORT = 8788
 MCP_HEALTH_URL = "http://127.0.0.1:8765/health"
 MCP_EXTERNAL_URL = "https://mcp.edgars.tools/mcp"
+MCP_PRM_URL = "https://mcp.edgars.tools/.well-known/oauth-protected-resource"
 LOGS_DIR = r"V:\projects\edgars-mcp\logs"
 STARTUP_DIR = os.path.join(
     os.environ.get("APPDATA", r"C:\Users\EdgarsTool\AppData\Roaming"),
@@ -77,10 +79,17 @@ def collect_status() -> dict:
     result["local"] = {"http": code, "error": err, "health": health,
                        "ok": bool(health and health.get("ok"))}
 
-    # 2. 外網探測（403 = Cloudflare 邊界防護正常）
+    # 2. 外網探測
     code2, _, err2 = _http_get(MCP_EXTERNAL_URL, 8)
-    result["external"] = {"http": code2, "error": err2,
-                          "ok": code2 in (200, 401, 403, 405, 406)}
+    code3, _, err3 = _http_get(MCP_PRM_URL, 8)
+    result["external"] = {
+        "mcp_http": code2,
+        "mcp_error": err2,
+        "prm_http": code3,
+        "prm_error": err3,
+        "reachable": code2 in (200, 401, 405, 406),
+        "oauth_ready": code3 == 200 and code2 in (200, 401, 405, 406),
+    }
 
     # 3. port 8765
     result["port_8765"] = _port_listening(8765)
@@ -221,31 +230,46 @@ function chip(ok,txtOk,txtBad,warn){
   const t = ok ? txtOk : txtBad;
   return '<span class="dot '+cls+'"></span><span class="big '+(ok?'ok':(warn?'warn':'bad'))+'">'+t+'</span>';
 }
+function pick(obj, key, fallback='—'){
+  if(!obj || obj[key] === undefined || obj[key] === null || obj[key] === '') return fallback;
+  return obj[key];
+}
 async function refresh(){
   try{
     const r = await fetch('/api/status'); const s = await r.json();
     document.getElementById('upd').textContent = '最後更新 ' + s.time;
     const h = s.local.health || {};
     const auth = h.auth || {};
+    const linear = h.linear_oauth || {};
+    const healthReady = s.local.http === 200 && !!s.local.health;
+    const webhookText = Array.isArray(h.webhooks) ? h.webhooks.join('、') : (h.webhooks ? String(h.webhooks) : '—');
     const cards = [
       ['MCP 伺服器', chip(s.local.ok, '運作中', s.port_8765 ? 'health 異常' : '停止')],
-      ['外網 mcp.edgars.tools', chip(s.external.ok, 'HTTP '+s.external.http+'（防護正常）', s.external.error || ('HTTP '+s.external.http))],
+      ['ChatGPT OAuth readiness', chip(s.external.oauth_ready, 'PRM '+s.external.prm_http+' / MCP '+s.external.mcp_http, (s.external.prm_error || s.external.mcp_error || ('PRM '+s.external.prm_http+' / MCP '+s.external.mcp_http)))],
+      ['外網 mcp.edgars.tools', chip(s.external.reachable, 'MCP HTTP '+s.external.mcp_http, s.external.mcp_error || ('HTTP '+s.external.mcp_http), !s.external.oauth_ready && s.external.reachable)],
       ['Cloudflared 隧道', chip(s.cloudflared, '服務 Running', '服務未執行')],
       ['Claude Desktop', chip(s.claude_procs>0, s.claude_procs+' 個 process', '未執行')],
-      ['協定版本', '<div class="big">'+(h.protocolVersion||'—')+'</div>'],
-      ['OAuth 有效 token', '<div class="big">'+(auth.oauth_active_tokens!==undefined?auth.oauth_active_tokens:'—')+'</div>'],
+      ['協定版本', '<div class="big">'+pick(h, 'protocolVersion')+'</div>'],
+      ['Built-in OAuth token', '<div class="big">'+pick(auth, 'oauth_active_tokens')+'</div>'],
+      ['Linear OAuth', chip(!!linear.token_present, 'token 已存在', 'token 未存在', !linear.configured)],
       ['API token 設定', chip(!!auth.mcp_api_token_configured, '已設定', '未設定', true)],
       ['啟動腳本', chip(Object.values(s.startup_scripts).every(Boolean), '兩支都在', '有缺！')]
     ];
     document.getElementById('cards').innerHTML =
       cards.map(c=>'<div class="card"><h3>'+c[0]+'</h3>'+c[1]+'</div>').join('');
     const rows = [];
-    if(h.server) rows.push(['名稱 / 版本', h.server.name+' v'+h.server.version]);
-    if(h.public) rows.push(['對外 MCP URL', h.public.mcp_url]);
-    if(h.local) rows.push(['本機監聽', h.local.host+':'+h.local.port+h.local.mcp_path]);
-    rows.push(['OAuth 模式', auth.oauth_mode||'—']);
-    rows.push(['Cloudflare Access', auth.cloudflare_access_enabled?'啟用':'停用（用其他授權法）']);
-    if(h.webhooks) rows.push(['Webhooks', h.webhooks.join('、')]);
+    if(!healthReady){
+      rows.push(['/health 狀態', '無法解析或 schema 不符']);
+      rows.push(['HTTP', String(s.local.http ?? '—')]);
+      rows.push(['錯誤', s.local.error || '—']);
+    } else {
+      rows.push(['名稱 / 版本', pick(h.server, 'name')+' v'+pick(h.server, 'version')]);
+      rows.push(['對外 MCP URL', pick(h.public, 'mcp_url')]);
+      rows.push(['本機監聽', pick(h.local, 'host')+':'+pick(h.local, 'port')+pick(h.local, 'mcp_path')]);
+      rows.push(['OAuth 模式', pick(auth, 'oauth_mode')]);
+      rows.push(['Cloudflare Access', auth.cloudflare_access_enabled?'啟用':'停用（用其他授權法）']);
+      rows.push(['Webhooks', webhookText]);
+    }
     document.getElementById('healthDetail').innerHTML =
       rows.map(r=>'<div class="kv"><span>'+r[0]+'</span><span class="mono">'+r[1]+'</span></div>').join('');
   }catch(e){

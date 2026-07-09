@@ -1839,6 +1839,156 @@ class ClaudeCodeAgentSmokeTests(unittest.TestCase):
         self.assertIsNone(kwargs["env_overrides"]["ANTHROPIC_API_KEY"])
 
 
+class CopilotDroidAgentTests(unittest.TestCase):
+    def test_copilot_and_droid_tools_are_registered(self):
+        names = {tool["name"] for tool in TOOLS}
+        self.assertIn("copilot_agent", names)
+        self.assertIn("droid_agent", names)
+
+    def test_copilot_agent_missing_task_returns_tool_error(self):
+        response = server_http.handle_copilot_agent(req_id=1, arguments={})
+        self.assertTrue(tool_is_error(response))
+        self.assertEqual("Error: task is required", tool_text(response))
+
+    def test_droid_agent_missing_task_returns_tool_error(self):
+        response = server_http.handle_droid_agent(req_id=1, arguments={})
+        self.assertTrue(tool_is_error(response))
+        self.assertEqual("Error: task is required", tool_text(response))
+
+    def test_copilot_agent_invokes_cli_with_prompt_and_workdir(self):
+        completed = subprocess.CompletedProcess(
+            args=["copilot", "-p", "say hi"],
+            returncode=0,
+            stdout="hello from copilot\n",
+            stderr="",
+        )
+        calls = []
+        original_run_agent_command = server_http.run_agent_command
+        try:
+            def fake_run_agent_command(*args, **kwargs):
+                calls.append((args, kwargs))
+                return completed
+
+            server_http.run_agent_command = fake_run_agent_command
+            response = server_http.handle_tools_call(
+                req_id=1,
+                params={
+                    "name": "copilot_agent",
+                    "arguments": {
+                        "task": "say hi",
+                        "working_dir": "C:/tmp",
+                    },
+                },
+            )
+        finally:
+            server_http.run_agent_command = original_run_agent_command
+
+        self.assertFalse(tool_is_error(response))
+        self.assertEqual("hello from copilot", tool_text(response))
+        command = calls[0][0][0]
+        self.assertEqual(
+            ["cmd.exe", "/c", server_http.COPILOT_CMD, "-p", "say hi", "-C", "C:/tmp", "--allow-all-tools"],
+            command,
+        )
+        self.assertEqual("C:/tmp", calls[0][1]["cwd"])
+
+    def test_droid_agent_invokes_exec_with_workdir(self):
+        completed = subprocess.CompletedProcess(
+            args=["droid", "exec", "say hi"],
+            returncode=0,
+            stdout="Done. Output: hello from droid\n",
+            stderr="",
+        )
+        calls = []
+        original_run_agent_command = server_http.run_agent_command
+        try:
+            def fake_run_agent_command(*args, **kwargs):
+                calls.append((args, kwargs))
+                return completed
+
+            server_http.run_agent_command = fake_run_agent_command
+            response = server_http.handle_tools_call(
+                req_id=1,
+                params={
+                    "name": "droid_agent",
+                    "arguments": {
+                        "task": "say hi",
+                        "working_dir": "C:/tmp",
+                    },
+                },
+            )
+        finally:
+            server_http.run_agent_command = original_run_agent_command
+
+        self.assertFalse(tool_is_error(response))
+        self.assertIn("hello from droid", tool_text(response))
+        command = calls[0][0][0]
+        self.assertEqual(
+            [
+                "cmd.exe",
+                "/c",
+                server_http.DROID_CMD,
+                "exec",
+                "say hi",
+                "--cwd",
+                "C:/tmp",
+                "--skip-permissions-unsafe",
+                "--output-format",
+                "text",
+            ],
+            command,
+        )
+        self.assertEqual("C:/tmp", calls[0][1]["cwd"])
+
+
+class SmartAgentChainTests(unittest.TestCase):
+    def test_smart_agent_chain_order(self):
+        call_order = []
+        original = {
+            "gemini": server_http.run_gemini_task,
+            "copilot": server_http.run_copilot_task,
+            "droid": server_http.run_droid_task,
+            "codex": server_http.run_codex_task,
+            "claude": server_http.run_claude_code_task,
+        }
+        try:
+            server_http.run_gemini_task = lambda t, w: (call_order.append("gemini_agent"), ("quota exceeded", True))[1]
+            server_http.run_copilot_task = lambda t, w: (call_order.append("copilot_agent"), ("timeout", True))[1]
+            server_http.run_droid_task = lambda t, w: (call_order.append("droid_agent"), ("ok from droid", False))[1]
+            server_http.run_codex_task = lambda t, w: ("should not run", False)
+            server_http.run_claude_code_task = lambda t, w: ("should not run", False)
+
+            output, is_error, attempts = server_http.run_smart_agent("task", "C:/tmp")
+        finally:
+            server_http.run_gemini_task = original["gemini"]
+            server_http.run_copilot_task = original["copilot"]
+            server_http.run_droid_task = original["droid"]
+            server_http.run_codex_task = original["codex"]
+            server_http.run_claude_code_task = original["claude"]
+
+        self.assertFalse(is_error)
+        self.assertEqual("ok from droid", output)
+        self.assertEqual(["gemini_agent", "copilot_agent", "droid_agent"], call_order)
+        self.assertEqual(
+            ["gemini_agent", "copilot_agent", "droid_agent"],
+            [attempt["tool"] for attempt in attempts],
+        )
+
+    def test_should_fallback_on_missing_cli(self):
+        self.assertTrue(
+            server_http.should_fallback(
+                "copilot_agent",
+                f"Error: copilot command not found at {server_http.COPILOT_CMD}",
+                True,
+            )
+        )
+
+    def test_should_not_fallback_claude_code(self):
+        self.assertFalse(
+            server_http.should_fallback("claude_code_agent", "fatal error", True)
+        )
+
+
 class ExternalApiIntegrationTests(unittest.TestCase):
     def test_warp_cursor_factory_tools_are_registered(self):
         names = {tool["name"] for tool in TOOLS}
@@ -2033,6 +2183,63 @@ class ExternalApiIntegrationTests(unittest.TestCase):
         with patch.object(server_http, "LINEAR_WEBHOOK_SECRET", secret):
             self.assertTrue(server_http.verify_linear_webhook_signature(body, sig))
             self.assertFalse(server_http.verify_linear_webhook_signature(body, "bad"))
+
+
+class VisibleBrowserTests(unittest.TestCase):
+    def test_visible_browser_tools_are_registered(self):
+        listed_tools = handle_tools_list(req_id=1, params={})["result"]["tools"]
+        names = {tool["name"] for tool in listed_tools}
+        for tool_name in server_http.BROWSER_VISIBLE_TOOL_NAMES:
+            self.assertIn(tool_name, names)
+
+    def test_visible_browser_open_requires_url(self):
+        token = server_http._mcp_auth_kind.set("static")
+        try:
+            response = server_http.handle_browser_visible_open(req_id=1, arguments={})
+        finally:
+            server_http._mcp_auth_kind.reset(token)
+
+        self.assertTrue(tool_is_error(response))
+        self.assertEqual("Error: url is required", tool_text(response))
+
+    def test_visible_browser_blocks_remote_oauth_clients(self):
+        token = server_http._mcp_auth_kind.set("oauth")
+        try:
+            response = server_http.handle_browser_visible_open(
+                req_id=1,
+                arguments={"url": "https://example.com"},
+            )
+        finally:
+            server_http._mcp_auth_kind.reset(token)
+
+        self.assertTrue(tool_is_error(response))
+        self.assertIn("visible browser tools are limited", tool_text(response))
+
+    def test_visible_browser_open_uses_executor(self):
+        token = server_http._mcp_auth_kind.set("static")
+        try:
+            with patch.object(server_http, "_run_visible_browser_op", return_value=("https://example.com/", "Example")) as run_op:
+                response = server_http.handle_browser_visible_open(
+                    req_id=1,
+                    arguments={"url": "https://example.com"},
+                )
+        finally:
+            server_http._mcp_auth_kind.reset(token)
+
+        self.assertFalse(tool_is_error(response))
+        self.assertIn("Visible browser opened.", tool_text(response))
+        run_op.assert_called_once()
+
+    def test_visible_browser_close_when_not_open(self):
+        token = server_http._mcp_auth_kind.set("static")
+        try:
+            with patch.object(server_http, "_run_visible_browser_op", side_effect=lambda fn: fn()):
+                response = server_http.handle_browser_visible_close(req_id=1, arguments={})
+        finally:
+            server_http._mcp_auth_kind.reset(token)
+
+        self.assertFalse(tool_is_error(response))
+        self.assertEqual("Visible browser closed.", tool_text(response))
 
 
 if __name__ == "__main__":

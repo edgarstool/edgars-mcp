@@ -377,10 +377,14 @@ curl -X POST http://localhost:8765/mcp \
 curl -X POST https://mcp.edgars.tools/mcp \
   -H "Content-Type: application/json" \
   -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}"
+
+# 確認 ChatGPT OAuth discovery
+curl https://mcp.edgars.tools/.well-known/oauth-protected-resource
 ```
 
 正常回應包含 `"serverInfo": { "name": "edgars mcp" }`。  
-若未登入 Access，出現 Access login / 401 也代表 edge 在工作。
+若未登入 Access，出現 Access login / 401 代表 edge 在工作。
+但若要讓 ChatGPT Connector 判定 OAuth 已實作，還必須讓 `/.well-known/oauth-protected-resource` 回 `200`；若這條是 `403`，代表 discovery 仍被 edge 擋住。
 
 ### Hermes stdio proxy
 

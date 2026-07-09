@@ -4,7 +4,7 @@ Edgar 的本地 MCP（Model Context Protocol）Server。
 
 讓任何支援 MCP 的 AI（Claude、OpenClaw 等）能透過 HTTP 直接操作本機電腦，包含：檔案系統、Git、系統指令、瀏覽器、Obsidian Vault、Linear、Notion、Warp、Cursor、Factory.ai、AI 代理委派、免費圖片生成。
 
-**目前工具數量：70 個**（最後校對：2026-06-29）
+**目前工具數量：78 個**（最後校對：2026-07-06）
 
 > 不懂 Doppler 要填什麼？請看 **[Doppler 設定指南（新手版）](docs/DOPPLER-設定指南-新手版.md)**。  
 > 搞不清 mcp / webhooks / hooks 哪個是哪個？請看 **[網域分工（新手版）](docs/網域分工-新手版.md)**。
@@ -146,7 +146,7 @@ Stop-Process -Id <OwningProcessId> -Force
 |------|------|
 | Python | 3.11+ |
 | Doppler | secrets 管理，project `handcraft-mcp`，config `prd` |
-| Playwright | `playwright install chromium`（browser 工具需要） |
+| Playwright | `powershell -File .\scripts\setup-playwright.ps1`（browser 工具需要；含 pip + Chromium） |
 | Claude Code | `winget install Anthropic.ClaudeCode` + `claude auth login` |
 | Ollama | 本地模型執行環境 |
 | mmx CLI | MiniMax 媒體生成 |
@@ -218,22 +218,25 @@ https://mcp.edgars.tools/.well-known/oauth-protected-resource
 詳細版請看：
 
 - [docs/MCP-CLIENT-AUTH-最小正式方案.md](docs/MCP-CLIENT-AUTH-最小正式方案.md)
+- [docs/CHATGPT-OAUTH-INCIDENT-2026-07-06.md](docs/CHATGPT-OAUTH-INCIDENT-2026-07-06.md)
 - [config/mcp.local.example.json](config/mcp.local.example.json)
 - [config/mcp.remote.stdio.example.json](config/mcp.remote.stdio.example.json)
 
 ---
 
-## 工具總覽（70 個）
+## 工具總覽（78 個）
 
-### 🤖 AI 代理（8）
+### 🤖 AI 代理（10）
 
 | 工具 | 說明 |
 |------|------|
 | `codex_agent` | 委派任務給 Codex AI（程式碼實作、檔案編輯） |
 | `gemini_agent` | 委派任務給 Gemini CLI（快速通用任務） |
 | `claude_code_agent` | 委派任務給 Claude Code（複雜重構、多檔操作） |
+| `copilot_agent` | 委派任務給 GitHub Copilot CLI（本機改 code、跑指令） |
+| `droid_agent` | 委派任務給 Factory Droid CLI（`droid exec`） |
 | `ollama_agent` | 委派任務給本地 Ollama 模型（離線可用） |
-| `smart_agent` | 智慧選擇最適合的 agent 執行任務 |
+| `smart_agent` | 智慧輪替：Gemini → Copilot → Droid → Codex → Claude Code |
 | `agent_job_status` | 查詢背景 agent job 進度 |
 | `agent_job_list` | 列出所有背景 jobs |
 | `agent_job_cleanup` | 清除已完成的舊 jobs |
@@ -279,15 +282,23 @@ https://mcp.edgars.tools/.well-known/oauth-protected-resource
 
 ---
 
-### 🌐 瀏覽器（3）
+### 🌐 瀏覽器（9）
 
 | 工具 | 說明 |
 |------|------|
-| `browser_screenshot` | 對網頁截圖，存到 `.screenshots/` |
-| `browser_get_text` | 擷取網頁純文字內容 |
-| `browser_run_script` | 在網頁上執行 JavaScript |
+| `browser_screenshot` | 對網頁截圖，存到 `.screenshots/`（headless） |
+| `browser_get_text` | 擷取網頁純文字內容（headless） |
+| `browser_run_script` | 在網頁上執行 JavaScript（headless） |
+| `browser_visible_open` | 跳出可見 Chrome 視窗並開啟 URL（本機信任客戶端） |
+| `browser_visible_navigate` | 在可見 session 內換網址 |
+| `browser_visible_click` | 在可見 session 內點擊元素 |
+| `browser_visible_type` | 在可見 session 內輸入文字 |
+| `browser_visible_screenshot` | 對目前可見 session 截圖 |
+| `browser_visible_close` | 關閉可見瀏覽器 |
 
-> 需要 Playwright + Chromium：`playwright install chromium`
+> headless 工具需要 Playwright + Chromium：`playwright install chromium`  
+> 可見瀏覽器預設用本機已安裝的 Chrome（`BROWSER_VISIBLE_CHANNEL=chrome`）。  
+> 遠端 OAuth 客戶端（例如 ChatGPT）無法叫出桌面瀏覽器；Cursor / Hermes stdio 可以。
 
 ---
 
@@ -510,7 +521,8 @@ https://mcp.edgars.tools/mcp
 
 注意：
 
-- public `/mcp` 在 Access 開啟後，探測可能會看到 **401 / 302 / Cloudflare Access login**，這不一定代表壞掉。
+- public `/mcp` 在 Access 開啟後，探測可能會看到 **401 / 302 / Cloudflare Access login**，這代表 edge 可達，但**不等於 ChatGPT OAuth 已可用**。
+- 若目標是 ChatGPT Connector / OAuth 全綠，還必須另外確認 `/.well-known/oauth-protected-resource` 可匿名讀取並回 `200`。
 - 若要強制保護 direct URL，請直接在 `mcp.edgars.tools` 掛 Access，不要只靠 portal 隱藏。
 
 OpenAI Secure MCP Tunnel 是另一條私有路徑：`tunnel-client` 從本機 outbound 連到 OpenAI，OpenAI 產品透過 OpenAI-hosted tunnel endpoint 呼叫本機 MCP。它不需要 `mcp.edgars.tools`，也不需要開 inbound firewall port。

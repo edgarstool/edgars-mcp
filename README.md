@@ -224,7 +224,7 @@ https://mcp.edgars.tools/.well-known/oauth-protected-resource
 
 ---
 
-## 工具總覽（70 個）
+## 工具總覽（78 個）
 
 ### 🤖 AI 代理（10）
 

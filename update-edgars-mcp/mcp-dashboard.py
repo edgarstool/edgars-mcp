@@ -36,16 +36,30 @@ STARTUP_SCRIPTS = ["edgars-handcraft-mcp.cmd", "edgars-cloudflared-tunnel.cmd"]
 CREATE_NO_WINDOW = 0x08000000
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def _http_get(url: str, timeout: float = 6.0):
     """回傳 (status_code, body_text 或 None, error 或 None)"""
     req = urllib.request.Request(url, headers={"User-Agent": "mcp-dashboard/1.0"})
+    opener = urllib.request.build_opener(_NoRedirectHandler)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with opener.open(req, timeout=timeout) as resp:
             return resp.status, resp.read(20000).decode("utf-8", "replace"), None
     except urllib.error.HTTPError as e:
-        return e.code, None, None
+        body = e.read(20000).decode("utf-8", "replace")
+        return e.code, body, None
     except Exception as e:
         return None, None, str(e)
+
+
+def _looks_like_cf_access_login(status: int | None, body: str | None) -> bool:
+    if status not in (302, 403):
+        return False
+    text = (body or "").lower()
+    return "cloudflareaccess.com" in text or "cf_access" in text
 
 
 def _port_listening(port: int) -> bool:
@@ -80,15 +94,16 @@ def collect_status() -> dict:
                        "ok": bool(health and health.get("ok"))}
 
     # 2. 外網探測
-    code2, _, err2 = _http_get(MCP_EXTERNAL_URL, 8)
+    code2, body2, err2 = _http_get(MCP_EXTERNAL_URL, 8)
     code3, _, err3 = _http_get(MCP_PRM_URL, 8)
+    mcp_reachable = code2 in (200, 302, 401, 405, 406) or _looks_like_cf_access_login(code2, body2)
     result["external"] = {
         "mcp_http": code2,
         "mcp_error": err2,
         "prm_http": code3,
         "prm_error": err3,
-        "reachable": code2 in (200, 401, 405, 406),
-        "oauth_ready": code3 == 200 and code2 in (200, 401, 405, 406),
+        "reachable": mcp_reachable,
+        "oauth_ready": code3 == 200 and mcp_reachable,
     }
 
     # 3. port 8765

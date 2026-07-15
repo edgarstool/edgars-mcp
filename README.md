@@ -312,6 +312,8 @@ https://mcp.edgars.tools/.well-known/oauth-protected-resource
 
 ### 📦 TrackTW 物流（2）
 
+> 預設停用：`tracktw_carriers`、`tracktw_package_status` 不會出現在 `tools/list`；若要重新啟用，請在伺服器設定 `MCP_ENABLED_TOOLS=tracktw_carriers,tracktw_package_status` 後重啟。
+
 | 工具 | 說明 |
 |------|------|
 | `tracktw_carriers` | 列出或搜尋 TrackTW 支援的物流商 / 店家關鍵字 |

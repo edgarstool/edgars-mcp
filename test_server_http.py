@@ -2198,6 +2198,16 @@ class ExternalApiIntegrationTests(unittest.TestCase):
 
 
 class VisibleBrowserTests(unittest.TestCase):
+    def _start_server(self, config=None):
+        config = config or HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MCPHTTPHandler, config=config)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread, f"http://127.0.0.1:{server.server_address[1]}"
+
     def test_visible_browser_tools_are_registered(self):
         listed_tools = handle_tools_list(req_id=1, params={})["result"]["tools"]
         names = {tool["name"] for tool in listed_tools}
@@ -2226,6 +2236,84 @@ class VisibleBrowserTests(unittest.TestCase):
 
         self.assertTrue(tool_is_error(response))
         self.assertIn("visible browser tools are limited", tool_text(response))
+
+    def test_visible_browser_rejects_spoofed_stdio_header_for_oauth_clients(self):
+        server, thread, base = self._start_server()
+        try:
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "browser_visible_open",
+                    "arguments": {"url": "https://example.com"},
+                },
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/mcp",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer oauth-token",
+                    "X-Handcraft-Client-Mode": "stdio-local",
+                },
+                method="POST",
+            )
+            with patch.object(server_http, "oauth_access_token_is_valid", side_effect=lambda token: token == "oauth-token"):
+                with patch.object(server_http, "_run_visible_browser_op") as run_op:
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        self.assertTrue(payload["result"].get("isError"))
+        self.assertIn("visible browser tools are limited", payload["result"]["content"][0]["text"])
+        run_op.assert_not_called()
+
+    def test_visible_browser_blocks_remote_cloudflare_access_clients(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            cloudflare_access_enabled=True,
+            cloudflare_access_team_domain="team.example.cloudflareaccess.com",
+            cloudflare_access_aud="aud-123",
+            cloudflare_access_jwks_url="https://team.example.cloudflareaccess.com/cdn-cgi/access/certs",
+        )
+        server, thread, base = self._start_server(config=config)
+        try:
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "browser_visible_open",
+                    "arguments": {"url": "https://example.com"},
+                },
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/mcp",
+                data=body,
+                headers={
+                    "Host": "mcp.example.test",
+                    "Content-Type": "application/json",
+                    "Cf-Access-Jwt-Assertion": "cf-access-token",
+                },
+                method="POST",
+            )
+            with patch.object(server_http, "verify_cloudflare_access_jwt", return_value={"email": "user@example.com"}):
+                with patch.object(server_http, "_run_visible_browser_op") as run_op:
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        self.assertTrue(payload["result"].get("isError"))
+        self.assertIn("visible browser tools are limited", payload["result"]["content"][0]["text"])
+        run_op.assert_not_called()
 
     def test_visible_browser_open_uses_executor(self):
         token = server_http._mcp_auth_kind.set("static")

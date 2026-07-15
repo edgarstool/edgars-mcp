@@ -3765,8 +3765,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     def _detect_mcp_auth_kind(self) -> str:
         config = self.server.config
-        if self.headers.get("X-Handcraft-Client-Mode", "").strip().lower() == "stdio-local":
-            return "static"
         if not self._mcp_auth_required():
             return "none"
 
@@ -5898,13 +5896,13 @@ _VISIBLE_BROWSER_RUNTIME = _VisibleBrowserRuntime()
 def _visible_browser_permitted() -> bool:
     if not BROWSER_VISIBLE_LOCAL_ONLY:
         return True
-    return _mcp_auth_kind.get("unknown") in {"none", "static", "cf_access"}
+    return _mcp_auth_kind.get("unknown") in {"none", "static"}
 
 
 def _visible_browser_access_error() -> str:
     return (
         "Error: visible browser tools are limited to trusted local MCP clients "
-        "(Cursor/Hermes stdio). Remote OAuth clients such as ChatGPT cannot open a desktop browser."
+        "(Cursor/Hermes stdio). Remote OAuth or Cloudflare Access clients cannot open a desktop browser."
     )
 
 

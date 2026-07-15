@@ -42,8 +42,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
-from mmx_handlers import DISPATCH, hmi, hmvd, hms, hmu, hmv, hmsq, hmc, hmq
-
 try:
     import jwt
     from jwt import InvalidTokenError, PyJWKClient
@@ -51,16 +49,6 @@ except ImportError:  # pragma: no cover - optional dependency in legacy mode
     jwt = None
     InvalidTokenError = Exception
     PyJWKClient = None
-
-# ── mmx handler aliases（對應 dispatch 的完整名稱）─────────────────────────────
-handle_mmx_image_generate   = hmi
-handle_mmx_video_generate   = hmv
-handle_mmx_speech_synthesize = hms
-handle_mmx_music_generate   = hmu
-handle_mmx_vision_describe  = hmvd
-handle_mmx_search_query     = hmsq
-handle_mmx_text_chat        = hmc
-handle_mmx_quota_show       = hmq
 
 # ── Secrets（由 Doppler 注入）─────────────────────────────────────────────────
 def load_mcp_api_token() -> str:
@@ -637,132 +625,6 @@ TOOLS = [
             },
             "required": ["page_id"],
         },
-    },
-    {
-        "name": "mmx_image_generate",
-        "description": (
-            "Generate images using MiniMax AI image-01 model. "
-            "Returns image URLs or saved file paths."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "prompt": {"type": "string", "description": "Image description prompt."},
-                "aspect_ratio": {"type": "string", "description": "Aspect ratio like 16:9, 1:1, 9:16."},
-                "n": {"type": "integer", "description": "Number of images to generate (default 1)."},
-                "out_dir": {"type": "string", "description": "Directory to save images."},
-            },
-            "required": ["prompt"],
-        },
-    },
-    {
-        "name": "mmx_video_generate",
-        "description": (
-            "Generate videos using MiniMax AI Hailuo-2.3 model. "
-            "This is async — set async=true to get a job_id immediately, "
-            "or wait for the video to be generated and returned as a file path."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "prompt": {"type": "string", "description": "Video description prompt."},
-                "async": {"type": "boolean", "description": "Return job_id immediately without waiting."},
-                "first_frame": {"type": "string", "description": "Path or URL to first frame image."},
-                "download": {"type": "string", "description": "File path to save the video."},
-            },
-            "required": ["prompt"],
-        },
-    },
-    {
-        "name": "mmx_speech_synthesize",
-        "description": (
-            "Text-to-speech using MiniMax speech-2.8-hd model. "
-            "Converts text to audio file (mp3 by default)."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "text": {"type": "string", "description": "Text to synthesize (max 10k chars)."},
-                "text_file": {"type": "string", "description": "Path to text file (use - for stdin)."},
-                "voice": {"type": "string", "description": "Voice ID (default: English_expressive_narrator)."},
-                "model": {"type": "string", "description": "Model: speech-2.8-hd, speech-2.6, or speech-02."},
-                "speed": {"type": "number", "description": "Speed multiplier."},
-                "format": {"type": "string", "description": "Audio format (default: mp3)."},
-                "out": {"type": "string", "description": "Output file path."},
-            },
-            "required": ["text"],
-        },
-    },
-    {
-        "name": "mmx_music_generate",
-        "description": (
-            "Generate music using MiniMax music-2.5 model. "
-            "Can create songs with vocals or instrumental music."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "prompt": {"type": "string", "description": "Music style/description prompt."},
-                "lyrics": {"type": "string", "description": "Song lyrics with structure tags."},
-                "vocals": {"type": "string", "description": "Vocal style description."},
-                "genre": {"type": "string", "description": "Music genre."},
-                "mood": {"type": "string", "description": "Mood or emotion."},
-                "instruments": {"type": "string", "description": "Instruments to feature."},
-                "bpm": {"type": "number", "description": "Exact tempo in BPM."},
-                "instrumental": {"type": "boolean", "description": "Generate instrumental without vocals."},
-                "out": {"type": "string", "description": "Output file path."},
-            },
-        },
-    },
-    {
-        "name": "mmx_vision_describe",
-        "description": (
-            "Image understanding via MiniMax VL model. "
-            "Describes or answers questions about an image."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "image": {"type": "string", "description": "Image path or URL."},
-                "file_id": {"type": "string", "description": "Pre-uploaded file ID."},
-                "prompt": {"type": "string", "description": "Question about the image."},
-            },
-            "required": ["image"],
-        },
-    },
-    {
-        "name": "mmx_search_query",
-        "description": "Web search via MiniMax AI.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "q": {"type": "string", "description": "Search query."},
-            },
-            "required": ["q"],
-        },
-    },
-    {
-        "name": "mmx_text_chat",
-        "description": (
-            "Chat completion using MiniMax MiniMax-M2.7 model. "
-            "Supports multi-turn conversation and system prompts."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "message": {"type": "string", "description": "Message text. Prefix with role: to set role."},
-                "system": {"type": "string", "description": "System prompt."},
-                "model": {"type": "string", "description": "Model ID (default: MiniMax-M2.7)."},
-                "max_tokens": {"type": "integer", "description": "Max tokens (default: 4096)."},
-                "temperature": {"type": "number", "description": "Sampling temperature (0.0-1.0)."},
-            },
-            "required": ["message"],
-        },
-    },
-    {
-        "name": "mmx_quota_show",
-        "description": "Display MiniMax Token Plan usage and remaining quotas.",
-        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "ollama_agent",
@@ -1506,10 +1368,6 @@ READ_ONLY_TOOL_NAMES = {
     "agent_job_list",
     "notion_search",
     "notion_get_page",
-    "mmx_vision_describe",
-    "mmx_search_query",
-    "mmx_text_chat",
-    "mmx_quota_show",
     "fs_list",
     "fs_read",
     "fs_search",
@@ -1611,14 +1469,6 @@ TOOLS = [_normalize_tool_descriptor(tool) for tool in TOOLS]
 
 # Tools hidden from tools/list and rejected on tools/call until re-enabled.
 DEFAULT_DISABLED_TOOL_NAMES = frozenset({
-    "mmx_image_generate",
-    "mmx_video_generate",
-    "mmx_speech_synthesize",
-    "mmx_music_generate",
-    "mmx_vision_describe",
-    "mmx_search_query",
-    "mmx_text_chat",
-    "mmx_quota_show",
     "tracktw_carriers",
     "tracktw_package_status",
 })
@@ -2649,23 +2499,6 @@ def handle_tools_call(req_id, params: dict) -> dict:
 
     if name == "notion_get_page":
         return handle_notion_get_page(req_id, arguments)
-
-    if name == "mmx_image_generate":
-        return handle_mmx_image_generate(req_id, arguments)
-    if name == "mmx_video_generate":
-        return handle_mmx_video_generate(req_id, arguments)
-    if name == "mmx_speech_synthesize":
-        return handle_mmx_speech_synthesize(req_id, arguments)
-    if name == "mmx_music_generate":
-        return handle_mmx_music_generate(req_id, arguments)
-    if name == "mmx_vision_describe":
-        return handle_mmx_vision_describe(req_id, arguments)
-    if name == "mmx_search_query":
-        return handle_mmx_search_query(req_id, arguments)
-    if name == "mmx_text_chat":
-        return handle_mmx_text_chat(req_id, arguments)
-    if name == "mmx_quota_show":
-        return handle_mmx_quota_show(req_id, arguments)
 
     if name == "ollama_agent":
         return handle_ollama_agent(req_id, arguments)

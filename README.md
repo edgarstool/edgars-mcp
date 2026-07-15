@@ -4,7 +4,7 @@ Edgar 的本地 MCP（Model Context Protocol）Server。
 
 讓任何支援 MCP 的 AI（Claude、OpenClaw 等）能透過 HTTP 直接操作本機電腦，包含：檔案系統、Git、系統指令、瀏覽器、Obsidian Vault、Linear、Notion、Warp、Cursor、Factory.ai、AI 代理委派、免費圖片生成。
 
-**目前工具數量：78 個**（最後校對：2026-07-06）
+**目前工具數量：70 個**（最後校對：2026-07-15）
 
 > 不懂 Doppler 要填什麼？請看 **[Doppler 設定指南（新手版）](docs/DOPPLER-設定指南-新手版.md)**。  
 > 搞不清 mcp / webhooks / hooks 哪個是哪個？請看 **[網域分工（新手版）](docs/網域分工-新手版.md)**。
@@ -17,7 +17,8 @@ Edgar 的本地 MCP（Model Context Protocol）Server。
 mcp-handcraft/
 ├── server_http.py      ← 主 HTTP MCP Server（port 8765，所有工具都在這）
 ├── server.py           ← stdio 入口（供本地 stdio client 使用）
-├── mmx_handlers.py     ← MiniMax 媒體生成 handlers
+├── archive/
+│   └── minimax/       ← 已封存的 MiniMax handlers（不再接進主 server）
 ├── run.cmd             ← 啟動 stdio server
 ├── run_http.cmd        ← 啟動 HTTP server（透過 Doppler 注入 secrets）
 ├── run_stdio.cmd       ← 啟動 stdio proxy（Cursor / Hermes → 本機 HTTP MCP）
@@ -149,7 +150,6 @@ Stop-Process -Id <OwningProcessId> -Force
 | Playwright | `powershell -File .\scripts\setup-playwright.ps1`（browser 工具需要；含 pip + Chromium） |
 | Claude Code | `winget install Anthropic.ClaudeCode` + `claude auth login` |
 | Ollama | 本地模型執行環境 |
-| mmx CLI | MiniMax 媒體生成 |
 | OpenAI tunnel-client | OpenAI Secure MCP Tunnel 用；本 repo snapshot 未附安裝腳本 |
 
 ---
@@ -224,19 +224,19 @@ https://mcp.edgars.tools/.well-known/oauth-protected-resource
 
 ---
 
-## 工具總覽（78 個）
+## 工具總覽（70 個）
 
 ### 🤖 AI 代理（10）
 
 | 工具 | 說明 |
 |------|------|
 | `codex_agent` | 委派任務給 Codex AI（程式碼實作、檔案編輯） |
-| `gemini_agent` | 委派任務給 Gemini CLI（快速通用任務） |
+| `kilo_agent` | 委派任務給 Kilo CLI（快速通用任務） |
 | `claude_code_agent` | 委派任務給 Claude Code（複雜重構、多檔操作） |
 | `copilot_agent` | 委派任務給 GitHub Copilot CLI（本機改 code、跑指令） |
 | `droid_agent` | 委派任務給 Factory Droid CLI（`droid exec`） |
 | `ollama_agent` | 委派任務給本地 Ollama 模型（離線可用） |
-| `smart_agent` | 智慧輪替：Gemini → Copilot → Droid → Codex → Claude Code |
+| `smart_agent` | 智慧輪替：Kilo → Copilot → Droid → Codex → Claude Code |
 | `agent_job_status` | 查詢背景 agent job 進度 |
 | `agent_job_list` | 列出所有背景 jobs |
 | `agent_job_cleanup` | 清除已完成的舊 jobs |
@@ -403,18 +403,18 @@ V:\projects\edgars-mcp\reports
 
 ---
 
-### 🎬 MiniMax 媒體（8，需付費帳號）
+### 🔌 Repo-local Browser MCP Plugins（4）
 
-| 工具 | 說明 |
-|------|------|
-| `mmx_image_generate` | 生成圖片 |
-| `mmx_video_generate` | 生成影片 |
-| `mmx_speech_synthesize` | 文字轉語音 |
-| `mmx_music_generate` | 生成音樂 |
-| `mmx_vision_describe` | 圖片描述 |
-| `mmx_search_query` | MiniMax 搜尋 |
-| `mmx_text_chat` | MiniMax 對話 |
-| `mmx_quota_show` | 查看剩餘額度 |
+這 4 個整合已改成 repo-local plugin / repo 內插件註冊，不再塞進 `server_http.py` 主工具清單。用途是讓 `edgars-mcp` 可以順手提供常用瀏覽器 / web automation 的 MCP 入口模板。
+
+| Plugin | 用途 | 主要需求 |
+|--------|------|----------|
+| `chrome-devtools` | 直接接 Chrome DevTools 做除錯 / 自動化 | Chrome + Node.js |
+| `comet` | 讓 AI 透過 Perplexity Comet 做研究 / 瀏覽 | Comet Browser + Node.js |
+| `kapture` | 用 Chrome extension 做多 client 瀏覽器控制 | Kapture extension + Node.js |
+| `playwright` | 通用瀏覽器自動化 / 測試 | Node.js |
+
+插件入口在 `plugins/`，marketplace 註冊在 `.agents/plugins/marketplace.json`。
 
 ---
 

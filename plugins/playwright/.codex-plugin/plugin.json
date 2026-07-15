@@ -1,0 +1,38 @@
+{
+  "name": "playwright",
+  "version": "0.1.0",
+  "description": "Playwright MCP bridge scaffold for the edgars-mcp plugin registry.",
+  "author": {
+    "name": "Edgars-tool",
+    "url": "https://github.com/Edgars-tool"
+  },
+  "homepage": "https://github.com/Edgars-tool/mcp-handcraft",
+  "repository": "https://github.com/Edgars-tool/mcp-handcraft",
+  "license": "UNLICENSED",
+  "keywords": [
+    "playwright",
+    "browser",
+    "testing",
+    "mcp"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Playwright",
+    "shortDescription": "Playwright MCP preset for general browser automation and testing.",
+    "longDescription": "Registers the official Playwright MCP server so edgars-mcp can expose a standard browser automation option for scripted flows, QA, and repeatable interaction tests.",
+    "developerName": "Edgars-tool",
+    "category": "Browser Automation",
+    "capabilities": [
+      "Browser Automation",
+      "QA",
+      "MCP"
+    ],
+    "websiteURL": "https://github.com/Edgars-tool/mcp-handcraft",
+    "defaultPrompt": [
+      "Use Playwright to validate this flow end to end.",
+      "Open the page and capture a browser automation trace.",
+      "Run a quick browser interaction test with Playwright."
+    ],
+    "brandColor": "#2EAD33"
+  }
+}

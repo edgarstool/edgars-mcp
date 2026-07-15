@@ -50,7 +50,7 @@ Notion、Linear、Obsidian、Warp、Cursor、Factory.ai、Cloudflare、Google（
 | 系統指令 | 跑 shell / PowerShell |
 | 瀏覽器 | 自動化操作、抓網頁 |
 | AI 代理委派 | codex / gemini / claude_code / smart agent |
-| 媒體生成 | 生圖、影片、語音、音樂（mmx_*） |
+| 媒體生成 | 免費圖片生成（`image_generate_free`）；MiniMax `mmx_*` 已封存 |
 | 知識庫 | Obsidian、Notion（search / get_page） |
 | 專案 | Linear（OAuth 委派） |
 | 其他整合 | Warp、Cursor、Factory.ai、Cloudflare |

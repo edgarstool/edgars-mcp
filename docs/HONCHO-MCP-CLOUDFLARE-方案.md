@@ -165,10 +165,48 @@ Portal name: edgars-entry
 Portal URL: https://entry.edgars.tools/mcp
 Servers:
   - edgars-mcp
-  - honcho
   - linear
+  - honcho（pending: server sync 尚未 Ready）
   - cloudflare docs
   - github / notion / obsidian / future servers
+```
+
+目前已完成狀態：
+
+```text
+edgars-entry portal API servers:
+- edgars-mcp: ready, bearer, on_behalf=false
+- linear: ready, oauth, on_behalf=true
+- honcho: pending, server status=error, unable to connect to server
+```
+
+Portal update API 注意事項：
+
+```json
+{
+  "servers": [
+    {
+      "server_id": "linear",
+      "on_behalf": true,
+      "default_disabled": false
+    },
+    {
+      "server_id": "edgars-mcp",
+      "on_behalf": false,
+      "default_disabled": false
+    }
+  ]
+}
+```
+
+`servers[*].server_id` 是必要欄位；只送 `id` 會回 `body.servers[].server_id Required`。
+
+Service token smoke test：
+
+```text
+POST https://entry.edgars.tools/mcp initialize
+headers: CF-Access-Client-Id / CF-Access-Client-Secret
+result: 200 text/event-stream, returned mcp-session-id
 ```
 
 對 bots / agents：

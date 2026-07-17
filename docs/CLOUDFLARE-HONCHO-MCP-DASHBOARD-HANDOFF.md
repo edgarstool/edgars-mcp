@@ -87,7 +87,14 @@ honcho
 linear
 ```
 
-若 `honcho` 不在 portal，加入 portal 並 Save。
+目前 API 已確認 portal 內有：
+
+```text
+edgars-mcp
+linear
+```
+
+若 `honcho` 不在 portal，等 `honcho` server Ready 後加入 portal 並 Save。
 
 ## 失敗時回報
 

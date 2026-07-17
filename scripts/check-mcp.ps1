@@ -101,6 +101,10 @@ if (-not $SkipPublic) {
     if ($publicProbe.ok -and $publicProbe.detail -eq "cloudflare_access_login") {
         $publicProbe.note = "reachable_access_protected"
     }
+    if (-not $publicProbe.ok -and $publicProbe.detail -eq "cloudflare_access_login") {
+        $publicProbe.ok = $true
+        $publicProbe.note = "reachable_access_protected"
+    }
     if (-not $publicProbe.ok -and $publicProbe.status -in @(302, 401, 405, 406)) {
         $publicProbe.ok = $true
         $publicProbe.note = "reachable_auth_required"
@@ -108,8 +112,7 @@ if (-not $SkipPublic) {
     $externalChecks += $publicProbe
 
     $publicPrmProbe = Invoke-HandcraftHttpProbe -Name "public_prm" -Uri "$publicBaseUrl/.well-known/oauth-protected-resource" -TimeoutSec $TimeoutSec
-    if (-not $publicPrmProbe.ok -and $publicPrmProbe.status -eq 200) {
-        $publicPrmProbe.ok = $true
+    if ($publicPrmProbe.ok -and $publicPrmProbe.status -eq 200) {
         $publicPrmProbe.note = "oauth_discovery_ready"
     }
     $externalChecks += $publicPrmProbe

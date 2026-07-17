@@ -1,0 +1,38 @@
+{
+  "name": "chrome-devtools",
+  "version": "0.1.0",
+  "description": "Chrome DevTools MCP bridge scaffold for the edgars-mcp plugin registry.",
+  "author": {
+    "name": "Edgars-tool",
+    "url": "https://github.com/Edgars-tool"
+  },
+  "homepage": "https://github.com/Edgars-tool/mcp-handcraft",
+  "repository": "https://github.com/Edgars-tool/mcp-handcraft",
+  "license": "UNLICENSED",
+  "keywords": [
+    "chrome",
+    "devtools",
+    "mcp",
+    "browser"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Chrome DevTools",
+    "shortDescription": "Chrome DevTools MCP preset for local browser debugging.",
+    "longDescription": "Launches the official Chrome DevTools MCP server with Windows-safe defaults for local browser automation, debugging, screenshots, and performance investigation.",
+    "developerName": "Edgars-tool",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Browser Debugging",
+      "Performance",
+      "MCP"
+    ],
+    "websiteURL": "https://github.com/Edgars-tool/mcp-handcraft",
+    "defaultPrompt": [
+      "Use Chrome DevTools to inspect the current page console errors.",
+      "Record a quick performance trace for this page.",
+      "Open Chrome and verify the target flow visually."
+    ],
+    "brandColor": "#1A73E8"
+  }
+}

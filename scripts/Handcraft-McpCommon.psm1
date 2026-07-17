@@ -324,7 +324,7 @@ function Invoke-HandcraftHttpProbe {
     )
 
     try {
-        $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -Method $Method -TimeoutSec $TimeoutSec
+        $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -Method $Method -TimeoutSec $TimeoutSec -MaximumRedirection 0
         $finalUri = $Uri
         if ($response.BaseResponse -and $response.BaseResponse.ResponseUri) {
             $finalUri = $response.BaseResponse.ResponseUri.AbsoluteUri
@@ -355,6 +355,8 @@ function Invoke-HandcraftHttpProbe {
         $statusCode = $null
         $detail = $null
         $finalUri = $Uri
+        $content = ""
+        $location = $null
         if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
             $statusCode = [int]$_.Exception.Response.StatusCode
             try {
@@ -363,6 +365,31 @@ function Invoke-HandcraftHttpProbe {
                 }
             } catch {
                 $finalUri = $Uri
+            }
+            try {
+                $location = $_.Exception.Response.Headers["Location"]
+                if ($location) {
+                    $finalUri = $location
+                }
+            } catch {
+                $location = $null
+            }
+            try {
+                $stream = $_.Exception.Response.GetResponseStream()
+                if ($stream) {
+                    $reader = New-Object System.IO.StreamReader($stream)
+                    try {
+                        $content = $reader.ReadToEnd()
+                    } finally {
+                        $reader.Dispose()
+                        $stream.Dispose()
+                    }
+                }
+            } catch {
+                $content = ""
+            }
+            if (($location -and $location -match "cloudflareaccess\.com") -or $content -match "cloudflareaccess\.com|cf_access") {
+                $detail = "cloudflare_access_login"
             }
         }
         return [ordered]@{

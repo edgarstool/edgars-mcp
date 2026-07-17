@@ -1,0 +1,38 @@
+{
+  "name": "comet",
+  "version": "0.1.0",
+  "description": "Perplexity Comet MCP bridge scaffold for the edgars-mcp plugin registry.",
+  "author": {
+    "name": "Edgars-tool",
+    "url": "https://github.com/Edgars-tool"
+  },
+  "homepage": "https://github.com/Edgars-tool/mcp-handcraft",
+  "repository": "https://github.com/Edgars-tool/mcp-handcraft",
+  "license": "UNLICENSED",
+  "keywords": [
+    "comet",
+    "perplexity",
+    "mcp",
+    "research"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Comet",
+    "shortDescription": "Perplexity Comet browser delegation for research-heavy tasks.",
+    "longDescription": "Registers the comet-mcp bridge so edgars-mcp can hand web research and dynamic browsing tasks to Perplexity Comet instead of overloading the core coding agent.",
+    "developerName": "Edgars-tool",
+    "category": "Research",
+    "capabilities": [
+      "Web Research",
+      "Browser Delegation",
+      "MCP"
+    ],
+    "websiteURL": "https://github.com/Edgars-tool/mcp-handcraft",
+    "defaultPrompt": [
+      "Use Comet to research this product and summarize the findings.",
+      "Open Comet and inspect the current login flow.",
+      "Delegate browser research to Comet and return the result."
+    ],
+    "brandColor": "#0F172A"
+  }
+}

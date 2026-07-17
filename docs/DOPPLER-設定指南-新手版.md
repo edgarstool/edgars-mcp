@@ -73,7 +73,7 @@ lang: zh-TW
 | `OPENAI_API_KEY` | ✅ 已有（可跳過） |
 | `PERPLEXITY_API_KEY` | ✅ 已有（可跳過） |
 | `TRACKTW_API_KEY` | ✅ 已有（可跳過） |
-| `MINIMAX_API_KEY` | ✅ 已有（可跳過；給 MiniMax 付費工具用） |
+| `MINIMAX_API_KEY` | 已封存（目前主 server 不使用，可忽略） |
 | `WARP_API_KEY` | ❌ **還沒有，要加** |
 | `CURSOR_API_KEY` | ❌ **還沒有，要加** |
 | `FACTORY_API_KEY` | ❌ **還沒有，要加** |
@@ -122,7 +122,7 @@ lang: zh-TW
 | `NOTION_API_KEY` | 讀 Notion 頁面、搜尋 | `secret_1234567890abcdefghijklmnopqrstuvwxyz` | 1. [notion.so/my-integrations](https://www.notion.so/my-integrations)<br>2. **+ New integration**<br>3. 取名 → **Submit**<br>4. 複製 **Internal Integration Secret**<br>5. 到 Notion 各頁面按 **⋯ → Connections** 連結這個 integration | 選填 ✅ 已有 |
 | `OPENAI_API_KEY` | 備用 AI（少數功能） | `sk-proj-1234567890abcdefghijklmnopqrstuvwxyz` | 1. [platform.openai.com/api-keys](https://platform.openai.com/api-keys)<br>2. **+ Create new secret key**<br>3. 複製 | 選填 ✅ 已有 |
 | `TRACKTW_API_KEY` | 查台灣物流（黑貓、7-11 等） | `ttw_1234567890abcdefghijklmnopqrstuvwxyz` | 1. 打開 [track.tw](https://track.tw)<br>2. 登入 → 帳號 / API 設定<br>3. 產生 API Key 並複製 | 選填 ✅ 已有 |
-| `MINIMAX_API_KEY` | MiniMax 付費媒體工具（`mmx_image_generate` 等） | `eyJhbGciOi...` 或一長串英數 | MiniMax 官方後台 → API Keys | 選填 ✅ 已有（不用 MiniMax 可忽略） |
+| `MINIMAX_API_KEY` | 已封存的 MiniMax 媒體工具舊設定 | `eyJhbGciOi...` 或一長串英數 | MiniMax 官方後台 → API Keys | 目前可忽略 |
 
 ---
 

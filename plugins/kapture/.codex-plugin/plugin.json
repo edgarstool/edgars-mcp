@@ -1,0 +1,38 @@
+{
+  "name": "kapture",
+  "version": "0.1.0",
+  "description": "Kapture browser automation bridge scaffold for the edgars-mcp plugin registry.",
+  "author": {
+    "name": "Edgars-tool",
+    "url": "https://github.com/Edgars-tool"
+  },
+  "homepage": "https://github.com/Edgars-tool/mcp-handcraft",
+  "repository": "https://github.com/Edgars-tool/mcp-handcraft",
+  "license": "UNLICENSED",
+  "keywords": [
+    "kapture",
+    "browser",
+    "extension",
+    "mcp"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Kapture",
+    "shortDescription": "Browser automation via the Kapture Chrome extension.",
+    "longDescription": "Registers the Kapture MCP bridge for multi-client browser control through the Kapture Chrome extension and its WebSocket-backed MCP server.",
+    "developerName": "Edgars-tool",
+    "category": "Browser Automation",
+    "capabilities": [
+      "Browser Automation",
+      "Extension Bridge",
+      "MCP"
+    ],
+    "websiteURL": "https://github.com/Edgars-tool/mcp-handcraft",
+    "defaultPrompt": [
+      "Use Kapture to drive the current browser tab.",
+      "Connect a Kapture tab and inspect the page state.",
+      "Run a browser automation step through Kapture."
+    ],
+    "brandColor": "#F97316"
+  }
+}

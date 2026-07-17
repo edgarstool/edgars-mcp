@@ -42,8 +42,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
-from mmx_handlers import DISPATCH, hmi, hmvd, hms, hmu, hmv, hmsq, hmc, hmq
-
 try:
     import jwt
     from jwt import InvalidTokenError, PyJWKClient
@@ -51,16 +49,6 @@ except ImportError:  # pragma: no cover - optional dependency in legacy mode
     jwt = None
     InvalidTokenError = Exception
     PyJWKClient = None
-
-# ── mmx handler aliases（對應 dispatch 的完整名稱）─────────────────────────────
-handle_mmx_image_generate   = hmi
-handle_mmx_video_generate   = hmv
-handle_mmx_speech_synthesize = hms
-handle_mmx_music_generate   = hmu
-handle_mmx_vision_describe  = hmvd
-handle_mmx_search_query     = hmsq
-handle_mmx_text_chat        = hmc
-handle_mmx_quota_show       = hmq
 
 # ── Secrets（由 Doppler 注入）─────────────────────────────────────────────────
 def load_mcp_api_token() -> str:
@@ -211,9 +199,12 @@ BROWSER_VISIBLE_TOOL_NAMES = {
 }
 _mcp_auth_kind: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_auth_kind", default="unknown")
 
-CODEX_CMD = r"C:\Users\EdgarsTool\AppData\Roaming\npm\codex.cmd"
+CODEX_CMD = (
+    shutil.which("codex")
+    or r"C:\Users\EdgarsTool\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe"
+)
+KILO_CMD = shutil.which("kilo") or r"C:\Users\EdgarsTool\AppData\Roaming\npm\kilo.cmd"
 CLAUDE_CMD = shutil.which("claude") or "claude"
-GEMINI_CMD = shutil.which("gemini") or "gemini"
 COPILOT_CMD = shutil.which("copilot") or r"C:\Users\EdgarsTool\AppData\Roaming\npm\copilot.cmd"
 DROID_CMD = shutil.which("droid") or r"C:\Users\EdgarsTool\bin\droid.exe"
 OLLAMA_CMD = r"C:\Users\EdgarsTool\AppData\Local\Programs\Ollama\ollama.exe"
@@ -366,11 +357,11 @@ TOOLS = [
         },
     },
     {
-        "name": "gemini_agent",
+        "name": "kilo_agent",
         "description": (
-            "Delegates a task to the Gemini CLI AI agent running on the local machine. "
-            "Fast response (under 30 seconds). Best for quick coding tasks, file operations, "
-            "shell commands, and general automation on the local Windows machine. "
+            "Delegates a task to the Kilo CLI AI agent running on the local machine. "
+            "Fast response for quick coding tasks, file operations, shell commands, "
+            "and general automation on the local Windows machine. "
             "Use this as the default agent for most tasks."
         ),
         "inputSchema": {
@@ -378,12 +369,12 @@ TOOLS = [
             "properties": {
                 "task": {
                     "type": "string",
-                    "description": "The task or instruction for Gemini to execute",
+                    "description": "The task or instruction for Kilo to execute",
                 },
                 "working_dir": {
                     "type": "string",
                     "description": (
-                        f"Working directory for Gemini to operate in "
+                        f"Working directory for Kilo to operate in "
                         f"(default: {CODEX_DEFAULT_WORKDIR})"
                     ),
                 },
@@ -525,7 +516,7 @@ TOOLS = [
             "properties": {
                 "job_id": {
                     "type": "string",
-                    "description": "The job_id returned by codex_agent, gemini_agent, claude_code_agent, copilot_agent, or droid_agent.",
+                    "description": "The job_id returned by codex_agent, kilo_agent, claude_code_agent, copilot_agent, or droid_agent.",
                 },
             },
             "required": ["job_id"],
@@ -566,7 +557,7 @@ TOOLS = [
         "name": "smart_agent",
         "description": (
             "Runs a task through a fallback chain of local AI agents. "
-            "Order: Gemini → GitHub Copilot → Factory Droid → Codex → Claude Code. "
+            "Order: Kilo → GitHub Copilot → Factory Droid → Codex → Claude Code. "
             "Falls back on quota limits, timeouts, missing CLIs, or transient upstream failures. "
             "Use this as the default tool for local execution when the user wants the server "
             "to handle agent rotation automatically, especially for file edits, shell commands, "
@@ -634,132 +625,6 @@ TOOLS = [
             },
             "required": ["page_id"],
         },
-    },
-    {
-        "name": "mmx_image_generate",
-        "description": (
-            "Generate images using MiniMax AI image-01 model. "
-            "Returns image URLs or saved file paths."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "prompt": {"type": "string", "description": "Image description prompt."},
-                "aspect_ratio": {"type": "string", "description": "Aspect ratio like 16:9, 1:1, 9:16."},
-                "n": {"type": "integer", "description": "Number of images to generate (default 1)."},
-                "out_dir": {"type": "string", "description": "Directory to save images."},
-            },
-            "required": ["prompt"],
-        },
-    },
-    {
-        "name": "mmx_video_generate",
-        "description": (
-            "Generate videos using MiniMax AI Hailuo-2.3 model. "
-            "This is async — set async=true to get a job_id immediately, "
-            "or wait for the video to be generated and returned as a file path."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "prompt": {"type": "string", "description": "Video description prompt."},
-                "async": {"type": "boolean", "description": "Return job_id immediately without waiting."},
-                "first_frame": {"type": "string", "description": "Path or URL to first frame image."},
-                "download": {"type": "string", "description": "File path to save the video."},
-            },
-            "required": ["prompt"],
-        },
-    },
-    {
-        "name": "mmx_speech_synthesize",
-        "description": (
-            "Text-to-speech using MiniMax speech-2.8-hd model. "
-            "Converts text to audio file (mp3 by default)."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "text": {"type": "string", "description": "Text to synthesize (max 10k chars)."},
-                "text_file": {"type": "string", "description": "Path to text file (use - for stdin)."},
-                "voice": {"type": "string", "description": "Voice ID (default: English_expressive_narrator)."},
-                "model": {"type": "string", "description": "Model: speech-2.8-hd, speech-2.6, or speech-02."},
-                "speed": {"type": "number", "description": "Speed multiplier."},
-                "format": {"type": "string", "description": "Audio format (default: mp3)."},
-                "out": {"type": "string", "description": "Output file path."},
-            },
-            "required": ["text"],
-        },
-    },
-    {
-        "name": "mmx_music_generate",
-        "description": (
-            "Generate music using MiniMax music-2.5 model. "
-            "Can create songs with vocals or instrumental music."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "prompt": {"type": "string", "description": "Music style/description prompt."},
-                "lyrics": {"type": "string", "description": "Song lyrics with structure tags."},
-                "vocals": {"type": "string", "description": "Vocal style description."},
-                "genre": {"type": "string", "description": "Music genre."},
-                "mood": {"type": "string", "description": "Mood or emotion."},
-                "instruments": {"type": "string", "description": "Instruments to feature."},
-                "bpm": {"type": "number", "description": "Exact tempo in BPM."},
-                "instrumental": {"type": "boolean", "description": "Generate instrumental without vocals."},
-                "out": {"type": "string", "description": "Output file path."},
-            },
-        },
-    },
-    {
-        "name": "mmx_vision_describe",
-        "description": (
-            "Image understanding via MiniMax VL model. "
-            "Describes or answers questions about an image."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "image": {"type": "string", "description": "Image path or URL."},
-                "file_id": {"type": "string", "description": "Pre-uploaded file ID."},
-                "prompt": {"type": "string", "description": "Question about the image."},
-            },
-            "required": ["image"],
-        },
-    },
-    {
-        "name": "mmx_search_query",
-        "description": "Web search via MiniMax AI.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "q": {"type": "string", "description": "Search query."},
-            },
-            "required": ["q"],
-        },
-    },
-    {
-        "name": "mmx_text_chat",
-        "description": (
-            "Chat completion using MiniMax MiniMax-M2.7 model. "
-            "Supports multi-turn conversation and system prompts."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "message": {"type": "string", "description": "Message text. Prefix with role: to set role."},
-                "system": {"type": "string", "description": "System prompt."},
-                "model": {"type": "string", "description": "Model ID (default: MiniMax-M2.7)."},
-                "max_tokens": {"type": "integer", "description": "Max tokens (default: 4096)."},
-                "temperature": {"type": "number", "description": "Sampling temperature (0.0-1.0)."},
-            },
-            "required": ["message"],
-        },
-    },
-    {
-        "name": "mmx_quota_show",
-        "description": "Display MiniMax Token Plan usage and remaining quotas.",
-        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "ollama_agent",
@@ -1503,10 +1368,6 @@ READ_ONLY_TOOL_NAMES = {
     "agent_job_list",
     "notion_search",
     "notion_get_page",
-    "mmx_vision_describe",
-    "mmx_search_query",
-    "mmx_text_chat",
-    "mmx_quota_show",
     "fs_list",
     "fs_read",
     "fs_search",
@@ -1605,6 +1466,42 @@ def _normalize_tool_descriptor(tool: dict) -> dict:
 
 
 TOOLS = [_normalize_tool_descriptor(tool) for tool in TOOLS]
+
+# Tools hidden from tools/list and rejected on tools/call until re-enabled.
+DEFAULT_DISABLED_TOOL_NAMES = frozenset({
+    "tracktw_carriers",
+    "tracktw_package_status",
+})
+
+
+def _parse_tool_name_csv(env_value: str) -> set[str]:
+    return {part.strip() for part in env_value.split(",") if part.strip()}
+
+
+def get_disabled_tool_names() -> frozenset[str]:
+    disabled = set(DEFAULT_DISABLED_TOOL_NAMES)
+    disabled.update(_parse_tool_name_csv(os.getenv("MCP_DISABLED_TOOLS", "")))
+    enabled_override = _parse_tool_name_csv(os.getenv("MCP_ENABLED_TOOLS", ""))
+    if enabled_override:
+        disabled -= enabled_override
+    return frozenset(disabled)
+
+
+def is_tool_disabled(name: str) -> bool:
+    return name in get_disabled_tool_names()
+
+
+def disabled_tool_message(name: str) -> str:
+    return (
+        f"Tool '{name}' is temporarily disabled on this server. "
+        "Set MCP_ENABLED_TOOLS to re-enable specific tools."
+    )
+
+
+def active_tools() -> list[dict]:
+    disabled = get_disabled_tool_names()
+    return [tool for tool in TOOLS if tool.get("name") not in disabled]
+
 
 # ── Origin 白名單（防 DNS rebinding，spec 強制要求）────────────────────────────
 # 允許 localhost / 127.0.0.1 任意 port，供本地開發 + MCP Inspector 使用。
@@ -2308,26 +2205,35 @@ def run_codex_task(task: str, working_dir: str) -> tuple[str, bool]:
             pass
 
 
-def run_gemini_task(task: str, working_dir: str) -> tuple[str, bool]:
-    log(f"gemini_agent: task={task!r} workdir={working_dir!r}")
+def run_kilo_task(task: str, working_dir: str) -> tuple[str, bool]:
+    log(f"kilo_agent: task={task!r} workdir={working_dir!r}")
 
     try:
         result = run_agent_command(
-            ["cmd.exe", "/c", GEMINI_CMD, "-p", task],
+            [
+                "cmd.exe",
+                "/c",
+                KILO_CMD,
+                "run",
+                "--auto",
+                "--dir",
+                working_dir,
+                task,
+            ],
             cwd=working_dir,
         )
-        log(f"gemini_agent: exit_code={result.returncode}")
+        log(f"kilo_agent: exit_code={result.returncode}")
 
         return finalize_agent_output(
             result,
-            fallback_label="Gemini",
+            fallback_label="Kilo",
         )
     except subprocess.TimeoutExpired:
-        return f"gemini_agent timed out after {AGENT_TIMEOUT_SECONDS} seconds", True
+        return f"kilo_agent timed out after {AGENT_TIMEOUT_SECONDS} seconds", True
     except FileNotFoundError:
-        return f"Error: gemini command not found at {GEMINI_CMD}", True
+        return f"Error: kilo command not found at {KILO_CMD}", True
     except Exception as exc:
-        return f"Failed to run Gemini: {exc}", True
+        return f"Failed to run Kilo: {exc}", True
 
 
 def run_claude_code_task(task: str, working_dir: str) -> tuple[str, bool]:
@@ -2464,7 +2370,7 @@ def should_fallback(tool_name: str, output: str, is_error: bool) -> bool:
         return True
 
     reason = summarize_error_reason(output)
-    if tool_name in {"gemini_agent", "copilot_agent", "droid_agent"}:
+    if tool_name in {"kilo_agent", "copilot_agent", "droid_agent"}:
         return reason in _TRANSIENT_FALLBACK_REASONS
     if tool_name == "codex_agent":
         return reason in {"timeout", "connection_aborted", "upstream_error"}
@@ -2474,7 +2380,7 @@ def should_fallback(tool_name: str, output: str, is_error: bool) -> bool:
 def run_smart_agent(task: str, working_dir: str) -> tuple[str, bool, list[dict]]:
     attempts = []
     runners = [
-        ("gemini_agent", run_gemini_task),
+        ("kilo_agent", run_kilo_task),
         ("copilot_agent", run_copilot_task),
         ("droid_agent", run_droid_task),
         ("codex_agent", run_codex_task),
@@ -2539,9 +2445,10 @@ def handle_ping(req_id, params: dict) -> dict:
 
 
 def handle_tools_list(req_id, params: dict) -> dict:
-    log(f"tools/list: returning {len(TOOLS)} tool(s)")
+    tools = active_tools()
+    log(f"tools/list: returning {len(tools)} tool(s) ({len(TOOLS) - len(tools)} disabled)")
     # 工具清單不常變、對所有呼叫者相同 → 可快取（2026 快取提示）
-    return make_response(req_id, {"tools": TOOLS, "ttlMs": 60000, "cacheScope": "public"})
+    return make_response(req_id, {"tools": tools, "ttlMs": 60000, "cacheScope": "public"})
 
 
 def handle_tools_call(req_id, params: dict) -> dict:
@@ -2550,6 +2457,12 @@ def handle_tools_call(req_id, params: dict) -> dict:
     cleanup_expired_jobs()
     log(f"tools/call: name={name} arguments={arguments}")
 
+    if name and is_tool_disabled(name):
+        return make_response(
+            req_id,
+            make_tool_text_response(disabled_tool_message(name), is_error=True),
+        )
+
     if name == "echo":
         message = arguments.get("message", "")
         return make_response(req_id, make_tool_text_response(f"echo: {message}"))
@@ -2557,8 +2470,8 @@ def handle_tools_call(req_id, params: dict) -> dict:
     if name == "codex_agent":
         return handle_codex_agent(req_id, arguments)
 
-    if name == "gemini_agent":
-        return handle_gemini_agent(req_id, arguments)
+    if name == "kilo_agent":
+        return handle_kilo_agent(req_id, arguments)
 
     if name == "claude_code_agent":
         return handle_claude_code_agent(req_id, arguments)
@@ -2586,23 +2499,6 @@ def handle_tools_call(req_id, params: dict) -> dict:
 
     if name == "notion_get_page":
         return handle_notion_get_page(req_id, arguments)
-
-    if name == "mmx_image_generate":
-        return handle_mmx_image_generate(req_id, arguments)
-    if name == "mmx_video_generate":
-        return handle_mmx_video_generate(req_id, arguments)
-    if name == "mmx_speech_synthesize":
-        return handle_mmx_speech_synthesize(req_id, arguments)
-    if name == "mmx_music_generate":
-        return handle_mmx_music_generate(req_id, arguments)
-    if name == "mmx_vision_describe":
-        return handle_mmx_vision_describe(req_id, arguments)
-    if name == "mmx_search_query":
-        return handle_mmx_search_query(req_id, arguments)
-    if name == "mmx_text_chat":
-        return handle_mmx_text_chat(req_id, arguments)
-    if name == "mmx_quota_show":
-        return handle_mmx_quota_show(req_id, arguments)
 
     if name == "ollama_agent":
         return handle_ollama_agent(req_id, arguments)
@@ -2745,13 +2641,13 @@ def handle_codex_agent(req_id, arguments: dict) -> dict:
     return make_response(req_id, make_tool_text_response(output, is_error=is_error))
 
 
-def handle_gemini_agent(req_id, arguments: dict) -> dict:
-    sync_args, async_response = maybe_start_async_job(req_id, arguments, "gemini_agent", run_gemini_task)
+def handle_kilo_agent(req_id, arguments: dict) -> dict:
+    sync_args, async_response = maybe_start_async_job(req_id, arguments, "kilo_agent", run_kilo_task)
     if async_response is not None:
         return async_response
 
     task, working_dir = sync_args
-    output, is_error = run_gemini_task(task, working_dir)
+    output, is_error = run_kilo_task(task, working_dir)
     return make_response(req_id, make_tool_text_response(output, is_error=is_error))
 
 
@@ -3869,8 +3765,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     def _detect_mcp_auth_kind(self) -> str:
         config = self.server.config
-        if self.headers.get("X-Handcraft-Client-Mode", "").strip().lower() == "stdio-local":
-            return "static"
         if not self._mcp_auth_required():
             return "none"
 
@@ -6002,13 +5896,13 @@ _VISIBLE_BROWSER_RUNTIME = _VisibleBrowserRuntime()
 def _visible_browser_permitted() -> bool:
     if not BROWSER_VISIBLE_LOCAL_ONLY:
         return True
-    return _mcp_auth_kind.get("unknown") in {"none", "static", "cf_access"}
+    return _mcp_auth_kind.get("unknown") in {"none", "static"}
 
 
 def _visible_browser_access_error() -> str:
     return (
         "Error: visible browser tools are limited to trusted local MCP clients "
-        "(Cursor/Hermes stdio). Remote OAuth clients such as ChatGPT cannot open a desktop browser."
+        "(Cursor/Hermes stdio). Remote OAuth or Cloudflare Access clients cannot open a desktop browser."
     )
 
 

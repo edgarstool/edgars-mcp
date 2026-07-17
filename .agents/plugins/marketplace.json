@@ -15,6 +15,54 @@
         "authentication": "ON_INSTALL"
       },
       "category": "Productivity"
+    },
+    {
+      "name": "chrome-devtools",
+      "source": {
+        "source": "local",
+        "path": "./plugins/chrome-devtools"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "NONE"
+      },
+      "category": "Developer Tools"
+    },
+    {
+      "name": "comet",
+      "source": {
+        "source": "local",
+        "path": "./plugins/comet"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "NONE"
+      },
+      "category": "Research"
+    },
+    {
+      "name": "kapture",
+      "source": {
+        "source": "local",
+        "path": "./plugins/kapture"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "NONE"
+      },
+      "category": "Browser Automation"
+    },
+    {
+      "name": "playwright",
+      "source": {
+        "source": "local",
+        "path": "./plugins/playwright"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "NONE"
+      },
+      "category": "Browser Automation"
     }
   ]
 }

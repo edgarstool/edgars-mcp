@@ -14,26 +14,21 @@
       "auth_type": "bearer",
       "auth_secret_ref": "SecretManager:MCP_API_TOKEN",
       "require_user_auth": false,
-      "notes": "Machine route must not be intercepted by Cloudflare Access login HTML. Origin validates Authorization: Bearer."
-    },
-    {
-      "id": "honcho",
-      "name": "honcho",
-      "url": "https://honcho-mcp.edgars.tools/mcp",
-      "upstream_url": "https://mcp.honcho.dev",
-      "auth_type": "bearer_to_facade",
-      "headers": {
-        "Authorization": "Bearer ${HONCHO_FACADE_BEARER_VALUE}"
-      },
-      "auth_secret_refs": [
-        "OriginSecret:HONCHO_API_KEY",
-        "CloudflareAICredentials:HONCHO_FACADE_BEARER_VALUE",
-        "OriginSecret:HONCHO_USER_NAME",
-        "OriginSecret:HONCHO_WORKSPACE_ID",
-        "OriginSecret:HONCHO_ASSISTANT_NAME"
+      "integrated_capabilities": [
+        {
+          "id": "honcho",
+          "tool_prefix": "honcho__",
+          "upstream_url": "https://mcp.honcho.dev",
+          "origin_secret_refs": [
+            "OriginSecret:HONCHO_API_KEY",
+            "OriginSecret:HONCHO_USER_NAME",
+            "OriginSecret:HONCHO_WORKSPACE_ID",
+            "OriginSecret:HONCHO_ASSISTANT_NAME"
+          ],
+          "notes": "Do not register honcho as a separate Cloudflare AI Controls MCP server. edgars-mcp fetches Honcho tools/list and proxies honcho__* tools/call server-side."
+        }
       ],
-      "require_user_auth": false,
-      "notes": "Honcho official MCP requires multiple upstream headers. Use the edgars-mcp host-based facade so Cloudflare AI Controls only needs one bearer header while server_http.py injects Honcho's required multi-header auth. Worker facade exists as fallback, but current portal path is honcho-mcp.edgars.tools."
+      "notes": "Machine route must not be intercepted by Cloudflare Access login HTML. Origin validates Authorization: Bearer. Honcho memory tools are exposed through this server with the honcho__ prefix."
     },
     {
       "id": "cloudflare-api",
@@ -42,6 +37,13 @@
       "auth_type": "oauth_or_bearer",
       "require_user_auth": true,
       "notes": "Use Cloudflare's managed MCP server when the agent needs Cloudflare API access."
+    }
+  ],
+  "deprecated_servers": [
+    {
+      "id": "honcho",
+      "old_url": "https://honcho-mcp.edgars.tools/mcp",
+      "reason": "Replaced by edgars-mcp integrated honcho__* tools. The old facade may remain for debug/fallback, but it should not be added to edgars-entry portal."
     }
   ],
   "machine_access": {

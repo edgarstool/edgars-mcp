@@ -1,401 +1,123 @@
-# Honcho MCP 上 Cloudflare 方案
+# Honcho MCP 入口網站整合方案
 
-> 目標：把 Honcho MCP 與其他常用 MCP 統一放進 Cloudflare AI Controls / MCP Portals，讓 agent 走單一入口取得工具，同時避免 Cloudflare Access、OAuth、Bearer token 多層互相攔截。
+> 目標：讓外部 agent 只連 `https://entry.edgars.tools/mcp`，由 Cloudflare MCP Portal 進入 `edgars-mcp`，再由 `edgars-mcp` 代理 Honcho 官方 MCP tools。
 
 ## 結論
 
-推薦採用 **Cloudflare MCP Portal 聚合模式 + edgars-mcp 本機 facade**，不要一開始就重寫 Honcho MCP。
+採用 **edgars-mcp 內建 Honcho tools**。
+
+不要再把 `honcho` 註冊成 Cloudflare AI Controls 的獨立 MCP server。`honcho` 之前卡在 bearer/header credential 與 Dashboard sync 狀態，且它是可重建控制面資源，繼續排查成本高於整合進已可用的 `edgars-mcp`。
+
+正式流量：
 
 ```text
-Agent / bot
-→ Cloudflare MCP Portal（entry.edgars.tools/mcp）
-→ upstream MCP servers
-   ├─ edgars-mcp（https://mcp.edgars.tools/mcp，Bearer）
-   ├─ honcho（https://honcho-mcp.edgars.tools/mcp，Bearer facade）
-   ├─ linear / notion / github / cloudflare docs ...
-   └─ future MCP servers
-```
-
-原因：
-
-1. Honcho 官方已提供 remote MCP server：`https://mcp.honcho.dev`。
-2. Cloudflare MCP Portal 本來就是「多 MCP server 單一入口」。
-3. Cloudflare 2026-06-26 起支援 MCP Portal service token，適合 autonomous agents / bots，不必每個 agent 走瀏覽器 OAuth。
-4. 這條路重建成本低，符合 Agent-KB 的「可重建設定優先重建」規則。
-
-目前已驗證的正式接線：
-
-```text
-Cloudflare MCP Portal / AI Controls
-→ https://honcho-mcp.edgars.tools/mcp
-→ Cloudflare Tunnel remote ingress
-→ localhost:8765
-→ server_http.py Honcho facade
+external agents
+→ https://entry.edgars.tools/mcp
+→ Cloudflare MCP Portal
+→ edgars-mcp
+→ tools/list 顯示 honcho__* tools
+→ tools/call honcho__<tool>
 → https://mcp.honcho.dev
 ```
 
-`server_http.py` 會在 `Host: honcho-mcp.edgars.tools` 且 path 為 `/mcp` 時，把請求轉給 Honcho 官方 MCP，並注入 Honcho 必要 headers。這保留標準 MCP path，避免 Cloudflare AI Controls 對非 `/mcp` path 的相容性問題。
+`origin / 來源服務：真正處理請求的後端服務。`
 
-## 不推薦的第一版
+`upstream / 上游服務：目前服務再往後呼叫的目標服務。`
 
-暫時不要一開始就做：
+`facade / 外觀代理：對外看起來像一個簡單服務，內部替你處理複雜 headers 或轉接。`
 
-```text
-把 Honcho MCP server 本體重寫成 Cloudflare Worker
-```
+## Cloudflare 設定
 
-這不是不能做，而是第一版成本較高：
-
-1. 要完整複製 Honcho MCP 的 tools schema 與行為。
-2. 要維護 Honcho API adapter。
-3. 要處理 streaming / Streamable HTTP / session state。
-4. 會多一層自維護 surface，日後 Honcho 官方 MCP 更新時容易 drift。
-
-除非需要自訂工具、快取、審計或把多個 Honcho workspace 包成固定工具組，否則先用官方 remote MCP 比較乾淨。
-
-## 官方依據
-
-- Honcho 官方 MCP 文件：`https://honcho.dev/docs/v3/guides/integrations/mcp`
-- Honcho MCP server URL：`https://mcp.honcho.dev`
-- Cloudflare remote MCP server 文件：`https://developers.cloudflare.com/agents/model-context-protocol/guides/remote-mcp-server/`
-- Cloudflare MCP Portal 文件：`https://developers.cloudflare.com/cloudflare-one/access-controls/ai-controls/mcp-portals/`
-- Cloudflare MCP Portal service token changelog：`https://developers.cloudflare.com/changelog/post/2026-06-26-mcp-portal-service-tokens/`
-
-## Honcho MCP 需要的 headers
-
-Honcho 官方 remote MCP 需要：
+Portal 只需要保留：
 
 ```text
-Authorization: Bearer <HONCHO_API_KEY>
-X-Honcho-User-Name: <user-name>
+edgars-entry
+├─ edgars-mcp
+└─ linear（若仍需要互動 OAuth）
 ```
 
-可選：
+不要加入：
 
 ```text
-X-Honcho-Assistant-Name: <assistant-name>
-X-Honcho-Workspace-ID: <workspace-id>
+honcho
 ```
 
-建議 Edgar 環境固定：
+原因：Honcho 官方 MCP 需要 `Authorization`、`X-Honcho-User-Name`、`X-Honcho-Workspace-ID`、`X-Honcho-Assistant-Name` 等 upstream headers。這些應由 `edgars-mcp` server-side 注入，不該讓 Cloudflare Portal 或外部 agent 直接持有。
+
+## Repo 實作
+
+`server_http.py` 會：
+
+- 在 `tools/list` 時呼叫 Honcho 官方 MCP `tools/list`。
+- 將每個 Honcho tool 改名成 `honcho__<upstream_tool_name>`。
+- 在 `tools/call` 收到 `honcho__*` 時，移除 prefix 後呼叫 Honcho 官方 MCP `tools/call`。
+- 使用 `HONCHO_API_KEY`、`HONCHO_USER_NAME`、`HONCHO_WORKSPACE_ID`、`HONCHO_ASSISTANT_NAME` 注入上游 headers。
+- 快取 Honcho tools list，預設 TTL 為 `HONCHO_TOOLS_CACHE_TTL_SECONDS=60`。
+- Honcho 不可用時不讓整個 `edgars-mcp tools/list` 失敗；最多回傳沒有 Honcho tools 或使用上一份 cache。
+
+保留的 debug / fallback：
 
 ```text
-X-Honcho-User-Name: Edgar
-X-Honcho-Workspace-ID: edgar-team
+https://honcho-mcp.edgars.tools/mcp
 ```
 
-不同 agent 可用不同 assistant name：
-
-```text
-codex
-claude
-hermes
-openclaw
-cursor
-```
+這條仍可由 `server_http.py` host-based facade 轉到 Honcho 官方 MCP，但它不是 Portal 的正式 upstream。
 
 ## Secrets 邊界
 
-不要把 Doppler 當成 Cloudflare Portal 或所有 agent 的共同前提。Doppler 可以是本機 runtime 的 secret 注入方式之一，但不是遠端 agent、瀏覽器代理或 Cloudflare AI Controls 會自動讀到的來源。
-
-這條鏈路有三種不同 secret：
-
-| Secret | 誰使用 | 用途 |
-|---|---|---|
-| `HONCHO_API_KEY` | Honcho facade origin | facade 打 Honcho 官方 MCP 的 upstream credential |
-| `HONCHO_FACADE_BEARER_VALUE` | Cloudflare AI Controls → facade | Cloudflare MCP server 同步 / 呼叫 facade 的 bearer credential |
-| Cloudflare Access OAuth / service token | agent → `entry.edgars.tools/mcp` | agent 連入口 portal 的 client credential |
-
-正式原則：
-
-```text
-agent 不直接拿 HONCHO_API_KEY
-agent 不直接拿 Honcho facade bearer
-agent 只連 Cloudflare MCP Portal
-```
-
-本機 origin 可以從 Doppler、Windows env、Cloudflare Secret、1Password 或其他 secret manager 取值。重點是：Cloudflare AI Controls 的 Dashboard 欄位必須拿到「實際 bearer secret 值」，不能填 env var 名稱。
-
-本機 `server_http.py` 目前讀取的 env 名稱：
+外部 agent 不直接拿：
 
 ```text
 HONCHO_API_KEY
-HONCHO_USER_NAME
-HONCHO_WORKSPACE_ID
-HONCHO_ASSISTANT_NAME
 EDGARS_HONCHO_MCP_FACADE_TOKEN
+HONCHO_FACADE_BEARER_VALUE
 ```
 
-若使用 Cloudflare Worker facade fallback，對應 secrets 放在 Worker secrets，不放 repo：
+外部 agent 只連：
 
 ```text
-HONCHO_API_KEY
-HONCHO_USER_NAME
-HONCHO_WORKSPACE_ID
+https://entry.edgars.tools/mcp
 ```
 
-## Cloudflare AI Controls 設定
-
-### 1. MCP Server: honcho
-
-在 Cloudflare Zero Trust：
+本機 origin 可以從 Doppler、Windows env、1Password 或其他 secret manager 注入：
 
 ```text
-Access controls
-→ AI controls
-→ MCP servers
-→ Add an MCP server
-```
-
-建議設定：
-
-```text
-Name: honcho
-Server ID: honcho
-HTTP URL: https://honcho-mcp.edgars.tools/mcp
-Authentication: bearer / header-based
-```
-
-Header：
-
-```text
-Authorization: Bearer <HONCHO_FACADE_BEARER_VALUE>
-```
-
-如果 Dashboard UI 是「Header name / Header value」兩欄：
-
-```text
-Header name: Authorization
-Header value: Bearer <實際 bearer secret 值>
-```
-
-如果 UI 是單一「Bearer token」欄位：
-
-```text
-<實際 bearer secret 值>
-```
-
-不要填：
-
-```text
-EDGARS_HONCHO_MCP_FACADE_TOKEN
-${EDGARS_HONCHO_MCP_FACADE_TOKEN}
-Bearer EDGARS_HONCHO_MCP_FACADE_TOKEN
-```
-
-注意：Honcho 官方 MCP 需要多個 upstream headers，因此不要把 `https://mcp.honcho.dev` 直接放進 Cloudflare AI Controls，除非 Cloudflare UI/API 明確支援多 header credential。曾觀察到直接設定會出現 `Invalid header name.`。
-
-目前 API 重建觀察：
-
-```text
-curl 直打 https://honcho-mcp.edgars.tools/mcp + facade token = 200 tools/list
-Cloudflare AI Controls unauthenticated probe = 會打到 origin，origin 回 401
-Cloudflare AI Controls bearer probe = sync 顯示 unable to connect to server，origin log 未看到請求
-Cloudflare AI Controls `PUT /servers/honcho` 覆寫同 URL + auth_credentials 後 = PUT success，但 sync_success=false，仍未 Ready
-```
-
-這代表 origin / tunnel / DNS / facade 都是通的，剩餘卡點是 Cloudflare AI Controls 控制面對新 bearer server 的 credential 寫入或同步狀態。若 API 建立或 PUT 後仍不打 origin，優先用 Dashboard 重新設定該 server 的 header-based auth，而不是繼續追 origin。
-
-### 2. MCP Portal: edgars-entry
-
-Portal 放所有 MCP：
-
-```text
-Portal name: edgars-entry
-Portal URL: https://entry.edgars.tools/mcp
-Servers:
-  - edgars-mcp
-  - linear
-  - honcho（pending: server sync 尚未 Ready）
-  - cloudflare docs
-  - github / notion / obsidian / future servers
-```
-
-目前已完成狀態：
-
-```text
-edgars-entry portal API servers:
-- edgars-mcp: ready, bearer, on_behalf=false
-- linear: ready, oauth, on_behalf=true
-- honcho: pending, server status=error, unable to connect to server
-```
-
-Portal update API 注意事項：
-
-```json
-{
-  "servers": [
-    {
-      "server_id": "linear",
-      "on_behalf": true,
-      "default_disabled": false
-    },
-    {
-      "server_id": "edgars-mcp",
-      "on_behalf": false,
-      "default_disabled": false
-    }
-  ]
-}
-```
-
-`servers[*].server_id` 是必要欄位；只送 `id` 會回 `body.servers[].server_id Required`。
-
-Service token smoke test：
-
-```text
-POST https://entry.edgars.tools/mcp initialize
-headers: CF-Access-Client-Id / CF-Access-Client-Secret
-result: 200 text/event-stream, returned mcp-session-id
-```
-
-對 bots / agents：
-
-1. Portal Access application 加 Service Auth policy。
-2. 每個 linked MCP server 的 Access application 也加同一個 Service Auth policy。
-3. 對不需要 per-user OAuth 的 server 關閉 `Require user auth` / `on_behalf=false`。
-
-## edgars-mcp facade 模式
-
-當 Cloudflare MCP server UI 不能設定多個 upstream headers，或想把多個 agent 固定成不同 assistant name，可先用本 repo 的 `server_http.py` 當 facade：
-
-```text
-Cloudflare MCP Portal / AI Controls
-→ https://honcho-mcp.edgars.tools/mcp
-→ Cloudflare Tunnel
-→ server_http.py facade
-→ https://mcp.honcho.dev
-```
-
-facade 負責：
-
-1. 驗證 incoming `Authorization: Bearer <HONCHO_FACADE_BEARER_VALUE>`。
-2. 對 upstream Honcho 加：
-   - `Authorization: Bearer <HONCHO_API_KEY>`
-   - `X-Honcho-User-Name`
-   - `X-Honcho-Workspace-ID`
-   - `X-Honcho-Assistant-Name`
-3. 原樣 proxy MCP Streamable HTTP request / response。
-
-這不是完整 MCP server 實作，只是 HTTP proxy / header injector。好處是重建快、風險低。
-
-環境變數：
-
-```text
-EDGARS_HONCHO_MCP_FACADE_TOKEN
 HONCHO_API_KEY
 HONCHO_USER_NAME=Edgar
 HONCHO_WORKSPACE_ID=edgar-team
 HONCHO_ASSISTANT_NAME=codex
-HONCHO_MCP_HOSTNAME=honcho-mcp.edgars.tools
 ```
 
-Cloudflare Tunnel remote ingress：
+Doppler 是 runtime secret source 之一，不是外部 agent 的連線目標。
 
-```text
-honcho-mcp.edgars.tools -> http://localhost:8765
-```
+## 驗收
 
-驗收：
+本機測試：
 
 ```powershell
-$token = '<HONCHO_FACADE_BEARER_VALUE>'
-$body = '{ "jsonrpc":"2.0", "id":1, "method":"tools/list", "params":{} }'
-
-curl.exe -i https://honcho-mcp.edgars.tools/mcp `
-  -H "Authorization: Bearer $token" `
-  -H "Content-Type: application/json" `
-  -H "Accept: application/json, text/event-stream" `
-  --data $body
+python -m py_compile server_http.py test_server_http.py
+python -m unittest test_server_http.HonchoMcpFacadeTests
 ```
 
-## Worker facade fallback
-
-Worker 版本已保留在 repo，適合未來要把 Honcho facade 從本機服務移到 Cloudflare edge 時使用：
+預期：
 
 ```text
-cloudflare/workers/honcho-mcp-facade/
-├─ index.mjs
-├─ wrangler.jsonc
-└─ README.md
+tools/list 包含 honcho__inspect_workspace 或其他 honcho__* tools
+tools/call honcho__inspect_workspace 會轉成 upstream tools/call name=inspect_workspace
+Cloudflare Portal 不需要獨立 honcho server
 ```
 
-Wrangler secrets：
+Cloudflare 驗收：
 
-```text
-HONCHO_API_KEY
-EDGARS_HONCHO_MCP_FACADE_TOKEN
-HONCHO_USER_NAME
-HONCHO_WORKSPACE_ID
-HONCHO_ASSISTANT_NAME
-```
+1. 確認 `edgars-mcp` server 狀態 Ready。
+2. 確認 `edgars-entry` portal 只有必要 upstream，例如 `edgars-mcp`、`linear`。
+3. Sync `edgars-mcp` capabilities。
+4. 從真實 MCP client 連 `https://entry.edgars.tools/mcp`，確認工具清單出現 `honcho__*`。
 
-Worker 路由：
+## 回復方式
 
-```text
-https://honcho.edgars.tools/mcp
-```
+若 integrated Honcho tools 造成問題：
 
-已知限制：Worker facade 直打 `https://honcho.edgars.tools/mcp` 可回 Honcho tools/list，但 Cloudflare AI Controls sync 測試沒有打到 Worker origin，仍回 `unable to connect to server`。因此目前正式 portal 路徑先使用 `honcho-mcp.edgars.tools/mcp`。
-
-驗收：
-
-```powershell
-# 無 token 應 401
-curl.exe -i https://honcho.edgars.tools/mcp
-
-# 有 token 應進入 Honcho MCP flow
-curl.exe -i https://honcho.edgars.tools/mcp `
-  -H "Authorization: Bearer <HONCHO_FACADE_BEARER_VALUE>"
-```
-
-## 所有 MCP 上架原則
-
-每個 MCP server 要先分類，不要全部套同一種 auth。
-
-| 類型 | 例子 | Cloudflare 放法 |
-|---|---|---|
-| 已有 hosted remote MCP | Honcho, Cloudflare MCP | 直接加進 MCP servers |
-| 本機工具 MCP | edgars-mcp | Tunnel 或 Worker facade，origin 用 Bearer |
-| 需要多 header 的 MCP | Honcho, private upstream | edgars-mcp facade、Worker facade 或 Cloudflare Agents `addMcpServer` |
-| 需要人類 OAuth 的 MCP | GitHub, Google | Portal + per-user OAuth |
-| agent/bot 專用 MCP | edgars-mcp, honcho memory | Portal service token + `on_behalf=false` |
-
-## 驗收清單
-
-1. `edgars-mcp` 在 Cloudflare AI Controls 顯示 Ready。
-2. `honcho` 在 Cloudflare AI Controls 顯示 Ready。
-3. `entry.edgars.tools/mcp` 可以列出 edgars-mcp 與 honcho 工具。
-4. service token client 可以連 portal，不需要瀏覽器 OAuth。
-5. Honcho tools 至少能回：
-   - `inspect_workspace`
-   - `list_peers`
-   - `get_peer_card`
-6. 無認證直打 upstream 不應暴露 secrets。
-7. Cloudflare Access / old app / old policy 不再攔截 machine route。
-
-## Rollback
-
-如果 honcho server 加進 Cloudflare 後造成 portal 異常：
-
-1. 從 MCP Portal 先移除 `honcho`。
-2. 若仍異常，刪除 Cloudflare AI Controls 裡的 `honcho` MCP server。
-3. 若使用 Worker facade，停用 route `honcho.edgars.tools` 或 rollback Worker deploy。
-4. 若使用 tunnel facade，從 Cloudflare Tunnel remote ingress 移除 `honcho-mcp.edgars.tools`，或刪除該 DNS CNAME。
-5. 保留 Honcho 官方直連方式：
-
-```text
-https://mcp.honcho.dev
-Authorization: Bearer <HONCHO_API_KEY>
-X-Honcho-User-Name: Edgar
-```
-
-## 下一步
-
-推薦順序：
-
-1. 在 Cloudflare Dashboard 編輯或重建 `honcho` server，使用 `https://honcho-mcp.edgars.tools/mcp` 與 `Authorization: Bearer <實際 bearer secret 值>`。
-2. 同步 `honcho`，確認狀態 Ready 且 tools 至少包含 `inspect_workspace`。
-3. 把 `honcho` 加回 `edgars-entry` portal。
-4. 再把其他 MCP servers 逐一整理進 `config/mcp.cloudflare.catalog.example.json`。
-5. 最後用 Cloudflare API 或 Terraform 管理 portal / servers，避免 UI drift。
+1. 先移除或暫時不設定 `HONCHO_API_KEY`，`tools/list` 會停止加入 `honcho__*`。
+2. 若需要直連排查，可使用 `honcho-mcp.edgars.tools/mcp` fallback facade。
+3. 不要優先重建 Cloudflare `honcho` server；那條路已標記為 deprecated。

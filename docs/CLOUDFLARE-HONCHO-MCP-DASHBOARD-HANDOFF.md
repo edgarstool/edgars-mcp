@@ -1,147 +1,45 @@
 # Cloudflare Honcho MCP Dashboard Handoff
 
-給瀏覽器代理使用。目標是修復 Cloudflare AI Controls 裡 `honcho` MCP server 的 bearer/header credential，讓它在 `edgars-entry` portal 可用。
+> Deprecated / 已棄用：不要再要求瀏覽器代理重建 Cloudflare AI Controls 裡的獨立 `honcho` MCP server。
 
-## 背景
+## 現行決策
 
-已驗證：
-
-```text
-https://honcho-mcp.edgars.tools/mcp
-```
-
-使用 `Authorization: Bearer <HONCHO_FACADE_BEARER_VALUE>` 直打 MCP `tools/list` 會回 200，工具數 30，包含 `inspect_workspace`。
-
-Cloudflare API 目前顯示：
+Honcho 走 `edgars-mcp` 內建工具：
 
 ```text
-Server ID: honcho
-Hostname: https://honcho-mcp.edgars.tools/mcp
-Auth type: bearer
-Status: error
-Error: unable to connect to server
+entry.edgars.tools/mcp
+→ Cloudflare MCP Portal
+→ edgars-mcp
+→ honcho__* tools
+→ mcp.honcho.dev
 ```
 
-也已試過 API `PUT /servers/honcho` 覆寫同 URL + `auth_credentials`，Cloudflare 回 success，但 sync 仍失敗且 origin log 沒看到 bearer sync request。判斷剩餘卡點是 Dashboard / 控制面 credential 未正確保存。
+Cloudflare Portal 裡不需要獨立 `honcho` server。若 Dashboard 裡仍看得到舊的 `honcho` server，應視為 legacy / 舊設定；除非使用者明確要求保留 debug route，否則不要把它加回 `edgars-entry` portal。
 
-## 不可碰
+## 瀏覽器代理現在要做什麼
 
-不要修改：
+若需要操作 Cloudflare Dashboard，只做下列確認：
+
+1. `edgars-entry` portal 包含 `edgars-mcp`。
+2. `edgars-mcp` server 狀態是 Ready。
+3. 不把獨立 `honcho` server 加入 `edgars-entry`。
+4. 若需要看到 Honcho tools，請 sync `edgars-mcp` capabilities，而不是 sync `honcho`。
+
+## 成功判準
 
 ```text
-edgars-mcp server
-linear server
-edgars-entry portal domain
-Access application policies
-DNS
-Tunnel ingress
-secrets 本身的值
+edgars-entry portal 可連線
+edgars-mcp Ready
+tools/list 透過 edgars-mcp 顯示 honcho__* tools
 ```
 
-不要顯示或複製 secret 原文到聊天。只可從正式 secret manager / 密碼管理器 / Cloudflare secret storage 取值後填入 Dashboard。
-
-## 要做
-
-1. 打開 Cloudflare Dashboard：
+## 不要再做
 
 ```text
-https://dash.cloudflare.com/c2817bff1e0375474720742c17b3dfbb/one/access-controls/ai-controls/mcp-server
+建立 MCP server: honcho
+把 https://honcho-mcp.edgars.tools/mcp 加入 Cloudflare Portal
+把 HONCHO_FACADE_BEARER_VALUE 填進 Cloudflare AI Controls
+要求外部 agent 直接持有 Honcho credential
 ```
 
-2. 找到 MCP server：
-
-```text
-honcho
-```
-
-若既有 `honcho` server 無法正確保存 authentication，刪除並重建它是允許的，因為這是可快速重建的控制面資源。
-
-3. 設定或重建成：
-
-```text
-Name: honcho
-Server ID: honcho
-HTTP URL: https://honcho-mcp.edgars.tools/mcp
-Authentication: header-based / bearer
-Header name: Authorization
-Header value: Bearer <HONCHO_FACADE_BEARER_VALUE>
-Require user auth: off / on_behalf=false（若 UI 有此選項）
-```
-
-注意：Dashboard 的 `Header value` 不能填 `EDGARS_HONCHO_MCP_FACADE_TOKEN` 這串環境變數名稱，也不能填 `${EDGARS_HONCHO_MCP_FACADE_TOKEN}`。Cloudflare AI Controls 不會讀本機 env var，也不會讀任何本地 agent 的 secret store。這一格必須貼入實際 bearer secret 值，格式如下：
-
-```text
-Bearer <實際 bearer secret 值>
-```
-
-如果 UI 是「Bearer token」單一欄位，而不是「Header name / Header value」兩欄，則只貼實際 token，不要加 `Bearer ` 前綴。
-
-這個 bearer secret 是 Cloudflare AI Controls 與 `honcho-mcp.edgars.tools` facade 之間的 upstream credential。它不是給所有 agent 使用的 client credential。一般 agent / 瀏覽器代理 / 遠端代理應連：
-
-```text
-https://entry.edgars.tools/mcp
-```
-
-並透過 Cloudflare Access / MCP Portal 的 OAuth 或 service token 授權，而不是直接持有 Honcho facade bearer。
-
-4. 儲存後執行 sync / Sync capabilities。
-
-5. 成功判準：
-
-```text
-honcho status = Ready
-tools list 包含 inspect_workspace
-tools list 包含 list_workspaces
-tools list 包含 get_peer_card 或 chat
-```
-
-6. 確認 `edgars-entry` portal 包含：
-
-```text
-edgars-mcp
-honcho
-linear
-```
-
-目前 API 已確認 portal 內有：
-
-```text
-edgars-mcp
-linear
-```
-
-若 `honcho` 不在 portal，等 `honcho` server Ready 後加入 portal 並 Save。
-
-## 失敗時回報
-
-若失敗，請回報：
-
-```text
-Final URL:
-Cloudflare UI error text:
-honcho server status:
-honcho server error:
-是否有 Authentication/header-based 欄位:
-是否能輸入 Header name = Authorization:
-是否能輸入 Header value:
-sync 後 origin log 是否有 POST /mcp:
-```
-
-## 驗證命令
-
-不要輸出 token。只回報狀態與 tool 名稱。
-
-```powershell
-$token = '<HONCHO_FACADE_BEARER_VALUE>'
-$body = '{ "jsonrpc":"2.0", "id":1, "method":"tools/list", "params":{} }'
-
-Invoke-RestMethod `
-  -Uri 'https://honcho-mcp.edgars.tools/mcp' `
-  -Method Post `
-  -ContentType 'application/json' `
-  -Headers @{ Authorization = 'Bearer ' + $token; Accept = 'application/json, text/event-stream' } `
-  -Body $body |
-  Select-Object -ExpandProperty result |
-  Select-Object -ExpandProperty tools |
-  Select-Object -First 10 name
-```
+這些是舊方案，已被 `edgars-mcp integrated Honcho tools` 取代。

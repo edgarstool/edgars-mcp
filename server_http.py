@@ -251,6 +251,8 @@ SERVER_INSTRUCTIONS = (
 MCP_PATH = "/mcp"
 HONCHO_MCP_PATH = "/honcho-mcp"
 HONCHO_MCP_UPSTREAM_URL = "https://mcp.honcho.dev"
+HONCHO_TOOL_PREFIX = "honcho__"
+HONCHO_TOOLS_CACHE_TTL_SECONDS = int(os.getenv("HONCHO_TOOLS_CACHE_TTL_SECONDS", "60"))
 HEALTH_PATH = "/health"
 PACKAGE_WEBHOOK_PATH = "/webhook/package"
 LINEAR_WEBHOOK_PATH = "/webhook/linear"
@@ -266,6 +268,12 @@ SERVER_INFO = {
 
 JOBS_LOCK = threading.Lock()
 JOBS: dict[str, dict] = {}
+HONCHO_TOOLS_CACHE_LOCK = threading.Lock()
+HONCHO_TOOLS_CACHE: dict[str, object] = {
+    "expires_at": 0.0,
+    "identity": "",
+    "tools": [],
+}
 DISCORD_WEBHOOK_EVENTS_LOCK = threading.Lock()
 DISCORD_WEBHOOK_EVENTS: list[dict] = []
 MAX_DISCORD_WEBHOOK_EVENTS = int(os.getenv("MCP_DISCORD_WEBHOOK_EVENT_LIMIT", "100"))
@@ -1708,8 +1716,187 @@ class FactoryMcpError(RuntimeError):
     pass
 
 
+class HonchoMcpError(RuntimeError):
+    pass
+
+
 class CloudflareAccessAuthError(RuntimeError):
     pass
+
+
+def build_honcho_mcp_headers(config: HandcraftServerConfig, *, content_type: str = "application/json") -> dict:
+    return {
+        "Authorization": f"Bearer {config.honcho_api_key}",
+        "X-Honcho-User-Name": config.honcho_user_name or "Edgar",
+        "X-Honcho-Workspace-ID": config.honcho_workspace_id or "edgar-team",
+        "X-Honcho-Assistant-Name": config.honcho_assistant_name or "codex",
+        "Content-Type": content_type,
+        "Accept": "application/json, text/event-stream",
+        "User-Agent": "edgars-mcp-honcho-integrated-tools/0.1",
+    }
+
+
+def honcho_config_identity(config: HandcraftServerConfig | None) -> str:
+    if not config or not config.honcho_api_key:
+        return "disabled"
+    return "|".join([
+        config.honcho_user_name or "Edgar",
+        config.honcho_workspace_id or "edgar-team",
+        config.honcho_assistant_name or "codex",
+        "configured",
+    ])
+
+
+def call_honcho_mcp_json_rpc(
+    config: HandcraftServerConfig,
+    method: str,
+    params: dict | None = None,
+    *,
+    req_id: object = "edgars-mcp-honcho",
+    timeout: float = 60.0,
+) -> dict:
+    if not config.honcho_api_key:
+        raise HonchoMcpError("HONCHO_API_KEY is not configured")
+
+    body = json.dumps({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": method,
+        "params": params or {},
+    }, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        HONCHO_MCP_UPSTREAM_URL,
+        data=body,
+        headers=build_honcho_mcp_headers(config),
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            content_type = response.headers.get("Content-Type", "application/json")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        content_type = exc.headers.get("Content-Type", "application/json")
+        normalized, _ = normalize_honcho_mcp_response(raw, content_type)
+        detail = normalized.decode("utf-8", errors="replace")
+        raise HonchoMcpError(f"Honcho upstream HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise HonchoMcpError(f"Honcho upstream unreachable: {exc.reason}") from exc
+
+    normalized, content_type = normalize_honcho_mcp_response(raw, content_type)
+    try:
+        payload = json.loads(normalized.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        snippet = normalized.decode("utf-8", errors="replace")[:500]
+        raise HonchoMcpError(f"Honcho upstream returned non-JSON {content_type}: {snippet}") from exc
+    if not isinstance(payload, dict):
+        raise HonchoMcpError("Honcho upstream returned a non-object JSON-RPC payload")
+    return payload
+
+
+def build_honcho_tool_descriptor(upstream_tool: dict) -> dict | None:
+    upstream_name = str(upstream_tool.get("name") or "").strip()
+    if not upstream_name or upstream_name.startswith(HONCHO_TOOL_PREFIX):
+        return None
+
+    descriptor = dict(upstream_tool)
+    title = str(descriptor.get("title") or upstream_name.replace("_", " ").title())
+    description = str(descriptor.get("description") or "").strip()
+    descriptor["name"] = f"{HONCHO_TOOL_PREFIX}{upstream_name}"
+    descriptor["title"] = f"Honcho: {title}"
+    descriptor["description"] = (
+        f"[Honcho memory] {description}"
+        if description
+        else "Honcho memory MCP tool proxied through edgars-mcp."
+    )
+    meta = dict(descriptor.get("_meta") or {})
+    meta["edgars_mcp_proxy"] = {
+        "upstream": "honcho",
+        "upstream_name": upstream_name,
+    }
+    descriptor["_meta"] = meta
+    return _normalize_tool_descriptor(descriptor)
+
+
+def fetch_honcho_tool_descriptors(config: HandcraftServerConfig | None) -> list[dict]:
+    if not config or not config.honcho_api_key:
+        return []
+
+    identity = honcho_config_identity(config)
+    now = time.time()
+    with HONCHO_TOOLS_CACHE_LOCK:
+        if (
+            HONCHO_TOOLS_CACHE.get("identity") == identity
+            and float(HONCHO_TOOLS_CACHE.get("expires_at") or 0) > now
+        ):
+            return list(HONCHO_TOOLS_CACHE.get("tools") or [])
+
+    try:
+        payload = call_honcho_mcp_json_rpc(
+            config,
+            "tools/list",
+            {},
+            req_id="edgars-mcp-honcho-tools-list",
+            timeout=30.0,
+        )
+        if payload.get("error"):
+            raise HonchoMcpError(json.dumps(payload["error"], ensure_ascii=False))
+        upstream_tools = (payload.get("result") or {}).get("tools") or []
+        tools = [
+            descriptor
+            for descriptor in (build_honcho_tool_descriptor(tool) for tool in upstream_tools)
+            if descriptor is not None
+        ]
+    except Exception as exc:
+        log(f"honcho tools/list unavailable: {exc}")
+        with HONCHO_TOOLS_CACHE_LOCK:
+            cached_tools = list(HONCHO_TOOLS_CACHE.get("tools") or [])
+        return cached_tools
+
+    with HONCHO_TOOLS_CACHE_LOCK:
+        HONCHO_TOOLS_CACHE.update({
+            "expires_at": now + HONCHO_TOOLS_CACHE_TTL_SECONDS,
+            "identity": identity,
+            "tools": list(tools),
+        })
+    return tools
+
+
+def handle_honcho_integrated_tool_call(
+    req_id,
+    name: str,
+    arguments: dict,
+    config: HandcraftServerConfig | None,
+) -> dict:
+    upstream_name = name[len(HONCHO_TOOL_PREFIX):].strip()
+    if not upstream_name:
+        return make_response(
+            req_id,
+            make_tool_text_response("Honcho tool name is missing after honcho__ prefix.", is_error=True),
+        )
+    if not config or not config.honcho_api_key:
+        return make_response(
+            req_id,
+            make_tool_text_response("HONCHO_API_KEY is not configured for edgars-mcp.", is_error=True),
+        )
+
+    try:
+        payload = call_honcho_mcp_json_rpc(
+            config,
+            "tools/call",
+            {"name": upstream_name, "arguments": arguments or {}},
+            req_id=req_id,
+        )
+    except Exception as exc:
+        return make_response(req_id, make_tool_text_response(f"Honcho MCP error: {exc}", is_error=True))
+
+    if payload.get("error"):
+        return make_response(req_id, make_tool_json_response({"honcho_error": payload["error"]}, is_error=True))
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return make_response(req_id, make_tool_json_response({"honcho_result": result}))
+    return make_response(req_id, result)
 
 
 def format_safe_mcp_failure(action: str, target: str, reason: str) -> str:
@@ -2575,17 +2762,24 @@ def handle_ping(req_id, params: dict) -> dict:
     return make_response(req_id, {})
 
 
-def handle_tools_list(req_id, params: dict) -> dict:
-    log(f"tools/list: returning {len(TOOLS)} tool(s)")
+def handle_tools_list(req_id, params: dict, config: HandcraftServerConfig | None = None) -> dict:
+    tools = list(TOOLS)
+    honcho_tools = fetch_honcho_tool_descriptors(config)
+    if honcho_tools:
+        tools.extend(honcho_tools)
+    log(f"tools/list: returning {len(tools)} tool(s) ({len(honcho_tools)} honcho)")
     # 工具清單不常變、對所有呼叫者相同 → 可快取（2026 快取提示）
-    return make_response(req_id, {"tools": TOOLS, "ttlMs": 60000, "cacheScope": "public"})
+    return make_response(req_id, {"tools": tools, "ttlMs": 60000, "cacheScope": "public"})
 
 
-def handle_tools_call(req_id, params: dict) -> dict:
+def handle_tools_call(req_id, params: dict, config: HandcraftServerConfig | None = None) -> dict:
     name = params.get("name")
     arguments = params.get("arguments", {})
     cleanup_expired_jobs()
     log(f"tools/call: name={name} arguments={arguments}")
+
+    if isinstance(name, str) and name.startswith(HONCHO_TOOL_PREFIX):
+        return handle_honcho_integrated_tool_call(req_id, name, arguments, config)
 
     if name == "echo":
         message = arguments.get("message", "")
@@ -3006,7 +3200,10 @@ REQUEST_HANDLERS = {
 }
 
 
-def dispatch(msg: dict):
+CONFIG_AWARE_METHODS = {"tools/list", "tools/call"}
+
+
+def dispatch(msg: dict, config: HandcraftServerConfig | None = None):
     """處理單一 JSON-RPC 訊息。Notification 回傳 None；Request 回傳 response dict。"""
     method = msg.get("method", "")
     req_id = msg.get("id")          # Notification 沒有 id
@@ -3022,6 +3219,8 @@ def dispatch(msg: dict):
         return make_error(req_id, -32601, f"Method not found: {method}")
 
     try:
+        if method in CONFIG_AWARE_METHODS:
+            return handler(req_id, params, config)
         return handler(req_id, params)
     except Exception as exc:
         log(f"HANDLER ERROR [{method}]: {exc}")
@@ -3752,7 +3951,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         auth_kind = self._detect_mcp_auth_kind()
         auth_token = _mcp_auth_kind.set(auth_kind)
         try:
-            response = dispatch(msg)
+            response = dispatch(msg, self.server.config)
         finally:
             _mcp_auth_kind.reset(auth_token)
 
@@ -3872,15 +4071,12 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(content_length) if content_length > 0 else b""
 
-        upstream_headers = {
-            "Authorization": f"Bearer {config.honcho_api_key}",
-            "X-Honcho-User-Name": config.honcho_user_name or "Edgar",
-            "X-Honcho-Workspace-ID": config.honcho_workspace_id or "edgar-team",
-            "X-Honcho-Assistant-Name": config.honcho_assistant_name or "codex",
-            "Content-Type": self.headers.get("Content-Type", "application/json"),
-            "Accept": self.headers.get("Accept", "application/json, text/event-stream"),
-            "User-Agent": "edgars-mcp-honcho-facade/0.1",
-        }
+        upstream_headers = build_honcho_mcp_headers(
+            config,
+            content_type=self.headers.get("Content-Type", "application/json"),
+        )
+        upstream_headers["Accept"] = self.headers.get("Accept", "application/json, text/event-stream")
+        upstream_headers["User-Agent"] = "edgars-mcp-honcho-facade/0.1"
         request_kwargs: dict[str, object] = {
             "headers": upstream_headers,
             "method": self.command.upper(),

@@ -106,6 +106,18 @@ def load_discord_webhook_token() -> str:
     return os.getenv("MCP_DISCORD_WEBHOOK_TOKEN", "").strip()
 
 
+def load_honcho_mcp_facade_token() -> str:
+    return os.getenv("EDGARS_HONCHO_MCP_FACADE_TOKEN", "").strip()
+
+
+def load_honcho_api_key() -> str:
+    return os.getenv("HONCHO_API_KEY", "").strip()
+
+
+def load_honcho_mcp_hostname() -> str:
+    return os.getenv("HONCHO_MCP_HOSTNAME", "honcho-mcp.edgars.tools").strip().lower()
+
+
 @dataclass(frozen=True)
 class HandcraftServerConfig:
     mcp_api_token: str
@@ -120,6 +132,12 @@ class HandcraftServerConfig:
     package_webhook_token: str = ""
     linear_webhook_token: str = ""
     discord_webhook_token: str = ""
+    honcho_mcp_facade_token: str = ""
+    honcho_api_key: str = ""
+    honcho_user_name: str = "Edgar"
+    honcho_workspace_id: str = "edgar-team"
+    honcho_assistant_name: str = "codex"
+    honcho_mcp_hostname: str = "honcho-mcp.edgars.tools"
 
     @property
     def public_hostname(self) -> str:
@@ -231,6 +249,8 @@ SERVER_INSTRUCTIONS = (
     "Linear、Notion、AI 代理委派、媒體生成等 78+ 工具。"
 )
 MCP_PATH = "/mcp"
+HONCHO_MCP_PATH = "/honcho-mcp"
+HONCHO_MCP_UPSTREAM_URL = "https://mcp.honcho.dev"
 HEALTH_PATH = "/health"
 PACKAGE_WEBHOOK_PATH = "/webhook/package"
 LINEAR_WEBHOOK_PATH = "/webhook/linear"
@@ -1649,6 +1669,23 @@ def make_tool_json_response(data: dict, *, is_error: bool = False) -> dict:
         "structuredContent": data,
         "isError": is_error,
     }
+
+
+def normalize_honcho_mcp_response(body: bytes, content_type: str) -> tuple[bytes, str]:
+    if "text/event-stream" not in (content_type or "").lower():
+        return body, content_type or "application/json; charset=utf-8"
+
+    text = body.decode("utf-8", errors="replace")
+    data_lines = [
+        line[len("data:"):].strip()
+        for line in text.splitlines()
+        if line.startswith("data:") and line[len("data:"):].strip()
+    ]
+    if not data_lines:
+        return body, content_type
+
+    normalized = "\n".join(data_lines).encode("utf-8")
+    return normalized, "application/json; charset=utf-8"
 
 
 class SafeMcpWriteError(RuntimeError):
@@ -3668,6 +3705,12 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         if parsed_path == LINEAR_WEBHOOK_PATH or parsed_path == LINEAR_WEBHOOK_PATH_ALIAS:
             self._handle_linear_webhook()
             return
+        if parsed_path == HONCHO_MCP_PATH:
+            self._handle_honcho_mcp_proxy()
+            return
+        if parsed_path == MCP_PATH and self._request_hostname() == self.server.config.honcho_mcp_hostname:
+            self._handle_honcho_mcp_proxy()
+            return
         if parsed_path != MCP_PATH:
             self.send_response(404)
             self.end_headers()
@@ -3806,6 +3849,69 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             **make_webhook_response("linear"),
             "received": True,
         })
+
+    def _handle_honcho_mcp_proxy(self) -> None:
+        if not self._ensure_honcho_mcp_proxy_authorized():
+            return
+
+        config = self.server.config
+        if not config.honcho_api_key:
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "honcho_not_configured",
+                    "error_description": "HONCHO_API_KEY is not configured for the Honcho MCP facade.",
+                },
+                status=503,
+            )
+            return
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(content_length) if content_length > 0 else b""
+
+        upstream_headers = {
+            "Authorization": f"Bearer {config.honcho_api_key}",
+            "X-Honcho-User-Name": config.honcho_user_name or "Edgar",
+            "X-Honcho-Workspace-ID": config.honcho_workspace_id or "edgar-team",
+            "X-Honcho-Assistant-Name": config.honcho_assistant_name or "codex",
+            "Content-Type": self.headers.get("Content-Type", "application/json"),
+            "Accept": self.headers.get("Accept", "application/json, text/event-stream"),
+            "User-Agent": "edgars-mcp-honcho-facade/0.1",
+        }
+        request = urllib.request.Request(
+            HONCHO_MCP_UPSTREAM_URL,
+            data=raw,
+            headers=upstream_headers,
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                body = response.read()
+                content_type = response.headers.get("Content-Type", "application/json")
+                status = response.status
+        except urllib.error.HTTPError as exc:
+            body = exc.read()
+            content_type = exc.headers.get("Content-Type", "application/json")
+            status = exc.code
+        except urllib.error.URLError as exc:
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "honcho_upstream_unreachable",
+                    "error_description": str(exc.reason),
+                },
+                status=502,
+            )
+            return
+
+        body, content_type = normalize_honcho_mcp_response(body, content_type)
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self._add_cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
 
     # ── 回應輔助 ──────────────────────────────────────────────────────────────
     def _handle_discord_webhook(self) -> None:
@@ -4018,6 +4124,41 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _ensure_honcho_mcp_proxy_authorized(self) -> bool:
+        expected = self.server.config.honcho_mcp_facade_token
+        if not expected:
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "honcho_facade_not_configured",
+                    "error_description": "EDGARS_HONCHO_MCP_FACADE_TOKEN is not configured.",
+                },
+                status=503,
+            )
+            return False
+
+        auth = self.headers.get("Authorization", "")
+        token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+        if token and hmac.compare_digest(token, expected):
+            return True
+
+        body = json.dumps(
+            {
+                "ok": False,
+                "error": "unauthorized",
+                "error_description": "Missing or invalid Honcho facade bearer token.",
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        self.send_response(401)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("WWW-Authenticate", 'Bearer realm="honcho-mcp-facade"')
+        self._add_cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
+        return False
+
     def _webhook_token_from_request(self) -> str:
         auth = self.headers.get("Authorization", "").strip()
         if auth.lower().startswith("bearer "):
@@ -4137,6 +4278,12 @@ def validate_http_startup_config() -> HandcraftServerConfig:
         package_webhook_token=load_package_webhook_token(),
         linear_webhook_token=load_linear_webhook_token(),
         discord_webhook_token=load_discord_webhook_token(),
+        honcho_mcp_facade_token=load_honcho_mcp_facade_token(),
+        honcho_api_key=load_honcho_api_key(),
+        honcho_user_name=os.getenv("HONCHO_USER_NAME", "Edgar").strip() or "Edgar",
+        honcho_workspace_id=os.getenv("HONCHO_WORKSPACE_ID", "edgar-team").strip() or "edgar-team",
+        honcho_assistant_name=os.getenv("HONCHO_ASSISTANT_NAME", "codex").strip() or "codex",
+        honcho_mcp_hostname=load_honcho_mcp_hostname(),
     )
 
 

@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "honcho-mcp-facade",
+  "main": "index.mjs",
+  "compatibility_date": "2026-07-17",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "routes": [
+    {
+      "pattern": "honcho.edgars.tools",
+      "custom_domain": true
+    }
+  ]
+}

@@ -1171,6 +1171,166 @@ class CloudflareAccessModeTests(unittest.TestCase):
             thread.join(timeout=5)
 
 
+class HonchoMcpFacadeTests(unittest.TestCase):
+    def _start_server(self, config=None):
+        config = config or HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            honcho_mcp_facade_token="facade-token",
+            honcho_api_key="honcho-secret",
+            honcho_user_name="Edgar",
+            honcho_workspace_id="edgar-team",
+            honcho_assistant_name="codex",
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MCPHTTPHandler, config=config)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread, f"http://127.0.0.1:{server.server_address[1]}"
+
+    def test_honcho_mcp_facade_requires_its_own_bearer_token(self):
+        server, thread, base = self._start_server()
+        try:
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {},
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/honcho-mcp",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(req, timeout=5)
+
+            self.assertEqual(401, raised.exception.code)
+            self.assertIn("honcho-mcp-facade", raised.exception.headers["WWW-Authenticate"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_honcho_mcp_facade_injects_honcho_headers_and_normalizes_sse(self):
+        captured = {}
+
+        class FakeUpstreamResponse:
+            status = 200
+            headers = {"Content-Type": "text/event-stream"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"tools":[]}}\n\n'
+
+        original_urlopen = urllib.request.urlopen
+
+        def fake_urlopen(request, timeout):
+            if request.full_url != server_http.HONCHO_MCP_UPSTREAM_URL:
+                return original_urlopen(request, timeout=timeout)
+            captured["url"] = request.full_url
+            captured["headers"] = dict(request.header_items())
+            captured["data"] = request.data
+            captured["timeout"] = timeout
+            return FakeUpstreamResponse()
+
+        server, thread, base = self._start_server()
+        try:
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {},
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/honcho-mcp",
+                data=body,
+                headers={
+                    "Authorization": "Bearer facade-token",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+                method="POST",
+            )
+            with patch.object(server_http.urllib.request, "urlopen", side_effect=fake_urlopen):
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(200, response.status)
+            self.assertEqual({"tools": []}, payload["result"])
+            self.assertEqual(server_http.HONCHO_MCP_UPSTREAM_URL, captured["url"])
+            self.assertEqual(body, captured["data"])
+            self.assertEqual(60, captured["timeout"])
+            self.assertEqual("Bearer honcho-secret", captured["headers"]["Authorization"])
+            self.assertEqual("Edgar", captured["headers"]["X-honcho-user-name"])
+            self.assertEqual("edgar-team", captured["headers"]["X-honcho-workspace-id"])
+            self.assertEqual("codex", captured["headers"]["X-honcho-assistant-name"])
+            self.assertEqual("edgars-mcp-honcho-facade/0.1", captured["headers"]["User-agent"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_honcho_mcp_hostname_uses_standard_mcp_path(self):
+        captured = {}
+
+        class FakeUpstreamResponse:
+            status = 200
+            headers = {"Content-Type": "application/json"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}'
+
+        original_urlopen = urllib.request.urlopen
+
+        def fake_urlopen(request, timeout):
+            if request.full_url != server_http.HONCHO_MCP_UPSTREAM_URL:
+                return original_urlopen(request, timeout=timeout)
+            captured["url"] = request.full_url
+            return FakeUpstreamResponse()
+
+        server, thread, base = self._start_server()
+        try:
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {},
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/mcp",
+                data=body,
+                headers={
+                    "Authorization": "Bearer facade-token",
+                    "Content-Type": "application/json",
+                    "Host": "honcho-mcp.edgars.tools",
+                },
+                method="POST",
+            )
+            with patch.object(server_http.urllib.request, "urlopen", side_effect=fake_urlopen):
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(200, response.status)
+            self.assertEqual({"tools": []}, payload["result"])
+            self.assertEqual(server_http.HONCHO_MCP_UPSTREAM_URL, captured["url"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+
 class CacheTraceRotationScriptTests(unittest.TestCase):
     def test_cache_trace_rotation_archives_then_reopens_log(self):
         script_path = Path(__file__).parent / "scripts" / "Rotate-CacheTrace.ps1"

@@ -8,6 +8,8 @@ Edgar 的本地 MCP（Model Context Protocol）Server。
 
 > 不懂 Doppler 要填什麼？請看 **[Doppler 設定指南（新手版）](docs/DOPPLER-設定指南-新手版.md)**。  
 > 搞不清 mcp / webhooks / hooks 哪個是哪個？請看 **[網域分工（新手版）](docs/網域分工-新手版.md)**。
+> 想把 Honcho / 其他 MCP 統一放到 Cloudflare Portal？請看 **[Honcho MCP 上 Cloudflare 方案](docs/HONCHO-MCP-CLOUDFLARE-方案.md)**。
+> 要交給瀏覽器代理修 Cloudflare Dashboard credential？請看 **[Honcho MCP Dashboard Handoff](docs/CLOUDFLARE-HONCHO-MCP-DASHBOARD-HANDOFF.md)**。
 
 ---
 

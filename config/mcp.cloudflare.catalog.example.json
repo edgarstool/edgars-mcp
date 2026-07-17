@@ -1,0 +1,56 @@
+{
+  "account_id": "<cloudflare-account-id>",
+  "portal": {
+    "id": "edgars-entry",
+    "name": "edgars-entry",
+    "url": "https://entry.edgars.tools/mcp",
+    "service_token_supported": true
+  },
+  "servers": [
+    {
+      "id": "edgars-mcp",
+      "name": "edgars mcp",
+      "url": "https://mcp.edgars.tools/mcp",
+      "auth_type": "bearer",
+      "auth_secret_ref": "Doppler:handcraft-mcp/prd:MCP_API_TOKEN",
+      "require_user_auth": false,
+      "notes": "Machine route must not be intercepted by Cloudflare Access login HTML. Origin validates Authorization: Bearer."
+    },
+    {
+      "id": "honcho",
+      "name": "honcho",
+      "url": "https://honcho-mcp.edgars.tools/mcp",
+      "upstream_url": "https://mcp.honcho.dev",
+      "auth_type": "bearer_to_facade",
+      "headers": {
+        "Authorization": "Bearer ${EDGARS_HONCHO_MCP_FACADE_TOKEN}"
+      },
+      "auth_secret_refs": [
+        "Doppler:handcraft-mcp/prd:HONCHO_API_KEY",
+        "Doppler:handcraft-mcp/prd:EDGARS_HONCHO_MCP_FACADE_TOKEN",
+        "Doppler:handcraft-mcp/prd:HONCHO_USER_NAME",
+        "Doppler:handcraft-mcp/prd:HONCHO_WORKSPACE_ID",
+        "Doppler:handcraft-mcp/prd:HONCHO_ASSISTANT_NAME"
+      ],
+      "require_user_auth": false,
+      "notes": "Honcho official MCP requires multiple upstream headers. Use the edgars-mcp host-based facade so Cloudflare AI Controls only needs one bearer header while server_http.py injects Honcho's required multi-header auth. Worker facade exists as fallback, but current portal path is honcho-mcp.edgars.tools."
+    },
+    {
+      "id": "cloudflare-api",
+      "name": "cloudflare-api",
+      "url": "https://mcp.cloudflare.com/mcp",
+      "auth_type": "oauth_or_bearer",
+      "require_user_auth": true,
+      "notes": "Use Cloudflare's managed MCP server when the agent needs Cloudflare API access."
+    }
+  ],
+  "machine_access": {
+    "preferred": "Cloudflare MCP Portal service token",
+    "headers": [
+      "CF-Access-Client-Id",
+      "CF-Access-Client-Secret"
+    ],
+    "portal_policy": "Service Auth policy on portal Access application",
+    "server_policy": "Service Auth policy on each linked MCP server Access application when Access is used"
+  }
+}

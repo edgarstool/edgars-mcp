@@ -68,6 +68,14 @@ Header value: Bearer <EDGARS_HONCHO_MCP_FACADE_TOKEN>
 Require user auth: off / on_behalf=false（若 UI 有此選項）
 ```
 
+注意：Dashboard 的 `Header value` 不能填 `EDGARS_HONCHO_MCP_FACADE_TOKEN` 這串環境變數名稱，也不能填 `${EDGARS_HONCHO_MCP_FACADE_TOKEN}`。Cloudflare AI Controls 不會讀 Doppler，也不會展開本機 env var。這一格必須貼入 Doppler 取出的實際 token 值，格式如下：
+
+```text
+Bearer <Doppler 取出的實際 token>
+```
+
+如果 UI 是「Bearer token」單一欄位，而不是「Header name / Header value」兩欄，則只貼實際 token，不要加 `Bearer ` 前綴。
+
 4. 儲存後執行 sync / Sync capabilities。
 
 5. 成功判準：

@@ -12,7 +12,7 @@
       "name": "edgars mcp",
       "url": "https://mcp.edgars.tools/mcp",
       "auth_type": "bearer",
-      "auth_secret_ref": "Doppler:handcraft-mcp/prd:MCP_API_TOKEN",
+      "auth_secret_ref": "SecretManager:MCP_API_TOKEN",
       "require_user_auth": false,
       "notes": "Machine route must not be intercepted by Cloudflare Access login HTML. Origin validates Authorization: Bearer."
     },
@@ -23,14 +23,14 @@
       "upstream_url": "https://mcp.honcho.dev",
       "auth_type": "bearer_to_facade",
       "headers": {
-        "Authorization": "Bearer ${EDGARS_HONCHO_MCP_FACADE_TOKEN}"
+        "Authorization": "Bearer ${HONCHO_FACADE_BEARER_VALUE}"
       },
       "auth_secret_refs": [
-        "Doppler:handcraft-mcp/prd:HONCHO_API_KEY",
-        "Doppler:handcraft-mcp/prd:EDGARS_HONCHO_MCP_FACADE_TOKEN",
-        "Doppler:handcraft-mcp/prd:HONCHO_USER_NAME",
-        "Doppler:handcraft-mcp/prd:HONCHO_WORKSPACE_ID",
-        "Doppler:handcraft-mcp/prd:HONCHO_ASSISTANT_NAME"
+        "OriginSecret:HONCHO_API_KEY",
+        "CloudflareAICredentials:HONCHO_FACADE_BEARER_VALUE",
+        "OriginSecret:HONCHO_USER_NAME",
+        "OriginSecret:HONCHO_WORKSPACE_ID",
+        "OriginSecret:HONCHO_ASSISTANT_NAME"
       ],
       "require_user_auth": false,
       "notes": "Honcho official MCP requires multiple upstream headers. Use the edgars-mcp host-based facade so Cloudflare AI Controls only needs one bearer header while server_http.py injects Honcho's required multi-header auth. Worker facade exists as fallback, but current portal path is honcho-mcp.edgars.tools."

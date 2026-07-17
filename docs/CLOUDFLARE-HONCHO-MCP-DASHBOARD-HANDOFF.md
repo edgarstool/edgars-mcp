@@ -10,7 +10,7 @@
 https://honcho-mcp.edgars.tools/mcp
 ```
 
-使用 `Authorization: Bearer <EDGARS_HONCHO_MCP_FACADE_TOKEN>` 直打 MCP `tools/list` 會回 200，工具數 30，包含 `inspect_workspace`。
+使用 `Authorization: Bearer <HONCHO_FACADE_BEARER_VALUE>` 直打 MCP `tools/list` 會回 200，工具數 30，包含 `inspect_workspace`。
 
 Cloudflare API 目前顯示：
 
@@ -38,7 +38,7 @@ Tunnel ingress
 secrets 本身的值
 ```
 
-不要顯示或複製 secret 原文到聊天。只可從 Doppler 或密碼管理器取值後填入 Dashboard。
+不要顯示或複製 secret 原文到聊天。只可從正式 secret manager / 密碼管理器 / Cloudflare secret storage 取值後填入 Dashboard。
 
 ## 要做
 
@@ -64,17 +64,25 @@ Server ID: honcho
 HTTP URL: https://honcho-mcp.edgars.tools/mcp
 Authentication: header-based / bearer
 Header name: Authorization
-Header value: Bearer <EDGARS_HONCHO_MCP_FACADE_TOKEN>
+Header value: Bearer <HONCHO_FACADE_BEARER_VALUE>
 Require user auth: off / on_behalf=false（若 UI 有此選項）
 ```
 
-注意：Dashboard 的 `Header value` 不能填 `EDGARS_HONCHO_MCP_FACADE_TOKEN` 這串環境變數名稱，也不能填 `${EDGARS_HONCHO_MCP_FACADE_TOKEN}`。Cloudflare AI Controls 不會讀 Doppler，也不會展開本機 env var。這一格必須貼入 Doppler 取出的實際 token 值，格式如下：
+注意：Dashboard 的 `Header value` 不能填 `EDGARS_HONCHO_MCP_FACADE_TOKEN` 這串環境變數名稱，也不能填 `${EDGARS_HONCHO_MCP_FACADE_TOKEN}`。Cloudflare AI Controls 不會讀本機 env var，也不會讀任何本地 agent 的 secret store。這一格必須貼入實際 bearer secret 值，格式如下：
 
 ```text
-Bearer <Doppler 取出的實際 token>
+Bearer <實際 bearer secret 值>
 ```
 
 如果 UI 是「Bearer token」單一欄位，而不是「Header name / Header value」兩欄，則只貼實際 token，不要加 `Bearer ` 前綴。
+
+這個 bearer secret 是 Cloudflare AI Controls 與 `honcho-mcp.edgars.tools` facade 之間的 upstream credential。它不是給所有 agent 使用的 client credential。一般 agent / 瀏覽器代理 / 遠端代理應連：
+
+```text
+https://entry.edgars.tools/mcp
+```
+
+並透過 Cloudflare Access / MCP Portal 的 OAuth 或 service token 授權，而不是直接持有 Honcho facade bearer。
 
 4. 儲存後執行 sync / Sync capabilities。
 
@@ -124,7 +132,7 @@ sync 後 origin log 是否有 POST /mcp:
 不要輸出 token。只回報狀態與 tool 名稱。
 
 ```powershell
-$token = doppler secrets get EDGARS_HONCHO_MCP_FACADE_TOKEN --project handcraft-mcp --config prd --plain
+$token = '<HONCHO_FACADE_BEARER_VALUE>'
 $body = '{ "jsonrpc":"2.0", "id":1, "method":"tools/list", "params":{} }'
 
 Invoke-RestMethod `

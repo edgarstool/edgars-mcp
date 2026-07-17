@@ -94,20 +94,39 @@ openclaw
 cursor
 ```
 
-## Doppler secrets 建議
+## Secrets 邊界
 
-放在 `handcraft-mcp / prd`，不要放 repo。
+不要把 Doppler 當成 Cloudflare Portal 或所有 agent 的共同前提。Doppler 可以是本機 runtime 的 secret 注入方式之一，但不是遠端 agent、瀏覽器代理或 Cloudflare AI Controls 會自動讀到的來源。
+
+這條鏈路有三種不同 secret：
+
+| Secret | 誰使用 | 用途 |
+|---|---|---|
+| `HONCHO_API_KEY` | Honcho facade origin | facade 打 Honcho 官方 MCP 的 upstream credential |
+| `HONCHO_FACADE_BEARER_VALUE` | Cloudflare AI Controls → facade | Cloudflare MCP server 同步 / 呼叫 facade 的 bearer credential |
+| Cloudflare Access OAuth / service token | agent → `entry.edgars.tools/mcp` | agent 連入口 portal 的 client credential |
+
+正式原則：
+
+```text
+agent 不直接拿 HONCHO_API_KEY
+agent 不直接拿 Honcho facade bearer
+agent 只連 Cloudflare MCP Portal
+```
+
+本機 origin 可以從 Doppler、Windows env、Cloudflare Secret、1Password 或其他 secret manager 取值。重點是：Cloudflare AI Controls 的 Dashboard 欄位必須拿到「實際 bearer secret 值」，不能填 env var 名稱。
+
+本機 `server_http.py` 目前讀取的 env 名稱：
 
 ```text
 HONCHO_API_KEY
 HONCHO_USER_NAME
 HONCHO_WORKSPACE_ID
-HONCHO_ASSISTANT_NAME_CODEX
-HONCHO_ASSISTANT_NAME_CLAUDE
-HONCHO_ASSISTANT_NAME_HERMES
+HONCHO_ASSISTANT_NAME
+EDGARS_HONCHO_MCP_FACADE_TOKEN
 ```
 
-若使用 Cloudflare Worker facade fallback，再放 Cloudflare Worker secrets：
+若使用 Cloudflare Worker facade fallback，對應 secrets 放在 Worker secrets，不放 repo：
 
 ```text
 HONCHO_API_KEY
@@ -140,7 +159,28 @@ Authentication: bearer / header-based
 Header：
 
 ```text
-Authorization: Bearer <EDGARS_HONCHO_MCP_FACADE_TOKEN>
+Authorization: Bearer <HONCHO_FACADE_BEARER_VALUE>
+```
+
+如果 Dashboard UI 是「Header name / Header value」兩欄：
+
+```text
+Header name: Authorization
+Header value: Bearer <實際 bearer secret 值>
+```
+
+如果 UI 是單一「Bearer token」欄位：
+
+```text
+<實際 bearer secret 值>
+```
+
+不要填：
+
+```text
+EDGARS_HONCHO_MCP_FACADE_TOKEN
+${EDGARS_HONCHO_MCP_FACADE_TOKEN}
+Bearer EDGARS_HONCHO_MCP_FACADE_TOKEN
 ```
 
 注意：Honcho 官方 MCP 需要多個 upstream headers，因此不要把 `https://mcp.honcho.dev` 直接放進 Cloudflare AI Controls，除非 Cloudflare UI/API 明確支援多 header credential。曾觀察到直接設定會出現 `Invalid header name.`。
@@ -229,7 +269,7 @@ Cloudflare MCP Portal / AI Controls
 
 facade 負責：
 
-1. 驗證 incoming `Authorization: Bearer <EDGARS_HONCHO_MCP_FACADE_TOKEN>`。
+1. 驗證 incoming `Authorization: Bearer <HONCHO_FACADE_BEARER_VALUE>`。
 2. 對 upstream Honcho 加：
    - `Authorization: Bearer <HONCHO_API_KEY>`
    - `X-Honcho-User-Name`
@@ -259,7 +299,7 @@ honcho-mcp.edgars.tools -> http://localhost:8765
 驗收：
 
 ```powershell
-$token = doppler secrets get EDGARS_HONCHO_MCP_FACADE_TOKEN --project handcraft-mcp --config prd --plain
+$token = '<HONCHO_FACADE_BEARER_VALUE>'
 $body = '{ "jsonrpc":"2.0", "id":1, "method":"tools/list", "params":{} }'
 
 curl.exe -i https://honcho-mcp.edgars.tools/mcp `
@@ -306,7 +346,7 @@ curl.exe -i https://honcho.edgars.tools/mcp
 
 # 有 token 應進入 Honcho MCP flow
 curl.exe -i https://honcho.edgars.tools/mcp `
-  -H "Authorization: Bearer <EDGARS_HONCHO_MCP_FACADE_TOKEN>"
+  -H "Authorization: Bearer <HONCHO_FACADE_BEARER_VALUE>"
 ```
 
 ## 所有 MCP 上架原則
@@ -354,7 +394,7 @@ X-Honcho-User-Name: Edgar
 
 推薦順序：
 
-1. 在 Cloudflare Dashboard 編輯或重建 `honcho` server，使用 `https://honcho-mcp.edgars.tools/mcp` 與 `Authorization: Bearer <EDGARS_HONCHO_MCP_FACADE_TOKEN>`。
+1. 在 Cloudflare Dashboard 編輯或重建 `honcho` server，使用 `https://honcho-mcp.edgars.tools/mcp` 與 `Authorization: Bearer <實際 bearer secret 值>`。
 2. 同步 `honcho`，確認狀態 Ready 且 tools 至少包含 `inspect_workspace`。
 3. 把 `honcho` 加回 `edgars-entry` portal。
 4. 再把其他 MCP servers 逐一整理進 `config/mcp.cloudflare.catalog.example.json`。

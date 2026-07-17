@@ -106,6 +106,18 @@ def load_discord_webhook_token() -> str:
     return os.getenv("MCP_DISCORD_WEBHOOK_TOKEN", "").strip()
 
 
+def load_honcho_mcp_facade_token() -> str:
+    return os.getenv("EDGARS_HONCHO_MCP_FACADE_TOKEN", "").strip()
+
+
+def load_honcho_api_key() -> str:
+    return os.getenv("HONCHO_API_KEY", "").strip()
+
+
+def load_honcho_mcp_hostname() -> str:
+    return os.getenv("HONCHO_MCP_HOSTNAME", "honcho-mcp.edgars.tools").strip().lower()
+
+
 @dataclass(frozen=True)
 class HandcraftServerConfig:
     mcp_api_token: str
@@ -120,6 +132,12 @@ class HandcraftServerConfig:
     package_webhook_token: str = ""
     linear_webhook_token: str = ""
     discord_webhook_token: str = ""
+    honcho_mcp_facade_token: str = ""
+    honcho_api_key: str = ""
+    honcho_user_name: str = "Edgar"
+    honcho_workspace_id: str = "edgar-team"
+    honcho_assistant_name: str = "codex"
+    honcho_mcp_hostname: str = "honcho-mcp.edgars.tools"
 
     @property
     def public_hostname(self) -> str:
@@ -231,6 +249,10 @@ SERVER_INSTRUCTIONS = (
     "Linear、Notion、AI 代理委派、媒體生成等 78+ 工具。"
 )
 MCP_PATH = "/mcp"
+HONCHO_MCP_PATH = "/honcho-mcp"
+HONCHO_MCP_UPSTREAM_URL = "https://mcp.honcho.dev"
+HONCHO_TOOL_PREFIX = "honcho__"
+HONCHO_TOOLS_CACHE_TTL_SECONDS = int(os.getenv("HONCHO_TOOLS_CACHE_TTL_SECONDS", "60"))
 HEALTH_PATH = "/health"
 PACKAGE_WEBHOOK_PATH = "/webhook/package"
 LINEAR_WEBHOOK_PATH = "/webhook/linear"
@@ -246,6 +268,12 @@ SERVER_INFO = {
 
 JOBS_LOCK = threading.Lock()
 JOBS: dict[str, dict] = {}
+HONCHO_TOOLS_CACHE_LOCK = threading.Lock()
+HONCHO_TOOLS_CACHE: dict[str, object] = {
+    "expires_at": 0.0,
+    "identity": "",
+    "tools": [],
+}
 DISCORD_WEBHOOK_EVENTS_LOCK = threading.Lock()
 DISCORD_WEBHOOK_EVENTS: list[dict] = []
 MAX_DISCORD_WEBHOOK_EVENTS = int(os.getenv("MCP_DISCORD_WEBHOOK_EVENT_LIMIT", "100"))
@@ -1651,6 +1679,23 @@ def make_tool_json_response(data: dict, *, is_error: bool = False) -> dict:
     }
 
 
+def normalize_honcho_mcp_response(body: bytes, content_type: str) -> tuple[bytes, str]:
+    if "text/event-stream" not in (content_type or "").lower():
+        return body, content_type or "application/json; charset=utf-8"
+
+    text = body.decode("utf-8", errors="replace")
+    data_lines = [
+        line[len("data:"):].strip()
+        for line in text.splitlines()
+        if line.startswith("data:") and line[len("data:"):].strip()
+    ]
+    if len(data_lines) != 1:
+        return body, content_type
+
+    normalized = data_lines[0].encode("utf-8")
+    return normalized, "application/json; charset=utf-8"
+
+
 class SafeMcpWriteError(RuntimeError):
     pass
 
@@ -1671,8 +1716,197 @@ class FactoryMcpError(RuntimeError):
     pass
 
 
+class HonchoMcpError(RuntimeError):
+    pass
+
+
 class CloudflareAccessAuthError(RuntimeError):
     pass
+
+
+def build_honcho_mcp_headers(config: HandcraftServerConfig, *, content_type: str = "application/json") -> dict:
+    return {
+        "Authorization": f"Bearer {config.honcho_api_key}",
+        "X-Honcho-User-Name": config.honcho_user_name or "Edgar",
+        "X-Honcho-Workspace-ID": config.honcho_workspace_id or "edgar-team",
+        "X-Honcho-Assistant-Name": config.honcho_assistant_name or "codex",
+        "Content-Type": content_type,
+        "Accept": "application/json, text/event-stream",
+        "User-Agent": "edgars-mcp-honcho-integrated-tools/0.1",
+    }
+
+
+def honcho_config_identity(config: HandcraftServerConfig | None) -> str:
+    if not config or not config.honcho_api_key:
+        return "disabled"
+    return "|".join([
+        config.honcho_user_name or "Edgar",
+        config.honcho_workspace_id or "edgar-team",
+        config.honcho_assistant_name or "codex",
+        "configured",
+    ])
+
+
+def call_honcho_mcp_json_rpc(
+    config: HandcraftServerConfig,
+    method: str,
+    params: dict | None = None,
+    *,
+    req_id: object = "edgars-mcp-honcho",
+    timeout: float = 60.0,
+) -> dict:
+    if not config.honcho_api_key:
+        raise HonchoMcpError("HONCHO_API_KEY is not configured")
+
+    body = json.dumps({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": method,
+        "params": params or {},
+    }, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        HONCHO_MCP_UPSTREAM_URL,
+        data=body,
+        headers=build_honcho_mcp_headers(config),
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            content_type = response.headers.get("Content-Type", "application/json")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        content_type = exc.headers.get("Content-Type", "application/json")
+        normalized, _ = normalize_honcho_mcp_response(raw, content_type)
+        detail = normalized.decode("utf-8", errors="replace")
+        raise HonchoMcpError(f"Honcho upstream HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise HonchoMcpError(f"Honcho upstream unreachable: {exc.reason}") from exc
+
+    normalized, content_type = normalize_honcho_mcp_response(raw, content_type)
+    try:
+        payload = json.loads(normalized.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        snippet = normalized.decode("utf-8", errors="replace")[:500]
+        raise HonchoMcpError(f"Honcho upstream returned non-JSON {content_type}: {snippet}") from exc
+    if not isinstance(payload, dict):
+        raise HonchoMcpError("Honcho upstream returned a non-object JSON-RPC payload")
+    return payload
+
+
+def build_honcho_tool_descriptor(upstream_tool: dict) -> dict | None:
+    upstream_name = str(upstream_tool.get("name") or "").strip()
+    if not upstream_name or upstream_name.startswith(HONCHO_TOOL_PREFIX):
+        return None
+
+    descriptor = dict(upstream_tool)
+    title = str(descriptor.get("title") or upstream_name.replace("_", " ").title())
+    description = str(descriptor.get("description") or "").strip()
+    descriptor["name"] = f"{HONCHO_TOOL_PREFIX}{upstream_name}"
+    descriptor["title"] = f"Honcho: {title}"
+    descriptor["description"] = (
+        f"[Honcho memory] {description}"
+        if description
+        else "Honcho memory MCP tool proxied through edgars-mcp."
+    )
+    meta = dict(descriptor.get("_meta") or {})
+    meta["edgars_mcp_proxy"] = {
+        "upstream": "honcho",
+        "upstream_name": upstream_name,
+    }
+    descriptor["_meta"] = meta
+    return _normalize_tool_descriptor(descriptor)
+
+
+def fetch_honcho_tool_descriptors(config: HandcraftServerConfig | None) -> list[dict]:
+    if not config or not config.honcho_api_key:
+        return []
+
+    identity = honcho_config_identity(config)
+    now = time.time()
+    with HONCHO_TOOLS_CACHE_LOCK:
+        if (
+            HONCHO_TOOLS_CACHE.get("identity") == identity
+            and float(HONCHO_TOOLS_CACHE.get("expires_at") or 0) > now
+        ):
+            return list(HONCHO_TOOLS_CACHE.get("tools") or [])
+
+    try:
+        payload = call_honcho_mcp_json_rpc(
+            config,
+            "tools/list",
+            {},
+            req_id="edgars-mcp-honcho-tools-list",
+            timeout=30.0,
+        )
+        if payload.get("error"):
+            raise HonchoMcpError(json.dumps(payload["error"], ensure_ascii=False))
+        upstream_tools = (payload.get("result") or {}).get("tools") or []
+        tools = [
+            descriptor
+            for descriptor in (build_honcho_tool_descriptor(tool) for tool in upstream_tools)
+            if descriptor is not None
+        ]
+    except Exception as exc:
+        log(f"honcho tools/list unavailable: {exc}")
+        with HONCHO_TOOLS_CACHE_LOCK:
+            cached_identity = str(HONCHO_TOOLS_CACHE.get("identity") or "")
+            cached_tools = (
+                list(HONCHO_TOOLS_CACHE.get("tools") or [])
+                if cached_identity == identity
+                else []
+            )
+            HONCHO_TOOLS_CACHE.update({
+                "expires_at": time.time() + HONCHO_TOOLS_CACHE_TTL_SECONDS,
+                "identity": identity,
+                "tools": list(cached_tools),
+            })
+        return cached_tools
+
+    with HONCHO_TOOLS_CACHE_LOCK:
+        HONCHO_TOOLS_CACHE.update({
+            "expires_at": time.time() + HONCHO_TOOLS_CACHE_TTL_SECONDS,
+            "identity": identity,
+            "tools": list(tools),
+        })
+    return tools
+
+
+def handle_honcho_integrated_tool_call(
+    req_id,
+    name: str,
+    arguments: dict,
+    config: HandcraftServerConfig | None,
+) -> dict:
+    upstream_name = name[len(HONCHO_TOOL_PREFIX):].strip()
+    if not upstream_name:
+        return make_response(
+            req_id,
+            make_tool_text_response("Honcho tool name is missing after honcho__ prefix.", is_error=True),
+        )
+    if not config or not config.honcho_api_key:
+        return make_response(
+            req_id,
+            make_tool_text_response("HONCHO_API_KEY is not configured for edgars-mcp.", is_error=True),
+        )
+
+    try:
+        payload = call_honcho_mcp_json_rpc(
+            config,
+            "tools/call",
+            {"name": upstream_name, "arguments": arguments or {}},
+            req_id=req_id,
+        )
+    except Exception as exc:
+        return make_response(req_id, make_tool_text_response(f"Honcho MCP error: {exc}", is_error=True))
+
+    if payload.get("error"):
+        return make_response(req_id, make_tool_json_response({"honcho_error": payload["error"]}, is_error=True))
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return make_response(req_id, make_tool_json_response({"honcho_result": result}))
+    return make_response(req_id, result)
 
 
 def format_safe_mcp_failure(action: str, target: str, reason: str) -> str:
@@ -2538,17 +2772,24 @@ def handle_ping(req_id, params: dict) -> dict:
     return make_response(req_id, {})
 
 
-def handle_tools_list(req_id, params: dict) -> dict:
-    log(f"tools/list: returning {len(TOOLS)} tool(s)")
+def handle_tools_list(req_id, params: dict, config: HandcraftServerConfig | None = None) -> dict:
+    tools = list(TOOLS)
+    honcho_tools = fetch_honcho_tool_descriptors(config)
+    if honcho_tools:
+        tools.extend(honcho_tools)
+    log(f"tools/list: returning {len(tools)} tool(s) ({len(honcho_tools)} honcho)")
     # 工具清單不常變、對所有呼叫者相同 → 可快取（2026 快取提示）
-    return make_response(req_id, {"tools": TOOLS, "ttlMs": 60000, "cacheScope": "public"})
+    return make_response(req_id, {"tools": tools, "ttlMs": 60000, "cacheScope": "public"})
 
 
-def handle_tools_call(req_id, params: dict) -> dict:
+def handle_tools_call(req_id, params: dict, config: HandcraftServerConfig | None = None) -> dict:
     name = params.get("name")
     arguments = params.get("arguments", {})
     cleanup_expired_jobs()
     log(f"tools/call: name={name} arguments={arguments}")
+
+    if isinstance(name, str) and name.startswith(HONCHO_TOOL_PREFIX):
+        return handle_honcho_integrated_tool_call(req_id, name, arguments, config)
 
     if name == "echo":
         message = arguments.get("message", "")
@@ -2969,7 +3210,10 @@ REQUEST_HANDLERS = {
 }
 
 
-def dispatch(msg: dict):
+CONFIG_AWARE_METHODS = {"tools/list", "tools/call"}
+
+
+def dispatch(msg: dict, config: HandcraftServerConfig | None = None):
     """處理單一 JSON-RPC 訊息。Notification 回傳 None；Request 回傳 response dict。"""
     method = msg.get("method", "")
     req_id = msg.get("id")          # Notification 沒有 id
@@ -2985,6 +3229,8 @@ def dispatch(msg: dict):
         return make_error(req_id, -32601, f"Method not found: {method}")
 
     try:
+        if method in CONFIG_AWARE_METHODS:
+            return handler(req_id, params, config)
         return handler(req_id, params)
     except Exception as exc:
         log(f"HANDLER ERROR [{method}]: {exc}")
@@ -3317,6 +3563,9 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         elif path == LINEAR_OAUTH_BOOTSTRAP_PATH:
             self._handle_linear_oauth_bootstrap()
         elif path == "/mcp":
+            if self._request_hostname() == self.server.config.honcho_mcp_hostname:
+                self._handle_honcho_mcp_proxy()
+                return
             if not self._ensure_mcp_request_authorized():
                 return
             body = json.dumps({
@@ -3668,6 +3917,12 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         if parsed_path == LINEAR_WEBHOOK_PATH or parsed_path == LINEAR_WEBHOOK_PATH_ALIAS:
             self._handle_linear_webhook()
             return
+        if parsed_path == HONCHO_MCP_PATH:
+            self._handle_honcho_mcp_proxy()
+            return
+        if parsed_path == MCP_PATH and self._request_hostname() == self.server.config.honcho_mcp_hostname:
+            self._handle_honcho_mcp_proxy()
+            return
         if parsed_path != MCP_PATH:
             self.send_response(404)
             self.end_headers()
@@ -3706,7 +3961,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         auth_kind = self._detect_mcp_auth_kind()
         auth_token = _mcp_auth_kind.set(auth_kind)
         try:
-            response = dispatch(msg)
+            response = dispatch(msg, self.server.config)
         finally:
             _mcp_auth_kind.reset(auth_token)
 
@@ -3806,6 +4061,67 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             **make_webhook_response("linear"),
             "received": True,
         })
+
+    def _handle_honcho_mcp_proxy(self) -> None:
+        if not self._ensure_honcho_mcp_proxy_authorized():
+            return
+
+        config = self.server.config
+        if not config.honcho_api_key:
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "honcho_not_configured",
+                    "error_description": "HONCHO_API_KEY is not configured for the Honcho MCP facade.",
+                },
+                status=503,
+            )
+            return
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(content_length) if content_length > 0 else b""
+
+        upstream_headers = build_honcho_mcp_headers(
+            config,
+            content_type=self.headers.get("Content-Type", "application/json"),
+        )
+        upstream_headers["Accept"] = self.headers.get("Accept", "application/json, text/event-stream")
+        upstream_headers["User-Agent"] = "edgars-mcp-honcho-facade/0.1"
+        request_kwargs: dict[str, object] = {
+            "headers": upstream_headers,
+            "method": self.command.upper(),
+        }
+        if self.command.upper() not in {"GET", "HEAD"}:
+            request_kwargs["data"] = raw
+        request = urllib.request.Request(HONCHO_MCP_UPSTREAM_URL, **request_kwargs)
+
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                body = response.read()
+                content_type = response.headers.get("Content-Type", "application/json")
+                status = response.status
+        except urllib.error.HTTPError as exc:
+            body = exc.read()
+            content_type = exc.headers.get("Content-Type", "application/json")
+            status = exc.code
+        except urllib.error.URLError as exc:
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "honcho_upstream_unreachable",
+                    "error_description": str(exc.reason),
+                },
+                status=502,
+            )
+            return
+
+        body, content_type = normalize_honcho_mcp_response(body, content_type)
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self._add_cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
 
     # ── 回應輔助 ──────────────────────────────────────────────────────────────
     def _handle_discord_webhook(self) -> None:
@@ -4018,6 +4334,41 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _ensure_honcho_mcp_proxy_authorized(self) -> bool:
+        expected = self.server.config.honcho_mcp_facade_token
+        if not expected:
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "honcho_facade_not_configured",
+                    "error_description": "EDGARS_HONCHO_MCP_FACADE_TOKEN is not configured.",
+                },
+                status=503,
+            )
+            return False
+
+        auth = self.headers.get("Authorization", "")
+        token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+        if token and hmac.compare_digest(token, expected):
+            return True
+
+        body = json.dumps(
+            {
+                "ok": False,
+                "error": "unauthorized",
+                "error_description": "Missing or invalid Honcho facade bearer token.",
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        self.send_response(401)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("WWW-Authenticate", 'Bearer realm="honcho-mcp-facade"')
+        self._add_cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
+        return False
+
     def _webhook_token_from_request(self) -> str:
         auth = self.headers.get("Authorization", "").strip()
         if auth.lower().startswith("bearer "):
@@ -4137,6 +4488,12 @@ def validate_http_startup_config() -> HandcraftServerConfig:
         package_webhook_token=load_package_webhook_token(),
         linear_webhook_token=load_linear_webhook_token(),
         discord_webhook_token=load_discord_webhook_token(),
+        honcho_mcp_facade_token=load_honcho_mcp_facade_token(),
+        honcho_api_key=load_honcho_api_key(),
+        honcho_user_name=os.getenv("HONCHO_USER_NAME", "Edgar").strip() or "Edgar",
+        honcho_workspace_id=os.getenv("HONCHO_WORKSPACE_ID", "edgar-team").strip() or "edgar-team",
+        honcho_assistant_name=os.getenv("HONCHO_ASSISTANT_NAME", "codex").strip() or "codex",
+        honcho_mcp_hostname=load_honcho_mcp_hostname(),
     )
 
 

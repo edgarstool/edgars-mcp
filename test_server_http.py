@@ -1180,6 +1180,89 @@ class HonchoMcpFacadeTests(unittest.TestCase):
                 "tools": [],
             })
 
+    def test_fetch_honcho_tool_descriptors_negative_caches_failed_refresh(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            honcho_api_key="honcho-secret",
+        )
+
+        with patch.object(
+            server_http,
+            "call_honcho_mcp_json_rpc",
+            side_effect=server_http.HonchoMcpError("down"),
+        ) as mocked_call, patch.object(server_http.time, "time", side_effect=[100.0, 101.0, 102.0]):
+            self.assertEqual([], server_http.fetch_honcho_tool_descriptors(config))
+            self.assertEqual([], server_http.fetch_honcho_tool_descriptors(config))
+
+        self.assertEqual(1, mocked_call.call_count)
+        with server_http.HONCHO_TOOLS_CACHE_LOCK:
+            self.assertEqual(server_http.honcho_config_identity(config), server_http.HONCHO_TOOLS_CACHE["identity"])
+            self.assertEqual([], server_http.HONCHO_TOOLS_CACHE["tools"])
+            self.assertEqual(
+                101.0 + server_http.HONCHO_TOOLS_CACHE_TTL_SECONDS,
+                server_http.HONCHO_TOOLS_CACHE["expires_at"],
+            )
+
+    def test_fetch_honcho_tool_descriptors_failed_refresh_drops_mismatched_cache(self):
+        stale_config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            honcho_api_key="honcho-secret",
+            honcho_workspace_id="legacy-team",
+        )
+        fresh_config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            honcho_api_key="honcho-secret",
+            honcho_workspace_id="fresh-team",
+        )
+        with server_http.HONCHO_TOOLS_CACHE_LOCK:
+            server_http.HONCHO_TOOLS_CACHE.update({
+                "expires_at": 0.0,
+                "identity": server_http.honcho_config_identity(stale_config),
+                "tools": [{"name": "honcho__legacy_tool"}],
+            })
+
+        with patch.object(
+            server_http,
+            "call_honcho_mcp_json_rpc",
+            side_effect=server_http.HonchoMcpError("down"),
+        ), patch.object(server_http.time, "time", side_effect=[200.0, 201.0]):
+            self.assertEqual([], server_http.fetch_honcho_tool_descriptors(fresh_config))
+
+        with server_http.HONCHO_TOOLS_CACHE_LOCK:
+            self.assertEqual(server_http.honcho_config_identity(fresh_config), server_http.HONCHO_TOOLS_CACHE["identity"])
+            self.assertEqual([], server_http.HONCHO_TOOLS_CACHE["tools"])
+            self.assertEqual(
+                201.0 + server_http.HONCHO_TOOLS_CACHE_TTL_SECONDS,
+                server_http.HONCHO_TOOLS_CACHE["expires_at"],
+            )
+
+    def test_fetch_honcho_tool_descriptors_failed_refresh_reuses_matching_stale_cache(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            honcho_api_key="honcho-secret",
+        )
+        cached_tools = [{"name": "honcho__inspect_workspace"}]
+        with server_http.HONCHO_TOOLS_CACHE_LOCK:
+            server_http.HONCHO_TOOLS_CACHE.update({
+                "expires_at": 0.0,
+                "identity": server_http.honcho_config_identity(config),
+                "tools": list(cached_tools),
+            })
+
+        with patch.object(
+            server_http,
+            "call_honcho_mcp_json_rpc",
+            side_effect=server_http.HonchoMcpError("down"),
+        ) as mocked_call, patch.object(server_http.time, "time", side_effect=[300.0, 301.0, 302.0]):
+            self.assertEqual(cached_tools, server_http.fetch_honcho_tool_descriptors(config))
+            self.assertEqual(cached_tools, server_http.fetch_honcho_tool_descriptors(config))
+
+        self.assertEqual(1, mocked_call.call_count)
+
     def _start_server(self, config=None):
         config = config or HandcraftServerConfig(
             mcp_api_token="secret-token",

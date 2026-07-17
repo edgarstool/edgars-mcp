@@ -1851,12 +1851,22 @@ def fetch_honcho_tool_descriptors(config: HandcraftServerConfig | None) -> list[
     except Exception as exc:
         log(f"honcho tools/list unavailable: {exc}")
         with HONCHO_TOOLS_CACHE_LOCK:
-            cached_tools = list(HONCHO_TOOLS_CACHE.get("tools") or [])
+            cached_identity = str(HONCHO_TOOLS_CACHE.get("identity") or "")
+            cached_tools = (
+                list(HONCHO_TOOLS_CACHE.get("tools") or [])
+                if cached_identity == identity
+                else []
+            )
+            HONCHO_TOOLS_CACHE.update({
+                "expires_at": time.time() + HONCHO_TOOLS_CACHE_TTL_SECONDS,
+                "identity": identity,
+                "tools": list(cached_tools),
+            })
         return cached_tools
 
     with HONCHO_TOOLS_CACHE_LOCK:
         HONCHO_TOOLS_CACHE.update({
-            "expires_at": now + HONCHO_TOOLS_CACHE_TTL_SECONDS,
+            "expires_at": time.time() + HONCHO_TOOLS_CACHE_TTL_SECONDS,
             "identity": identity,
             "tools": list(tools),
         })

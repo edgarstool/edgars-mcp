@@ -16,6 +16,13 @@ function bearerValue(value) {
   return trimmed.toLowerCase().startsWith("bearer ") ? trimmed : `Bearer ${trimmed}`;
 }
 
+function bearerToken(value) {
+  if (!value) return "";
+  const trimmed = String(value).trim();
+  if (!trimmed.toLowerCase().startsWith("bearer ")) return "";
+  return trimmed.slice("bearer ".length).trim();
+}
+
 function requireEnv(env, name) {
   const value = env[name];
   if (!value || !String(value).trim()) {
@@ -24,12 +31,29 @@ function requireEnv(env, name) {
   return String(value).trim();
 }
 
-function isAuthorized(request, env) {
-  const expected = env.EDGARS_HONCHO_MCP_FACADE_TOKEN || env.EDGARS_INTERNAL_MCP_TOKEN;
-  if (!expected) return true;
+function loadFacadeToken(env) {
+  return String(env.EDGARS_HONCHO_MCP_FACADE_TOKEN || env.EDGARS_INTERNAL_MCP_TOKEN || "").trim();
+}
 
-  const authorization = request.headers.get("authorization") || "";
-  return authorization === bearerValue(expected);
+function facadeNotConfiguredResponse() {
+  return jsonResponse(
+    {
+      ok: false,
+      error: "honcho_facade_not_configured",
+      error_description: "EDGARS_HONCHO_MCP_FACADE_TOKEN is not configured.",
+    },
+    503,
+  );
+}
+
+function authorizeRequest(request, env) {
+  const expected = loadFacadeToken(env);
+  if (!expected) {
+    return facadeNotConfiguredResponse();
+  }
+
+  const token = bearerToken(request.headers.get("authorization"));
+  return token && token === expected ? null : unauthorizedMcpResponse();
 }
 
 function unauthorizedMcpResponse() {
@@ -51,20 +75,15 @@ function unauthorizedMcpResponse() {
 }
 
 function buildUpstreamHeaders(request, env) {
-  const headers = new Headers(request.headers);
-
-  headers.delete("host");
-  headers.delete("cf-connecting-ip");
-  headers.delete("cf-ipcountry");
-  headers.delete("cf-ray");
-  headers.delete("cf-visitor");
-  headers.delete("x-forwarded-for");
-  headers.delete("x-forwarded-proto");
+  const headers = new Headers();
 
   headers.set("authorization", bearerValue(requireEnv(env, "HONCHO_API_KEY")));
   headers.set("x-honcho-user-name", env.HONCHO_USER_NAME || "Edgar");
   headers.set("x-honcho-workspace-id", env.HONCHO_WORKSPACE_ID || "edgar-team");
   headers.set("x-honcho-assistant-name", env.HONCHO_ASSISTANT_NAME || "codex");
+  headers.set("content-type", request.headers.get("content-type") || "application/json");
+  headers.set("accept", request.headers.get("accept") || "application/json, text/event-stream");
+  headers.set("user-agent", "edgars-mcp-honcho-facade/0.1");
 
   return headers;
 }
@@ -82,14 +101,14 @@ async function normalizeHonchoResponse(response) {
     .map((line) => line.slice("data:".length).trim())
     .filter(Boolean);
 
-  if (dataLines.length === 0) {
+  if (dataLines.length !== 1) {
     return new Response(text, {
       status: response.status,
       headers: response.headers,
     });
   }
 
-  return new Response(dataLines.join("\n"), {
+  return new Response(dataLines[0], {
     status: response.status,
     headers: {
       "content-type": "application/json; charset=utf-8",
@@ -99,8 +118,9 @@ async function normalizeHonchoResponse(response) {
 }
 
 async function proxyToHoncho(request, env) {
-  if (!isAuthorized(request, env)) {
-    return unauthorizedMcpResponse();
+  const authorizationError = authorizeRequest(request, env);
+  if (authorizationError) {
+    return authorizationError;
   }
 
   const incomingUrl = new URL(request.url);
@@ -110,7 +130,7 @@ async function proxyToHoncho(request, env) {
   const upstreamRequest = new Request(upstreamUrl, {
     method: request.method,
     headers: buildUpstreamHeaders(request, env),
-    body: request.body,
+    body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
     redirect: "manual",
   });
 

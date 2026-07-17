@@ -1276,6 +1276,19 @@ class HonchoMcpFacadeTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    def test_normalize_honcho_mcp_response_preserves_multi_event_sse(self):
+        body = (
+            b'event: message\n'
+            b'data: {"jsonrpc":"2.0","id":1,"result":{"cursor":"page-1"}}\n\n'
+            b'event: message\n'
+            b'data: {"jsonrpc":"2.0","id":1,"result":{"cursor":"page-2"}}\n\n'
+        )
+
+        normalized, content_type = server_http.normalize_honcho_mcp_response(body, "text/event-stream")
+
+        self.assertEqual(body, normalized)
+        self.assertEqual("text/event-stream", content_type)
+
     def test_honcho_mcp_hostname_uses_standard_mcp_path(self):
         captured = {}
 
@@ -1325,6 +1338,56 @@ class HonchoMcpFacadeTests(unittest.TestCase):
             self.assertEqual(200, response.status)
             self.assertEqual({"tools": []}, payload["result"])
             self.assertEqual(server_http.HONCHO_MCP_UPSTREAM_URL, captured["url"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_honcho_mcp_hostname_get_uses_standard_mcp_path(self):
+        captured = {}
+
+        class FakeUpstreamResponse:
+            status = 200
+            headers = {"Content-Type": "application/json"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"ok":true,"server":"honcho"}'
+
+        original_urlopen = urllib.request.urlopen
+
+        def fake_urlopen(request, timeout):
+            if request.full_url != server_http.HONCHO_MCP_UPSTREAM_URL:
+                return original_urlopen(request, timeout=timeout)
+            captured["url"] = request.full_url
+            captured["method"] = request.get_method()
+            captured["headers"] = dict(request.header_items())
+            return FakeUpstreamResponse()
+
+        server, thread, base = self._start_server()
+        try:
+            req = urllib.request.Request(
+                f"{base}/mcp",
+                headers={
+                    "Authorization": "Bearer facade-token",
+                    "Host": "honcho-mcp.edgars.tools",
+                },
+                method="GET",
+            )
+            with patch.object(server_http.urllib.request, "urlopen", side_effect=fake_urlopen):
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(200, response.status)
+            self.assertEqual({"ok": True, "server": "honcho"}, payload)
+            self.assertEqual(server_http.HONCHO_MCP_UPSTREAM_URL, captured["url"])
+            self.assertEqual("GET", captured["method"])
+            self.assertEqual("Bearer honcho-secret", captured["headers"]["Authorization"])
         finally:
             server.shutdown()
             server.server_close()

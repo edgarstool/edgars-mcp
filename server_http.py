@@ -1681,10 +1681,10 @@ def normalize_honcho_mcp_response(body: bytes, content_type: str) -> tuple[bytes
         for line in text.splitlines()
         if line.startswith("data:") and line[len("data:"):].strip()
     ]
-    if not data_lines:
+    if len(data_lines) != 1:
         return body, content_type
 
-    normalized = "\n".join(data_lines).encode("utf-8")
+    normalized = data_lines[0].encode("utf-8")
     return normalized, "application/json; charset=utf-8"
 
 
@@ -3354,6 +3354,9 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         elif path == LINEAR_OAUTH_BOOTSTRAP_PATH:
             self._handle_linear_oauth_bootstrap()
         elif path == "/mcp":
+            if self._request_hostname() == self.server.config.honcho_mcp_hostname:
+                self._handle_honcho_mcp_proxy()
+                return
             if not self._ensure_mcp_request_authorized():
                 return
             body = json.dumps({
@@ -3878,12 +3881,13 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             "Accept": self.headers.get("Accept", "application/json, text/event-stream"),
             "User-Agent": "edgars-mcp-honcho-facade/0.1",
         }
-        request = urllib.request.Request(
-            HONCHO_MCP_UPSTREAM_URL,
-            data=raw,
-            headers=upstream_headers,
-            method="POST",
-        )
+        request_kwargs: dict[str, object] = {
+            "headers": upstream_headers,
+            "method": self.command.upper(),
+        }
+        if self.command.upper() not in {"GET", "HEAD"}:
+            request_kwargs["data"] = raw
+        request = urllib.request.Request(HONCHO_MCP_UPSTREAM_URL, **request_kwargs)
 
         try:
             with urllib.request.urlopen(request, timeout=60) as response:

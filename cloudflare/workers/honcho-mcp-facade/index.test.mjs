@@ -43,6 +43,7 @@ test("accepts lowercase bearer tokens and forwards only proxy headers", async (t
         authorization: "bearer facade-token",
         "content-type": "application/json",
         accept: "application/json, text/event-stream",
+        "mcp-session-id": "session-123",
         cookie: "session=secret",
         "cf-ray": "ray-id",
         "x-portal-token": "portal-secret",
@@ -64,6 +65,7 @@ test("accepts lowercase bearer tokens and forwards only proxy headers", async (t
   assert.equal(upstreamRequest.headers.get("content-type"), "application/json");
   assert.equal(upstreamRequest.headers.get("accept"), "application/json, text/event-stream");
   assert.equal(upstreamRequest.headers.get("user-agent"), "edgars-mcp-honcho-facade/0.1");
+  assert.equal(upstreamRequest.headers.get("mcp-session-id"), "session-123");
   assert.equal(upstreamRequest.headers.get("cookie"), null);
   assert.equal(upstreamRequest.headers.get("cf-ray"), null);
   assert.equal(upstreamRequest.headers.get("x-portal-token"), null);

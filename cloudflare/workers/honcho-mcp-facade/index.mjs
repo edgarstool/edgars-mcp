@@ -76,6 +76,7 @@ function unauthorizedMcpResponse() {
 
 function buildUpstreamHeaders(request, env) {
   const headers = new Headers();
+  const sessionId = request.headers.get("mcp-session-id");
 
   headers.set("authorization", bearerValue(requireEnv(env, "HONCHO_API_KEY")));
   headers.set("x-honcho-user-name", env.HONCHO_USER_NAME || "Edgar");
@@ -84,6 +85,7 @@ function buildUpstreamHeaders(request, env) {
   headers.set("content-type", request.headers.get("content-type") || "application/json");
   headers.set("accept", request.headers.get("accept") || "application/json, text/event-stream");
   headers.set("user-agent", "edgars-mcp-honcho-facade/0.1");
+  if (sessionId) headers.set("mcp-session-id", sessionId);
 
   return headers;
 }

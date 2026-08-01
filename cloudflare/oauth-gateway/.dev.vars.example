@@ -1,0 +1,15 @@
+# Cloudflare Access self-hosted application protecting only
+# https://auth.edgars.tools/authorize*
+ACCESS_TEAM_DOMAIN=https://YOUR_TEAM.cloudflareaccess.com
+ACCESS_AUD=YOUR_ACCESS_APPLICATION_AUD
+
+# Generate independent random values. Never commit real values.
+CONSENT_HMAC_SECRET=GENERATE_AT_LEAST_32_RANDOM_BYTES
+EDGE_IDENTITY_SECRET=GENERATE_ANOTHER_32_RANDOM_BYTES
+
+# Private Tunnel/origin hostname. It must not route back to this Worker.
+MCP_ORIGIN_URL=https://YOUR_PRIVATE_MCP_ORIGIN/mcp
+
+# Service credential consumed by the existing Python origin as MCP_API_TOKEN.
+# This is not an end-user OAuth token.
+ORIGIN_API_TOKEN=YOUR_EXISTING_ORIGIN_SERVICE_TOKEN

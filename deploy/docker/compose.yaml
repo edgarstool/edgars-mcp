@@ -1,0 +1,35 @@
+name: edgars-mcp
+
+services:
+  edgars-mcp:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: edgars-mcp:local
+    container_name: edgars-mcp
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8765
+      MCP_BASE_URL: ${MCP_BASE_URL:-https://mcp.edgars.tools}
+      EDGARS_MCP_RUNTIME_DIR: /var/lib/edgars-mcp
+      MCP_API_TOKEN_FILE: /run/secrets/mcp_api_token
+      WARP_API_KEY_FILE: /run/secrets/warp_api_key
+    secrets:
+      - mcp_api_token
+      - warp_api_key
+    volumes:
+      - ${HOME}/runtime/edgars-mcp/run:/var/lib/edgars-mcp/run
+      - ${HOME}/runtime/edgars-mcp/state:/var/lib/edgars-mcp/state
+      - ${HOME}/runtime/edgars-mcp/logs:/var/lib/edgars-mcp/logs
+      - ${HOME}/runtime/edgars-mcp/cache:/var/lib/edgars-mcp/cache
+      - ${HOME}/runtime/edgars-mcp/tmp:/var/lib/edgars-mcp/tmp
+
+secrets:
+  mcp_api_token:
+    environment: MCP_API_TOKEN
+  warp_api_key:
+    environment: WARP_API_KEY
+

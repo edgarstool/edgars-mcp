@@ -50,7 +50,7 @@
 適合 IDE / editor / local client 需要連接 coding agent 的情境。**不是每個 repo 都必須啟用**；只在 repo 會被多種 client（VS Code、JetBrains、本機 agent bridge）以 agent 模式存取時才導入。
 
 **MCP**（Model Context Protocol）：
-適合 Copilot 需要外部工具或資料來源，例如 Linear、Notion、Obsidian、OpenAI docs、GitHub API、Cloudflare API、Doppler、1Password。
+適合 Copilot 需要外部工具或資料來源，例如 Linear、Notion、Obsidian、OpenAI docs、GitHub API、Cloudflare API、1Password。
 
 ---
 

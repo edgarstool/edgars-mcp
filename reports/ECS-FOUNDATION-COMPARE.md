@@ -8,7 +8,7 @@ This report is the only active-tree record of pre-convergence names. Git history
 | Root `server_http.py` and scattered scripts | `src/edgars_mcp/` plus packaged entry points | Importable, testable package |
 | `Handcraft-McpCommon` and `Start-HandcraftStack` wrappers | `deploy/linux/` and `deploy/windows/` | Platform-specific first-class deployment |
 | `G:\AI_WORK_512` and `V:\projects` assumptions | `$HOME` defaults plus environment overrides | Linux and Windows portability |
-| Doppler-required launch chain | 1Password CLI references | One cloud secret workflow |
+| Doppler-required launch chain | Self-hosted 1Password Connect + CLI references | One private secret gateway on Contabo |
 | Mutable state inside or beside source | `~/runtime/edgars-mcp/{run,state,logs,cache,tmp}` | Source/runtime separation |
 | Windows-only `cmd.exe`, PowerShell and drive enumeration | Native OS command construction | Contabo-compatible system tools |
 | Separate Warp bridge proposal | Existing `warp_agent_*` MCP tools | Warp stays inside Edgar's MCP toolbox |
@@ -24,3 +24,4 @@ This report is the only active-tree record of pre-convergence names. Git history
 
 This branch provides deployment-ready artifacts but does not alter live Contabo, Cloudflare, or DNS by itself. Live status must only be marked complete after the remote service check returns `PASS`.
 
+The recommended stack contains `op-connect-api`, `op-connect-sync`, and `edgars-mcp`. Connect is bound to host loopback only and is also reachable inside the Compose network. A native systemd fallback uses the same Connect access token and no longer supports the former service-account bootstrap path.

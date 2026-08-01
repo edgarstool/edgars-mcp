@@ -1,69 +1,78 @@
 # Contabo deployment
 
-The canonical native layout is:
+## Finished topology
 
-| Purpose | Path |
-|---|---|
-| Source | `/home/edgar/workspaces/shared/30-services/edgars-mcp` |
-| Non-secret config | `/home/edgar/.config/edgars-mcp` |
-| Runtime | `/home/edgar/runtime/edgars-mcp` |
-| User service | `/home/edgar/.config/systemd/user/edgars-mcp.service` |
+The recommended deployment is a single Docker Compose stack:
 
-## Native systemd mode
+| Service | Purpose | Exposure |
+|---|---|---|
+| `op-connect-api` | Private 1Password Connect REST API | `127.0.0.1:8080` and Compose network |
+| `op-connect-sync` | Synchronizes the encrypted Connect cache with 1Password | Outbound only |
+| `edgars-mcp` | 78-tool MCP gateway, including three Warp Oz tools | `127.0.0.1:8765` |
 
-Prerequisites: Python 3.11+, 1Password CLI, systemd user services, and `systemd-creds` for unattended restart.
+Cloudflare ingress, DNS, and the live `mcp.edgars.tools` route remain separate production changes.
+
+## One-time 1Password preparation
+
+Create a Secrets Automation Connect workflow in 1Password for a dedicated shared vault such as `Edgar Cloud Agents`. Connect cannot use a built-in Personal, Private, Employee, or default Shared vault.
+
+Keep the two generated bootstrap artifacts as separate files:
+
+- `1password-credentials.json`: starts the Connect API and Sync containers.
+- `edgars-mcp.token`: least-privilege Connect access token for this MCP service.
+
+The normal application secrets remain fields in the `edgars-mcp` item and are referenced by `config/edgars-mcp.op.env.example`.
+
+## Install
+
+Prerequisites: Docker Engine with Docker Compose, the two bootstrap files, and the canonical checkout:
+
+```text
+/home/edgar/workspaces/shared/30-services/edgars-mcp
+```
+
+Run:
 
 ```bash
 cd /home/edgar/workspaces/shared/30-services/edgars-mcp
-./deploy/linux/install.sh
+./deploy/docker/install.sh \
+  /path/to/1password-credentials.json \
+  /path/to/edgars-mcp.token
 ```
 
-Edit only the 1Password reference names in:
+The installer copies the bootstrap files to:
 
 ```text
-~/.config/edgars-mcp/edgars-mcp.op.env
+/home/edgar/.config/1password-connect/1password-credentials.json
+/home/edgar/.config/1password-connect/edgars-mcp.token
 ```
 
-Provision the bootstrap credential interactively and start:
-
-```bash
-./deploy/linux/provision-1password-credential.sh
-systemctl --user start edgars-mcp
-systemctl --user status edgars-mcp
-```
-
-Enable user services after logout or reboot:
-
-```bash
-loginctl enable-linger edgar
-```
-
-That last command may require an administrator once.
+The directory uses mode `0700`; both files use mode `0600`. They are excluded from Git. The installer preserves an existing `~/.config/edgars-mcp/edgars-mcp.op.env` and creates it from the reference template only when absent.
 
 ## Verification
 
 ```bash
-op run --env-file ~/.config/edgars-mcp/edgars-mcp.op.env -- \
-  ./deploy/linux/check.sh
-journalctl --user -u edgars-mcp -n 100 --no-pager
+docker compose -f deploy/docker/compose.yaml ps
+docker exec edgars-mcp /usr/local/bin/edgars-mcp-container-check
 ```
 
-The check verifies `/health`, exactly 78 registered tools, and all three Warp Oz tools.
+The second command resolves `MCP_API_TOKEN` through the self-hosted Connect API, then verifies `/health`, exactly 78 tools, and all three Warp tools. Expected result:
 
-## Docker mode
+```text
+PASS: health, 78 tools, Warp Oz tools
+```
 
-Stop the native service first because both modes use port 8765:
+## Native fallback
+
+Native systemd mode remains available for integrations that require a host Python process:
 
 ```bash
-systemctl --user disable --now edgars-mcp
-mkdir -p ~/runtime/edgars-mcp/{run,state,logs,cache,tmp}
-op run --env-file ~/.config/edgars-mcp/edgars-mcp.op.env -- \
-  docker compose -f deploy/docker/compose.yaml up -d --build
+./deploy/linux/install.sh
+systemctl --user start edgars-mcp.service
 ```
 
-Compose receives `MCP_API_TOKEN` and `WARP_API_KEY` only long enough to create Docker secret mounts. They are not written into the image or Compose file.
+It expects Connect at `http://127.0.0.1:8080` and loads `~/.config/1password-connect/edgars-mcp.token` as a systemd credential. Do not run native and Docker MCP modes simultaneously because both bind port 8765.
 
-## Scope boundary
+## Boundary
 
-Installation stops at a healthy loopback service. Pointing `mcp.edgars.tools` or changing the Cloudflare production tunnel is a separate production change and requires its own verification.
-
+This repository prepares and verifies a loopback service. It does not modify the live Contabo host, Cloudflare Tunnel, Access policy, DNS, or production secrets by itself.

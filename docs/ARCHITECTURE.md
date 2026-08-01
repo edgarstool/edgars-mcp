@@ -38,7 +38,9 @@ Each path can be overridden independently with `EDGARS_MCP_RUN_DIR`, `EDGARS_MCP
 - The server listens on loopback by default.
 - `MCP_API_TOKEN` is mandatory and startup fails when it is absent.
 - Secret values are injected at launch and are never stored in repository configuration.
-- Native deployment uses 1Password references plus an encrypted systemd bootstrap credential.
-- Docker mounts the MCP and Warp keys as `/run/secrets/*` files.
+- The recommended Contabo stack self-hosts `1password/connect-api` and `1password/connect-sync` beside Edgar's MCP.
+- Connect is published only on host loopback (`127.0.0.1:8080`) for the native fallback and is never bound to the public interface; the Docker MCP reaches it by Compose service name.
+- The MCP and Warp keys remain `op://` references and are resolved by `op run` through Connect.
+- Only the Connect credentials JSON and a least-privilege Connect token bootstrap the stack; both are operator-owned files outside Git.
+- Native systemd fallback loads the same Connect token as a systemd credential instead of using a 1Password service account.
 - Public DNS, Cloudflare ingress, and TLS are intentionally outside this repository's install script.
-

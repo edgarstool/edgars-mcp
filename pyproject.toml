@@ -14,7 +14,8 @@ dependencies = []
 [project.optional-dependencies]
 access = ["PyJWT[crypto]>=2.8,<3"]
 browser = ["playwright>=1.51,<2"]
-all = ["PyJWT[crypto]>=2.8,<3", "playwright>=1.51,<2"]
+all = ["PyJWT[crypto]>=2.8,<3", "playwright>=1.51,<2", "PyYAML>=6,<7"]
+test = ["PyYAML>=6,<7"]
 
 [project.scripts]
 edgars-mcp = "edgars_mcp.http_server:main"

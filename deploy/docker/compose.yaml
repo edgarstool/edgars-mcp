@@ -1,6 +1,32 @@
 name: edgars-mcp
 
 services:
+  op-connect-api:
+    image: 1password/connect-api:1.8
+    container_name: op-connect-api
+    restart: unless-stopped
+    environment:
+      OP_SESSION: /run/secrets/op_connect_credentials
+      XDG_DATA_HOME: /home/opuser
+    ports:
+      - "127.0.0.1:8080:8080"
+    secrets:
+      - op_connect_credentials
+    volumes:
+      - op_connect_data:/home/opuser/.op/data
+
+  op-connect-sync:
+    image: 1password/connect-sync:1.8
+    container_name: op-connect-sync
+    restart: unless-stopped
+    environment:
+      OP_SESSION: /run/secrets/op_connect_credentials
+      XDG_DATA_HOME: /home/opuser
+    secrets:
+      - op_connect_credentials
+    volumes:
+      - op_connect_data:/home/opuser/.op/data
+
   edgars-mcp:
     build:
       context: ../..
@@ -8,6 +34,9 @@ services:
     image: edgars-mcp:local
     container_name: edgars-mcp
     restart: unless-stopped
+    depends_on:
+      - op-connect-api
+      - op-connect-sync
     ports:
       - "127.0.0.1:8765:8765"
     environment:
@@ -15,12 +44,13 @@ services:
       MCP_PORT: 8765
       MCP_BASE_URL: ${MCP_BASE_URL:-https://mcp.edgars.tools}
       EDGARS_MCP_RUNTIME_DIR: /var/lib/edgars-mcp
-      MCP_API_TOKEN_FILE: /run/secrets/mcp_api_token
-      WARP_API_KEY_FILE: /run/secrets/warp_api_key
+      OP_CONNECT_HOST: http://op-connect-api:8080
+      OP_CONNECT_TOKEN_FILE: /run/secrets/op_connect_token
+      EDGARS_MCP_OP_ENV_FILE: /etc/edgars-mcp/edgars-mcp.op.env
     secrets:
-      - mcp_api_token
-      - warp_api_key
+      - op_connect_token
     volumes:
+      - ${HOME}/.config/edgars-mcp/edgars-mcp.op.env:/etc/edgars-mcp/edgars-mcp.op.env:ro
       - ${HOME}/runtime/edgars-mcp/run:/var/lib/edgars-mcp/run
       - ${HOME}/runtime/edgars-mcp/state:/var/lib/edgars-mcp/state
       - ${HOME}/runtime/edgars-mcp/logs:/var/lib/edgars-mcp/logs
@@ -28,8 +58,10 @@ services:
       - ${HOME}/runtime/edgars-mcp/tmp:/var/lib/edgars-mcp/tmp
 
 secrets:
-  mcp_api_token:
-    environment: MCP_API_TOKEN
-  warp_api_key:
-    environment: WARP_API_KEY
+  op_connect_credentials:
+    file: ${HOME}/.config/1password-connect/1password-credentials.json
+  op_connect_token:
+    file: ${HOME}/.config/1password-connect/edgars-mcp.token
 
+volumes:
+  op_connect_data:

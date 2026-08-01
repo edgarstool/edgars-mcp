@@ -27,6 +27,8 @@ config/linear-oauth-token.json
 dist/
 build/
 *.egg-info/
+**/1password-credentials.json
+**/edgars-mcp.token
 
 
 # 第三方套件（可重裝，不進版控）

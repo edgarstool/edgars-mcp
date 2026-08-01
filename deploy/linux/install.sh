@@ -38,6 +38,5 @@ systemctl --user daemon-reload
 systemctl --user enable edgars-mcp.service
 
 echo "edgars-mcp installed. Configure 1Password references, then run:"
-echo "  deploy/linux/provision-1password-credential.sh"
+echo "  deploy/linux/install-connect.sh /path/to/1password-credentials.json /path/to/edgars-mcp.token"
 echo "  systemctl --user start edgars-mcp.service"
-

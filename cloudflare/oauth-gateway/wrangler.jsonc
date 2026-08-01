@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "edgars-mcp-oauth-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "routes": [
+    { "pattern": "auth.edgars.tools/authorize*", "zone_name": "edgars.tools" },
+    { "pattern": "auth.edgars.tools/oauth/token*", "zone_name": "edgars.tools" },
+    { "pattern": "auth.edgars.tools/oauth/register*", "zone_name": "edgars.tools" },
+    { "pattern": "auth.edgars.tools/.well-known/oauth-authorization-server*", "zone_name": "edgars.tools" },
+    { "pattern": "mcp.edgars.tools/*", "zone_name": "edgars.tools" }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "00000000000000000000000000000000"
+    }
+  ],
+  "vars": {
+    "ALLOWED_EMAILS": "edgar@edgars.tools,edgar@edgar.tw"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  }
+}

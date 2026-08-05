@@ -1,0 +1,19 @@
+[Unit]
+Description=Edgar's MCP tool gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/workspaces/shared/30-services/edgars-mcp
+EnvironmentFile=-%h/.config/edgars-mcp/edgars-mcp.env
+LoadCredential=op-connect-token:%h/.config/1password-connect/edgars-mcp.token
+ExecStart=/usr/bin/env bash %h/workspaces/shared/30-services/edgars-mcp/deploy/linux/start.sh
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

@@ -6,6 +6,9 @@ desktop.ini
 *.bak-*
 .screenshots/
 reports/
+!reports/
+reports/*
+!reports/ECS-FOUNDATION-COMPARE.md
 logs/
 *.png
 *.jpg
@@ -20,6 +23,12 @@ logs/
 # poke-hermes-bridge (not tracked here, lives only locally)
 poke-hermes-bridge/
 config/linear-oauth-token.json
+.venv/
+dist/
+build/
+*.egg-info/
+**/1password-credentials.json
+**/edgars-mcp.token
 
 
 # 第三方套件（可重裝，不進版控）

@@ -22,7 +22,7 @@ Use when:
 Do **not** use for:
 
 - Normal issue triage with personal API key only (use `linear` skill).
-- OAuth setup alone (see `docs/Linear-OAuth設定-新手版.md`).
+- OAuth setup alone (use the current Linear application manifest in `config/`).
 
 ## Official Protocol (summary)
 
@@ -47,7 +47,7 @@ Linear → webhooks.edgars.tools/webhooks/linear
       → agentActivityCreate (thought + response)
 ```
 
-**mcp-handcraft** `/webhook/linear` only logs — it does **not** complete agent sessions.
+**edgars-mcp** `/webhook/linear` only logs — it does **not** complete agent sessions.
 
 Infrastructure repo: `linear-orchestrator` (Edgar-s-Tool/linear-orchestrator).
 
@@ -71,6 +71,6 @@ When processing an `AgentSessionEvent`:
 
 ## References
 
-- `docs/Linear-Agent人類委派-新手版.md` — Edgar-facing guide
-- `G:\AI_WORK_512\repos\cloudflared\HERMES-WEBHOOK.md` — tunnel ops
-- `V:\projects\linear-webhook-bridge\SKILL.md` — 4-layer bridge design
+- `config/linear-oauth-manifest.json` — current application contract
+- `docs/ARCHITECTURE.md` — edgars-mcp runtime boundary
+- The external `linear-orchestrator` repository — agent-session implementation

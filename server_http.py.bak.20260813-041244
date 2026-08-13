@@ -78,11 +78,6 @@ def load_bool_env(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def load_http_bind_host() -> str:
-    """Keep the HTTP origin private by default; cloudflared reaches it locally."""
-    return os.getenv("MCP_BIND_HOST", "127.0.0.1").strip()
-
-
 def load_webhook_base_url() -> str:
     return os.getenv("MCP_WEBHOOK_BASE_URL", "").strip()
 
@@ -246,17 +241,9 @@ CODEX_DEFAULT_WORKDIR = r"C:\Users\EdgarsTool"
 AGENT_TIMEOUT_SECONDS = int(os.getenv("MCP_AGENT_TIMEOUT_SECONDS", "300"))
 
 PORT = int(os.getenv("MCP_PORT", "8765"))
-PROTOCOL_VERSION = "2025-11-25"          # initialize-based Streamable HTTP default
-LATEST_PROTOCOL_VERSION = "2026-07-28"   # stateless server/discover generation
-INITIALIZE_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"]
-SUPPORTED_PROTOCOL_VERSIONS = [LATEST_PROTOCOL_VERSION, *INITIALIZE_PROTOCOL_VERSIONS]
-MCP_HEADER_BASE64_PREFIX = "=?base64?"
-MCP_HEADER_BASE64_SUFFIX = "?="
-MCP_NAME_HEADER_SOURCES = {
-    "tools/call": "name",
-    "resources/read": "uri",
-    "prompts/get": "name",
-}
+PROTOCOL_VERSION = "2025-11-25"          # 舊世代握手預設（保留相容）
+LATEST_PROTOCOL_VERSION = "2026-07-28"   # 新世代（server/discover）
+SUPPORTED_PROTOCOL_VERSIONS = ["2026-07-28", "2025-11-25"]
 SERVER_INSTRUCTIONS = (
     "Edgar 的本地 MCP（mcp-handcraft）：檔案系統、Git、系統指令、瀏覽器、Obsidian、"
     "Linear、Notion、AI 代理委派、媒體生成等 78+ 工具。"
@@ -1673,11 +1660,8 @@ def make_response(req_id, result: dict) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
-def make_error(req_id, code: int, message: str, data=None) -> dict:
-    error = {"code": code, "message": message}
-    if data is not None:
-        error["data"] = data
-    return {"jsonrpc": "2.0", "id": req_id, "error": error}
+def make_error(req_id, code: int, message: str) -> dict:
+    return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
 
 def make_tool_text_response(text: str, *, is_error: bool = False) -> dict:
@@ -2745,17 +2729,11 @@ def build_server_capabilities() -> dict:
 
 
 def handle_initialize(req_id, params: dict) -> dict:
-    """Negotiate an initialize-based MCP version for current and older clients."""
-    client_version = str(params.get("protocolVersion") or "").strip()
-    negotiated_version = (
-        client_version if client_version in INITIALIZE_PROTOCOL_VERSIONS else PROTOCOL_VERSION
-    )
-    log(
-        "initialize: "
-        f"client protocolVersion={client_version or '<missing>'}, negotiated={negotiated_version}"
-    )
+    """舊世代握手（2025-11-25 及更早）。新世代客戶端改走 server/discover。"""
+    client_version = params.get("protocolVersion", PROTOCOL_VERSION)
+    log(f"initialize: client protocolVersion={client_version}")
     return make_response(req_id, {
-        "protocolVersion": negotiated_version,
+        "protocolVersion": client_version,
         "capabilities": build_server_capabilities(),
         "serverInfo": SERVER_INFO,
         "instructions": SERVER_INSTRUCTIONS,
@@ -2763,14 +2741,17 @@ def handle_initialize(req_id, params: dict) -> dict:
 
 
 def handle_discover(req_id, params: dict) -> dict:
-    """Return the stateless 2026 discovery shape; legacy clients use initialize."""
+    """新世代（2026-07-28）探測：一次回傳版本、能力、身分、說明。
+    這是讓現代客戶端（Claude / ChatGPT 連接器）落在 2026-07-28 的開關；
+    舊客戶端不會呼叫它，仍走上面的 initialize，兩邊都相容。"""
     log("server/discover")
     return make_response(req_id, {
-        "resultType": "complete",
-        "supportedVersions": [LATEST_PROTOCOL_VERSION],
+        "protocolVersion": LATEST_PROTOCOL_VERSION,
+        "supportedVersions": SUPPORTED_PROTOCOL_VERSIONS,
         "capabilities": build_server_capabilities(),
-        "_meta": {"io.modelcontextprotocol/serverInfo": SERVER_INFO},
+        "serverInfo": SERVER_INFO,
         "instructions": SERVER_INSTRUCTIONS,
+        # 這份結果不常變、對所有呼叫者相同 → 可快取（2026 快取提示）
         "ttlMs": 60000,
         "cacheScope": "public",
     })
@@ -3577,12 +3558,16 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 return
             if not self._ensure_mcp_request_authorized():
                 return
-            # This implementation has no server-initiated SSE stream. Streamable
-            # HTTP explicitly permits 405 for an authenticated GET in that case.
-            self.send_response(405)
-            self.send_header("Allow", "POST, OPTIONS")
+            body = json.dumps({
+                "server": SERVER_INFO,
+                "protocolVersion": PROTOCOL_VERSION,
+            }, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
             self._add_cors_headers()
             self.end_headers()
+            self.wfile.write(body)
         else:
             self.send_response(404)
             self.end_headers()
@@ -3936,9 +3921,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         if not self._ensure_mcp_request_authorized():
             return
 
-        if not self._validate_streamable_http_content_headers():
-            return
-
         # ── Origin 驗證（spec 強制，防 DNS rebinding）─────────────────────────
         origin = self.headers.get("Origin", "")
         if origin and not self._is_allowed_origin(origin):
@@ -3965,9 +3947,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(make_error(None, -32600, "Invalid Request: expected JSON object"), status=400)
             return
 
-        if not self._validate_streamable_http_metadata(msg):
-            return
-
         # ── Dispatch ──────────────────────────────────────────────────────────
         auth_kind = self._detect_mcp_auth_kind()
         auth_token = _mcp_auth_kind.set(auth_kind)
@@ -3981,12 +3960,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self.send_response(202)
             self._add_cors_headers()
             self.end_headers()
-            return
-
-        if self._is_modern_streamable_http_request(msg):
-            self._add_modern_response_metadata(response)
-            status = 404 if response.get("error", {}).get("code") == -32601 else 200
-            self._send_json(response, status=status)
             return
 
         self._send_json(response)
@@ -4168,160 +4141,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
     def _add_cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header(
-            "Access-Control-Allow-Headers",
-            "Content-Type, Authorization, Accept, MCP-Protocol-Version, Mcp-Method, Mcp-Name, "
-            "Mcp-Session-Id, Cf-Access-Jwt-Assertion, X-Handcraft-Webhook-Token, X-Webhook-Token",
-        )
-
-    def _validate_streamable_http_content_headers(self) -> bool:
-        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-        if content_type != "application/json":
-            self._send_json(make_error(None, -32600, "Content-Type must be application/json"), status=415)
-            return False
-
-        accept = self.headers.get("Accept", "")
-        accepted_types = {item.split(";", 1)[0].strip().lower() for item in accept.split(",")}
-        if not {"application/json", "text/event-stream"}.issubset(accepted_types):
-            self._send_json(
-                make_error(None, -32600, "Accept must include application/json and text/event-stream"),
-                status=406,
-            )
-            return False
-
-        return True
-
-    def _send_header_mismatch(self, req_id, message: str) -> None:
-        self._send_json(make_error(req_id, -32020, f"Header mismatch: {message}"), status=400)
-
-    def _send_unsupported_protocol_version(self, req_id, requested: str) -> None:
-        self._send_json(
-            make_error(
-                req_id,
-                -32022,
-                f"Unsupported MCP protocol version: {requested}",
-                data={"requested": requested, "supported": SUPPORTED_PROTOCOL_VERSIONS},
-            ),
-            status=400,
-        )
-
-    @staticmethod
-    def _body_meta_protocol_version(msg: dict) -> str:
-        params = msg.get("params")
-        if not isinstance(params, dict):
-            return ""
-        meta = params.get("_meta")
-        if not isinstance(meta, dict):
-            return ""
-        value = meta.get("io.modelcontextprotocol/protocolVersion")
-        return value.strip() if isinstance(value, str) else ""
-
-    @staticmethod
-    def _decode_mcp_header_value(value: str) -> str:
-        if value.startswith(MCP_HEADER_BASE64_PREFIX) or value.endswith(MCP_HEADER_BASE64_SUFFIX):
-            if not (value.startswith(MCP_HEADER_BASE64_PREFIX) and value.endswith(MCP_HEADER_BASE64_SUFFIX)):
-                raise ValueError("invalid Base64 sentinel")
-            encoded = value[len(MCP_HEADER_BASE64_PREFIX):-len(MCP_HEADER_BASE64_SUFFIX)]
-            try:
-                return base64.b64decode(encoded.encode("ascii"), validate=True).decode("utf-8")
-            except (UnicodeDecodeError, ValueError) as exc:
-                raise ValueError("invalid Base64 sentinel") from exc
-
-        if value != value.strip() or any(ord(char) < 0x20 or ord(char) > 0x7E for char in value):
-            raise ValueError("header value is not safely representable as plain ASCII")
-        return value
-
-    def _is_modern_streamable_http_request(self, msg: dict) -> bool:
-        return (
-            self.headers.get("MCP-Protocol-Version", "").strip() == LATEST_PROTOCOL_VERSION
-            and self._body_meta_protocol_version(msg) == LATEST_PROTOCOL_VERSION
-        )
-
-    def _validate_streamable_http_metadata(self, msg: dict) -> bool:
-        """Validate 2026 request metadata while retaining the 2025 initialize era."""
-        req_id = msg.get("id")
-        method = msg.get("method")
-        header_version = self.headers.get("MCP-Protocol-Version", "").strip()
-        body_version = self._body_meta_protocol_version(msg)
-
-        if header_version and header_version not in SUPPORTED_PROTOCOL_VERSIONS:
-            self._send_unsupported_protocol_version(req_id, header_version)
-            return False
-        if body_version and body_version not in SUPPORTED_PROTOCOL_VERSIONS:
-            self._send_unsupported_protocol_version(req_id, body_version)
-            return False
-
-        modern_request = (
-            method == "server/discover"
-            or header_version == LATEST_PROTOCOL_VERSION
-            or body_version == LATEST_PROTOCOL_VERSION
-        )
-        if not modern_request:
-            return True
-
-        if header_version != LATEST_PROTOCOL_VERSION:
-            self._send_header_mismatch(req_id, "MCP-Protocol-Version is required for 2026-07-28 requests")
-            return False
-        if body_version != LATEST_PROTOCOL_VERSION:
-            self._send_header_mismatch(
-                req_id,
-                "MCP-Protocol-Version does not match params._meta.io.modelcontextprotocol/protocolVersion",
-            )
-            return False
-        if not isinstance(method, str) or not method:
-            self._send_header_mismatch(req_id, "JSON-RPC method is required")
-            return False
-
-        method_header = self.headers.get("Mcp-Method", "")
-        try:
-            decoded_method = self._decode_mcp_header_value(method_header)
-        except ValueError as exc:
-            self._send_header_mismatch(req_id, f"Mcp-Method is invalid: {exc}")
-            return False
-        if not method_header or decoded_method != method:
-            self._send_header_mismatch(req_id, "Mcp-Method does not match JSON-RPC method")
-            return False
-
-        source_field = MCP_NAME_HEADER_SOURCES.get(method)
-        if not source_field:
-            return True
-        params = msg.get("params")
-        body_name = params.get(source_field) if isinstance(params, dict) else None
-        if not isinstance(body_name, str):
-            self._send_header_mismatch(req_id, f"params.{source_field} is required for {method}")
-            return False
-        name_header = self.headers.get("Mcp-Name", "")
-        try:
-            decoded_name = self._decode_mcp_header_value(name_header)
-        except ValueError as exc:
-            self._send_header_mismatch(req_id, f"Mcp-Name is invalid: {exc}")
-            return False
-        if not name_header or decoded_name != body_name:
-            self._send_header_mismatch(req_id, f"Mcp-Name does not match params.{source_field}")
-            return False
-        return True
-
-    @staticmethod
-    def _add_modern_response_metadata(response: dict) -> None:
-        result = response.get("result")
-        if not isinstance(result, dict):
-            return
-        result.setdefault("resultType", "complete")
-        meta = result.get("_meta")
-        if not isinstance(meta, dict):
-            meta = {}
-            result["_meta"] = meta
-        meta.setdefault("io.modelcontextprotocol/serverInfo", SERVER_INFO)
-
-    def do_DELETE(self):
-        if urllib.parse.urlparse(self.path).path != MCP_PATH:
-            self.send_response(404)
-            self.end_headers()
-            return
-        self.send_response(405)
-        self.send_header("Allow", "POST, OPTIONS")
-        self._add_cors_headers()
-        self.end_headers()
+        self.send_header("Access-Control-Allow-Headers",
+                         "Content-Type, Authorization, Accept, Mcp-Session-Id, Cf-Access-Jwt-Assertion, X-Handcraft-Webhook-Token, X-Webhook-Token")
 
     def _is_allowed_origin(self, origin: str) -> bool:
         try:
@@ -4377,46 +4198,43 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         return "unknown"
 
     def _ensure_mcp_request_authorized(self) -> bool:
-        """Use one explicit boundary: Access JWT on public host, bearer locally."""
+        """全綠授權責任鏈：Cloudflare Access JWT 或 Bearer（靜態 / 內建 OAuth / CIMD）
+        任一種有效即放行；只有所有方法都沒有有效憑證時才回 401。
+
+        修正重點：舊版在主網域上把 CF Access 與 Bearer 設成互斥，且 bearer fallback
+        預設關閉，導致帶「正確 Bearer OAuth token」的客戶端（Claude、ChatGPT 連接器）
+        也被誤擋成 401。改成責任鏈後，不管客戶端用哪種正統方法都會通過。
+        """
         config = self.server.config
 
+        # 完全未要求授權的設定（純本機 / 開發）→ 維持原行為，直接放行。
         if not self._mcp_auth_required():
             return True
 
+        # 方法 1：Cloudflare Access JWT（有帶且驗過就綠）
+        access_jwt = self.headers.get("Cf-Access-Jwt-Assertion", "").strip()
+        if access_jwt and config.cloudflare_access_enabled:
+            try:
+                claims = verify_cloudflare_access_jwt(access_jwt, config)
+                ident = claims.get("email") or claims.get("sub") or "cloudflare-access-user"
+                log(f"Cloudflare Access authenticated request: {ident}")
+                return True
+            except CloudflareAccessAuthError as exc:
+                log(f"Cloudflare Access JWT rejected, trying bearer: {exc}")
+
+        # 方法 2：Bearer token（靜態 MCP_API_TOKEN / 內建 OAuth / CIMD 發出的）
         auth = self.headers.get("Authorization", "")
         has_bearer = auth[:7].lower() == "bearer "
-
-        if self._requires_cloudflare_access_for_request(MCP_PATH):
-            access_jwt = self.headers.get("Cf-Access-Jwt-Assertion", "").strip()
-            if access_jwt:
-                try:
-                    claims = verify_cloudflare_access_jwt(access_jwt, config)
-                    ident = claims.get("email") or claims.get("sub") or "cloudflare-access-user"
-                    log(f"Cloudflare Access authenticated request: {ident}")
-                    return True
-                except CloudflareAccessAuthError as exc:
-                    log(f"Cloudflare Access JWT rejected: {exc}")
-
-            # This migration switch is deliberately opt-in. It supports a narrowly
-            # controlled recovery path without allowing the origin's in-memory OAuth
-            # tokens to become a public authentication boundary.
-            if (
-                config.cloudflare_access_allow_public_token_fallback
-                and has_bearer
-                and config.mcp_api_token
-                and hmac.compare_digest(auth[7:].strip(), config.mcp_api_token)
-            ):
-                log("Public MCP request accepted through explicit static-token fallback")
-                return True
-
-            self._send_cloudflare_access_unauthorized(
-                "This public endpoint requires Cloudflare Access. Complete Managed OAuth in your MCP client and retry."
-            )
-            return False
-
         if has_bearer and bearer_token_is_authorized(auth[7:].strip(), config.mcp_api_token):
             return True
 
+        # 全部方法皆無有效憑證 → 回最合適的 401（含 discovery 指標）
+        if self._requires_cloudflare_access_for_request(MCP_PATH) and not has_bearer:
+            self._send_cloudflare_access_unauthorized(
+                "This endpoint accepts a Cloudflare Access session or a valid bearer token. "
+                "Complete Managed OAuth in your MCP client and retry."
+            )
+            return False
         self._send_mcp_unauthorized(
             error="invalid_token",
             description=(
@@ -4456,7 +4274,14 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         self.send_response(401)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("WWW-Authenticate", f'Bearer error="invalid_token", error_description="{description}"')
+        self.send_header(
+            "WWW-Authenticate",
+            make_www_authenticate_header(
+                self.server.config.base_url,
+                error="invalid_token",
+                description=description,
+            ),
+        )
         self._add_cors_headers()
         self.end_headers()
         self.wfile.write(body)
@@ -4575,9 +4400,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 def validate_mcp_api_token(raw_token: str | None) -> str:
     api_token = (raw_token or "").strip()
     if not api_token:
-        raise RuntimeError(
-            "MCP_API_TOKEN is required and must be a non-empty string. Refusing to start."
-        )
+        raise RuntimeError("MCP_API_TOKEN must be set to a non-empty value before starting the HTTP server")
     return api_token
 
 
@@ -4608,15 +4431,6 @@ def validate_cloudflare_access_jwks_url(raw_url: str | None, team_domain: str) -
     if not team_domain:
         return ""
     return f"https://{team_domain}/cdn-cgi/access/certs"
-
-
-def validate_http_bind_host(raw_host: str | None) -> str:
-    candidate = (raw_host or "127.0.0.1").strip().lower()
-    if candidate not in {"127.0.0.1", "::1", "localhost", "0.0.0.0", "::"}:
-        raise RuntimeError(
-            "MCP_BIND_HOST must be a loopback address (recommended) or an explicit wildcard address"
-        )
-    return candidate
 
 
 def validate_http_startup_config() -> HandcraftServerConfig:
@@ -4676,15 +4490,13 @@ def validate_http_startup_config() -> HandcraftServerConfig:
 def main() -> None:
     try:
         config = validate_http_startup_config()
-        bind_host = validate_http_bind_host(load_http_bind_host())
     except RuntimeError as exc:
         log(f"Startup aborted: {exc}")
         raise SystemExit(1) from None
 
-    server = ThreadingHTTPServer((bind_host, PORT), MCPHTTPHandler, config=config)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), MCPHTTPHandler, config=config)
     log(f"handcraft-mcp HTTP server starting")
     log(f"Protocol : {PROTOCOL_VERSION}")
-    log(f"Bind host: {bind_host}")
     log(f"Health  : GET  http://localhost:{PORT}{HEALTH_PATH}")
     log(f"Endpoint : POST http://localhost:{PORT}{MCP_PATH}")
     log(f"Webhook : POST http://localhost:{PORT}{PACKAGE_WEBHOOK_PATH}")

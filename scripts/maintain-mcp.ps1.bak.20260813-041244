@@ -159,7 +159,7 @@ if ($PrepareDeploy) {
     $deployChecklist = [ordered]@{
         note = "PrepareDeploy only prints checklist; no wrangler deploy executed."
         steps = @(
-            "Confirm Doppler secrets for edgars-mcp / prd",
+            "Confirm doppler secrets for handcraft-mcp / prd",
             "Run maintain-mcp.ps1 -SmokeTest",
             "Run check-mcp.ps1 (local + external)",
             "Manual: review Cloudflare tunnel DNS (mcp.edgars.tools) before any deploy",

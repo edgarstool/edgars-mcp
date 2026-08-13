@@ -58,6 +58,51 @@ def load_auth_token() -> str:
     return ""
 
 
+CF_ACCESS_CLIENT_FALLBACK_PATH = os.getenv(
+    "CF_ACCESS_CLIENT_FALLBACK_PATH",
+    r"G:\EdgarsTool\Edgars_secret\CF-Access-Client.txt",
+)
+
+
+def load_cf_access_service_token_from_file() -> tuple[str, str]:
+    path = CF_ACCESS_CLIENT_FALLBACK_PATH
+    if not os.path.isfile(path):
+        return "", ""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return "", ""
+
+    client_id = ""
+    client_secret = ""
+
+    if "=" in text or ":" in text:
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+            elif ":" in line:
+                key, _, value = line.partition(":")
+            else:
+                continue
+            normalized_key = key.strip().lower()
+            if normalized_key in {"client_id", "id", "cf-access-client-id"} and not client_id:
+                client_id = value.strip()
+            elif normalized_key in {"client_secret", "secret", "cf-access-client-secret"} and not client_secret:
+                client_secret = value.strip()
+    else:
+        parts = [part.strip() for part in text.replace(",", " ").split() if part.strip()]
+        if parts:
+            client_id = parts[0]
+        if len(parts) > 1:
+            client_secret = parts[1]
+
+    return client_id, client_secret
+
+
 def load_cf_access_service_token() -> tuple[str, str]:
     client_id_names = (
         "MCP_CF_ACCESS_CLIENT_ID",
@@ -72,17 +117,18 @@ def load_cf_access_service_token() -> tuple[str, str]:
     client_id = next((os.getenv(name, "").strip() for name in client_id_names if os.getenv(name, "").strip()), "")
     client_secret = next((os.getenv(name, "").strip() for name in client_secret_names if os.getenv(name, "").strip()), "")
 
-    return client_id, client_secret
+    if client_id and client_secret:
+        return client_id, client_secret
 
-
-NEGOTIATED_PROTOCOL_VERSION = ""
+    file_id, file_secret = load_cf_access_service_token_from_file()
+    return file_id or client_id, file_secret or client_secret
 
 
 def build_request(payload: dict) -> urllib.request.Request:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
+        "Accept": "application/json",
         "X-Handcraft-Client-Mode": "stdio-local",
     }
     auth_token = load_auth_token()
@@ -92,8 +138,6 @@ def build_request(payload: dict) -> urllib.request.Request:
     if client_id and client_secret:
         headers["CF-Access-Client-Id"] = client_id
         headers["CF-Access-Client-Secret"] = client_secret
-    if NEGOTIATED_PROTOCOL_VERSION and payload.get("method") != "initialize":
-        headers["MCP-Protocol-Version"] = NEGOTIATED_PROTOCOL_VERSION
     return urllib.request.Request(MCP_URL, data=body, headers=headers, method="POST")
 
 
@@ -171,16 +215,12 @@ def run_preflight() -> None:
 
 
 def forward_to_http(payload: dict, timeout: float = REQUEST_TIMEOUT_SECONDS) -> dict | None:
-    global NEGOTIATED_PROTOCOL_VERSION
     request = build_request(payload)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         raw = response.read()
         if response.status == 202 or not raw:
             return None
-        parsed = json.loads(raw.decode("utf-8"))
-        if payload.get("method") == "initialize":
-            NEGOTIATED_PROTOCOL_VERSION = str((parsed.get("result") or {}).get("protocolVersion") or "")
-        return parsed
+        return json.loads(raw.decode("utf-8"))
 
 
 def handle_line(line: str) -> None:

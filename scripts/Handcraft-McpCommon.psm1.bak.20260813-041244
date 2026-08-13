@@ -10,7 +10,7 @@ $Script:HandcraftDefaults = [ordered]@{
     LocalBaseUrl      = "http://127.0.0.1:8765"
     PublicMcpUrl      = "https://mcp.edgars.tools/mcp"
     CloudflaredConfig = Join-Path $env:USERPROFILE ".cloudflared\config.yml"
-    DopplerProject    = "edgars-mcp"
+    DopplerProject    = "handcraft-mcp"
     DopplerConfig     = "prd"
     RuntimeRoot       = "G:\AI_WORK_512\run\mcp-handcraft"
     RepoLogDir        = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")).Path "logs")
@@ -382,7 +382,7 @@ function Invoke-HandcraftLocalMcpHandshake {
     param(
         [Parameter(Mandatory)][string]$McpUrl,
         [int]$TimeoutSec = 15,
-        [string]$DopplerProject = "edgars-mcp",
+        [string]$DopplerProject = "handcraft-mcp",
         [string]$DopplerConfig = "prd"
     )
 
@@ -404,7 +404,7 @@ function Invoke-HandcraftLocalMcpHandshake {
 
         $headers = @{
             "Content-Type"  = "application/json"
-            "Accept"        = "application/json, text/event-stream"
+            "Accept"        = "application/json"
             "Authorization" = "Bearer $token"
         }
         $body = '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'

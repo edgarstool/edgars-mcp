@@ -54,14 +54,14 @@ mcp-handcraft/
 > 最小啟動範例(`run_http.cmd` 自動走這條):
 >
 > ```powershell
-> # 1. 拿 token (需要先 doppler setup --project edgars-mcp --config prd)
+> # 1. 拿 token (需要先 doppler setup --project handcraft-mcp --config prd)
 > $env:MCP_API_TOKEN = doppler secrets get MCP_API_TOKEN --plain
 > # 2. 啟動 server
 > python .\server_http.py
 > # → 監聽 http://127.0.0.1:8765/mcp,POST 要求 Authorization: Bearer <token>
 > ```
 >
-> 缺 token 時 server 會印 `MCP_API_TOKEN is required and must be a non-empty string. Refusing to start.` 後以失敗狀態退出。
+> 缺 token 時 server 會印 `MCP_API_TOKEN is required` 後 exit。
 
 
 ### Ops 腳本 trio（建議）
@@ -147,7 +147,7 @@ Stop-Process -Id <OwningProcessId> -Force
 | 項目 | 說明 |
 |------|------|
 | Python | 3.11+ |
-| Doppler | secrets 管理，project `edgars-mcp`，config `prd` |
+| Doppler | secrets 管理，project `handcraft-mcp`，config `prd` |
 | Playwright | `powershell -File .\scripts\setup-playwright.ps1`（browser 工具需要；含 pip + Chromium） |
 | Claude Code | `winget install Anthropic.ClaudeCode` + `claude auth login` |
 | Ollama | 本地模型執行環境 |

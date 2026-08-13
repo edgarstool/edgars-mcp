@@ -23,7 +23,7 @@ function Get-HandcraftMcpToken {
 $token = Get-HandcraftMcpToken
 $headers = @{
     "Content-Type" = "application/json"
-    "Accept" = "application/json, text/event-stream"
+    "Accept" = "application/json"
     "Authorization" = "Bearer $token"
 }
 

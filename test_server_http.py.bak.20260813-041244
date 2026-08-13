@@ -1,7 +1,6 @@
 """Unit tests and smoke checks for server_http helpers."""
 
 import json
-import io
 import threading
 import urllib.error
 import urllib.parse
@@ -10,7 +9,6 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
-from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -137,7 +135,7 @@ class HttpStartupConfigTests(unittest.TestCase):
 
         self.assertEqual(1, len(created_servers))
         server = created_servers[0]
-        self.assertEqual(("127.0.0.1", server_http.PORT), server.server_address)
+        self.assertEqual(("0.0.0.0", server_http.PORT), server.server_address)
         self.assertIs(server_http.MCPHTTPHandler, server.handler_class)
         self.assertEqual("secret-token", server.config.mcp_api_token)
         self.assertEqual("https://mcp.example.test", server.config.base_url)
@@ -156,24 +154,16 @@ class HttpStartupConfigTests(unittest.TestCase):
                 with patch.dict("os.environ", environment, clear=True), patch(
                     "server_http.ThreadingHTTPServer"
                 ) as server_class:
-                    output = io.StringIO()
-                    with redirect_stderr(output), self.assertRaises(SystemExit) as raised:
+                    with self.assertRaises(SystemExit) as raised:
                         server_http.main()
 
                 self.assertEqual(1, raised.exception.code)
-                self.assertIn(
-                    "MCP_API_TOKEN is required and must be a non-empty string. Refusing to start.",
-                    output.getvalue(),
-                )
                 server_class.assert_not_called()
 
     def test_mcp_api_token_requires_present_value(self):
         for raw_token in (None, "", "   ", "\t\r\n"):
             with self.subTest(raw_token=raw_token):
-                with self.assertRaisesRegex(
-                    RuntimeError,
-                    "MCP_API_TOKEN is required and must be a non-empty string. Refusing to start.",
-                ):
+                with self.assertRaisesRegex(RuntimeError, "MCP_API_TOKEN must be set"):
                     validate_mcp_api_token(raw_token)
 
     def test_mcp_api_token_trims_configured_value(self):
@@ -183,12 +173,6 @@ class HttpStartupConfigTests(unittest.TestCase):
         self.assertEqual("https://mcp.edgars.tools", server_http.validate_base_url(None))
         self.assertEqual("https://mcp.edgars.tools", server_http.validate_base_url(""))
         self.assertEqual("https://custom.example", server_http.validate_base_url("  https://custom.example  "))
-
-    def test_http_bind_host_defaults_to_loopback_and_allows_explicit_wildcard(self):
-        self.assertEqual("127.0.0.1", server_http.validate_http_bind_host(None))
-        self.assertEqual("0.0.0.0", server_http.validate_http_bind_host(" 0.0.0.0 "))
-        with self.assertRaisesRegex(RuntimeError, "MCP_BIND_HOST"):
-            server_http.validate_http_bind_host("192.168.1.15")
 
     def test_http_startup_config_reads_environment_into_config_object(self):
         with patch.dict(
@@ -354,7 +338,7 @@ class OAuthFlowTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-    def test_authenticated_get_mcp_returns_405_when_sse_is_not_supported(self):
+    def test_get_mcp_with_bearer_token_returns_server_info(self):
         server, thread, base = self._start_server()
         try:
             req = urllib.request.Request(
@@ -362,10 +346,12 @@ class OAuthFlowTests(unittest.TestCase):
                 headers={"Authorization": "Bearer secret-token"},
                 method="GET",
             )
-            with self.assertRaises(urllib.error.HTTPError) as raised:
-                urllib.request.urlopen(req, timeout=5)
-            self.assertEqual(405, raised.exception.code)
-            self.assertEqual("POST, OPTIONS", raised.exception.headers["Allow"])
+            with urllib.request.urlopen(req, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(200, response.status)
+            self.assertEqual(server_http.SERVER_INFO, payload["server"])
+            self.assertEqual(server_http.PROTOCOL_VERSION, payload["protocolVersion"])
         finally:
             server.shutdown()
             server.server_close()
@@ -398,219 +384,6 @@ class OAuthFlowTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
-
-    def test_streamable_http_initialize_then_tools_list(self):
-        server, thread, base = self._start_server()
-        try:
-            common_headers = {
-                "Authorization": "Bearer secret-token",
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream",
-            }
-            initialize_body = json.dumps({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-11-25",
-                    "capabilities": {},
-                    "clientInfo": {"name": "regression-client", "version": "1.0"},
-                },
-            }).encode("utf-8")
-            initialize_request = urllib.request.Request(
-                f"{base}/mcp", data=initialize_body, headers=common_headers, method="POST"
-            )
-            with urllib.request.urlopen(initialize_request, timeout=5) as response:
-                initialized = json.loads(response.read().decode("utf-8"))
-            self.assertEqual("2025-11-25", initialized["result"]["protocolVersion"])
-            self.assertEqual("application/json", response.headers.get_content_type())
-
-            notification = json.dumps({
-                "jsonrpc": "2.0", "method": "notifications/initialized", "params": {}
-            }).encode("utf-8")
-            notification_headers = {
-                **common_headers,
-                "MCP-Protocol-Version": initialized["result"]["protocolVersion"],
-            }
-            notification_request = urllib.request.Request(
-                f"{base}/mcp", data=notification, headers=notification_headers, method="POST"
-            )
-            with urllib.request.urlopen(notification_request, timeout=5) as response:
-                self.assertEqual(202, response.status)
-                self.assertEqual(b"", response.read())
-
-            tools_body = json.dumps({
-                "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}
-            }).encode("utf-8")
-            tools_request = urllib.request.Request(
-                f"{base}/mcp", data=tools_body, headers=notification_headers, method="POST"
-            )
-            with urllib.request.urlopen(tools_request, timeout=5) as response:
-                tools = json.loads(response.read().decode("utf-8"))
-            self.assertGreater(len(tools["result"]["tools"]), 0)
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=5)
-
-    def test_initialize_negotiates_supported_version_instead_of_echoing_unknown(self):
-        response = server_http.handle_initialize(
-            1,
-            {
-                "protocolVersion": "2099-01-01",
-                "capabilities": {},
-                "clientInfo": {"name": "future-client", "version": "1"},
-            },
-        )
-        self.assertEqual(server_http.PROTOCOL_VERSION, response["result"]["protocolVersion"])
-
-    def test_streamable_http_rejects_incomplete_accept_header(self):
-        server, thread, base = self._start_server()
-        try:
-            body = json.dumps({
-                "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}
-            }).encode("utf-8")
-            request = urllib.request.Request(
-                f"{base}/mcp",
-                data=body,
-                headers={
-                    "Authorization": "Bearer secret-token",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-                method="POST",
-            )
-            with self.assertRaises(urllib.error.HTTPError) as raised:
-                urllib.request.urlopen(request, timeout=5)
-            self.assertEqual(406, raised.exception.code)
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=5)
-
-    @staticmethod
-    def _modern_request_body(method: str, request_id: int = 1, **params) -> bytes:
-        modern_meta = {
-            "io.modelcontextprotocol/protocolVersion": server_http.LATEST_PROTOCOL_VERSION,
-            "io.modelcontextprotocol/clientInfo": {"name": "modern-regression", "version": "1.0"},
-            "io.modelcontextprotocol/clientCapabilities": {},
-        }
-        return json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": method,
-                "params": {**params, "_meta": modern_meta},
-            }
-        ).encode("utf-8")
-
-    @staticmethod
-    def _modern_headers(method: str, **extra_headers) -> dict:
-        return {
-            "Authorization": "Bearer secret-token",
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-            "MCP-Protocol-Version": server_http.LATEST_PROTOCOL_VERSION,
-            "Mcp-Method": method,
-            **extra_headers,
-        }
-
-    def test_modern_streamable_http_discover_then_tools_list(self):
-        server, thread, base = self._start_server()
-        try:
-            discover_request = urllib.request.Request(
-                f"{base}/mcp",
-                data=self._modern_request_body("server/discover"),
-                headers=self._modern_headers("server/discover"),
-                method="POST",
-            )
-            with urllib.request.urlopen(discover_request, timeout=5) as response:
-                discovered = json.loads(response.read().decode("utf-8"))
-            discover_result = discovered["result"]
-            self.assertEqual("complete", discover_result["resultType"])
-            self.assertEqual([server_http.LATEST_PROTOCOL_VERSION], discover_result["supportedVersions"])
-            self.assertEqual(server_http.SERVER_INFO, discover_result["_meta"]["io.modelcontextprotocol/serverInfo"])
-            self.assertNotIn("serverInfo", discover_result)
-
-            tools_request = urllib.request.Request(
-                f"{base}/mcp",
-                data=self._modern_request_body("tools/list", request_id=2),
-                headers=self._modern_headers("tools/list"),
-                method="POST",
-            )
-            with urllib.request.urlopen(tools_request, timeout=5) as response:
-                listed = json.loads(response.read().decode("utf-8"))
-            tools_result = listed["result"]
-            self.assertEqual("complete", tools_result["resultType"])
-            self.assertEqual(server_http.SERVER_INFO, tools_result["_meta"]["io.modelcontextprotocol/serverInfo"])
-            self.assertGreater(len(tools_result["tools"]), 0)
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=5)
-
-    def test_modern_streamable_http_rejects_missing_or_mismatched_standard_headers(self):
-        server, thread, base = self._start_server()
-        try:
-            cases = [
-                (
-                    "missing-version",
-                    self._modern_request_body("server/discover"),
-                    {
-                        "Authorization": "Bearer secret-token",
-                        "Content-Type": "application/json",
-                        "Accept": "application/json, text/event-stream",
-                        "Mcp-Method": "server/discover",
-                    },
-                ),
-                (
-                    "method-mismatch",
-                    self._modern_request_body("tools/list"),
-                    self._modern_headers("ping"),
-                ),
-                (
-                    "missing-name",
-                    self._modern_request_body("tools/call", name="fs_disk_info", arguments={}),
-                    self._modern_headers("tools/call"),
-                ),
-            ]
-            for label, body, headers in cases:
-                with self.subTest(label=label):
-                    request = urllib.request.Request(f"{base}/mcp", data=body, headers=headers, method="POST")
-                    with self.assertRaises(urllib.error.HTTPError) as raised:
-                        urllib.request.urlopen(request, timeout=5)
-                    self.assertEqual(400, raised.exception.code)
-                    payload = json.loads(raised.exception.read().decode("utf-8"))
-                    self.assertEqual(-32020, payload["error"]["code"])
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=5)
-
-    def test_modern_streamable_http_rejects_unknown_protocol_version_with_supported_list(self):
-        server, thread, base = self._start_server()
-        try:
-            body = self._modern_request_body("tools/list")
-            headers = self._modern_headers("tools/list")
-            headers["MCP-Protocol-Version"] = "2099-01-01"
-            request = urllib.request.Request(f"{base}/mcp", data=body, headers=headers, method="POST")
-            with self.assertRaises(urllib.error.HTTPError) as raised:
-                urllib.request.urlopen(request, timeout=5)
-            self.assertEqual(400, raised.exception.code)
-            payload = json.loads(raised.exception.read().decode("utf-8"))
-            self.assertEqual(-32022, payload["error"]["code"])
-            self.assertEqual("2099-01-01", payload["error"]["data"]["requested"])
-            self.assertIn(server_http.LATEST_PROTOCOL_VERSION, payload["error"]["data"]["supported"])
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=5)
-
-    def test_modern_mcp_name_base64_sentinel_decodes_before_comparison(self):
-        encoded = "=?base64?ZnNfZGlza19pbmZv?="
-        self.assertEqual("fs_disk_info", MCPHTTPHandler._decode_mcp_header_value(encoded))
-        with self.assertRaises(ValueError):
-            MCPHTTPHandler._decode_mcp_header_value("=?base64?not-valid?=")
 
     def test_register_rejects_missing_redirect_uris(self):
         server, thread, base = self._start_server()
@@ -709,7 +482,6 @@ class OAuthFlowTests(unittest.TestCase):
                 headers={
                     "Authorization": f"Bearer {access_token}",
                     "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
                 },
                 method="POST",
             )
@@ -1211,7 +983,6 @@ class CloudflareAccessModeTests(unittest.TestCase):
                     "Host": "mcp.example.test",
                     "Cf-Access-Jwt-Assertion": "signed.jwt.token",
                     "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
                 },
                 method="POST",
             )
@@ -1242,7 +1013,6 @@ class CloudflareAccessModeTests(unittest.TestCase):
                 headers={
                     "Authorization": "Bearer secret-token",
                     "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
                 },
                 method="POST",
             )
@@ -1256,7 +1026,7 @@ class CloudflareAccessModeTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-    def test_public_mcp_rejects_static_bearer_without_explicit_fallback(self):
+    def test_public_mcp_accepts_bearer_even_with_spoofed_forwarded_host(self):
         server, thread, base = self._start_server()
         try:
             body = json.dumps({
@@ -1271,49 +1041,14 @@ class CloudflareAccessModeTests(unittest.TestCase):
                 headers={
                     "Authorization": "Bearer secret-token",
                     "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
                     "Host": "mcp.example.test",
                     "X-Forwarded-Host": "127.0.0.1",
                 },
                 method="POST",
             )
-            with self.assertRaises(urllib.error.HTTPError) as raised:
-                urllib.request.urlopen(req, timeout=5)
-            self.assertEqual(401, raised.exception.code)
-            self.assertNotIn("resource_metadata", raised.exception.headers["WWW-Authenticate"])
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=5)
-
-    def test_public_mcp_allows_static_bearer_only_when_explicit_fallback_is_enabled(self):
-        config = HandcraftServerConfig(
-            mcp_api_token="secret-token",
-            base_url="https://mcp.example.test",
-            cloudflare_access_enabled=True,
-            cloudflare_access_team_domain="team.example.cloudflareaccess.com",
-            cloudflare_access_aud="aud-123",
-            cloudflare_access_jwks_url="https://team.example.cloudflareaccess.com/cdn-cgi/access/certs",
-            cloudflare_access_allow_public_token_fallback=True,
-        )
-        server, thread, base = self._start_server(config=config)
-        try:
-            body = json.dumps({
-                "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}
-            }).encode("utf-8")
-            req = urllib.request.Request(
-                f"{base}/mcp",
-                data=body,
-                headers={
-                    "Authorization": "Bearer secret-token",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
-                    "Host": "mcp.example.test",
-                },
-                method="POST",
-            )
             with urllib.request.urlopen(req, timeout=5) as response:
                 payload = json.loads(response.read().decode("utf-8"))
+
             self.assertEqual(200, response.status)
             self.assertIn("tools", payload["result"])
         finally:
@@ -1366,7 +1101,7 @@ class CloudflareAccessModeTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-    def test_public_mcp_get_with_bearer_returns_405_when_sse_is_not_supported(self):
+    def test_public_mcp_get_allows_bearer_when_access_fallback_is_enabled(self):
         config = HandcraftServerConfig(
             mcp_api_token="secret-token",
             base_url="https://mcp.example.test",
@@ -1385,9 +1120,12 @@ class CloudflareAccessModeTests(unittest.TestCase):
                     "Host": "mcp.example.test",
                 },
             )
-            with self.assertRaises(urllib.error.HTTPError) as raised:
-                urllib.request.urlopen(req, timeout=5)
-            self.assertEqual(405, raised.exception.code)
+            with urllib.request.urlopen(req, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(200, response.status)
+            self.assertEqual(server_http.SERVER_INFO, payload["server"])
+            self.assertEqual(server_http.PROTOCOL_VERSION, payload["protocolVersion"])
         finally:
             server.shutdown()
             server.server_close()
@@ -1501,7 +1239,6 @@ class HonchoMcpFacadeTests(unittest.TestCase):
                 headers={
                     "Authorization": "Bearer secret-token",
                     "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
                 },
                 method="POST",
             )
@@ -1574,7 +1311,6 @@ class HonchoMcpFacadeTests(unittest.TestCase):
                 headers={
                     "Authorization": "Bearer secret-token",
                     "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
                 },
                 method="POST",
             )

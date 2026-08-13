@@ -1,0 +1,58 @@
+{
+  "account_id": "<cloudflare-account-id>",
+  "portal": {
+    "id": "edgars-entry",
+    "name": "edgars-entry",
+    "url": "https://entry.edgars.tools/mcp",
+    "service_token_supported": true
+  },
+  "servers": [
+    {
+      "id": "edgars-mcp",
+      "name": "edgars mcp",
+      "url": "https://mcp.edgars.tools/mcp",
+      "auth_type": "bearer",
+      "auth_secret_ref": "SecretManager:MCP_API_TOKEN",
+      "require_user_auth": false,
+      "integrated_capabilities": [
+        {
+          "id": "honcho",
+          "tool_prefix": "honcho__",
+          "upstream_url": "https://mcp.honcho.dev",
+          "origin_secret_refs": [
+            "OriginSecret:HONCHO_API_KEY",
+            "OriginSecret:HONCHO_USER_NAME",
+            "OriginSecret:HONCHO_WORKSPACE_ID",
+            "OriginSecret:HONCHO_ASSISTANT_NAME"
+          ],
+          "notes": "Do not register honcho as a separate Cloudflare AI Controls MCP server. edgars-mcp fetches Honcho tools/list and proxies honcho__* tools/call server-side."
+        }
+      ],
+      "notes": "Machine route must not be intercepted by Cloudflare Access login HTML. Origin validates Authorization: Bearer. Honcho memory tools are exposed through this server with the honcho__ prefix."
+    },
+    {
+      "id": "cloudflare-api",
+      "name": "cloudflare-api",
+      "url": "https://mcp.cloudflare.com/mcp",
+      "auth_type": "oauth_or_bearer",
+      "require_user_auth": true,
+      "notes": "Use Cloudflare's managed MCP server when the agent needs Cloudflare API access."
+    }
+  ],
+  "deprecated_servers": [
+    {
+      "id": "honcho",
+      "old_url": "https://honcho-mcp.edgars.tools/mcp",
+      "reason": "Replaced by edgars-mcp integrated honcho__* tools. The old facade may remain for debug/fallback, but it should not be added to edgars-entry portal."
+    }
+  ],
+  "machine_access": {
+    "preferred": "Cloudflare MCP Portal service token",
+    "headers": [
+      "CF-Access-Client-Id",
+      "CF-Access-Client-Secret"
+    ],
+    "portal_policy": "Service Auth policy on portal Access application",
+    "server_policy": "Service Auth policy on each linked MCP server Access application when Access is used"
+  }
+}

@@ -2,6 +2,7 @@
 
 import json
 import io
+import jsonschema
 import threading
 import urllib.error
 import urllib.parse
@@ -208,6 +209,28 @@ class HttpStartupConfigTests(unittest.TestCase):
             ),
             config,
         )
+
+    def test_chatgpt_honcho_access_mode_fails_fast_without_dedicated_audience(self):
+        """The fixed-scope gateway must not accidentally share the broad MCP audience."""
+        environment = {
+            "MCP_API_TOKEN": "test-token",
+            "MCP_CLOUDFLARE_ACCESS_ENABLED": "true",
+            "MCP_CLOUDFLARE_ACCESS_TEAM_DOMAIN": "team.example.cloudflareaccess.com",
+            "MCP_CLOUDFLARE_ACCESS_AUD": "broad-mcp-audience",
+            "MCP_CLOUDFLARE_ACCESS_JWKS_URL": (
+                "https://team.example.cloudflareaccess.com/cdn-cgi/access/certs"
+            ),
+            "HONCHO_CHATGPT_GATEWAY_ENABLED": "true",
+            "HONCHO_API_KEY": "test-honcho-api-key",
+        }
+        with patch.dict("os.environ", environment, clear=True), patch.object(
+            server_http, "jwt", object()
+        ), patch.object(server_http, "PyJWKClient", object()):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "MCP_CLOUDFLARE_ACCESS_CHATGPT_HONCHO_AUD is required",
+            ):
+                validate_http_startup_config()
 
     def test_http_servers_keep_separate_auth_config(self):
         first_config = HandcraftServerConfig(mcp_api_token="first-token", base_url="https://first.example")
@@ -1393,6 +1416,152 @@ class CloudflareAccessModeTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    def test_public_chatgpt_honcho_rejects_static_bearer_even_when_legacy_fallback_is_enabled(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            cloudflare_access_enabled=True,
+            cloudflare_access_team_domain="team.example.cloudflareaccess.com",
+            cloudflare_access_aud="aud-123",
+            cloudflare_access_chatgpt_honcho_aud="chatgpt-honcho-aud",
+            cloudflare_access_jwks_url="https://team.example.cloudflareaccess.com/cdn-cgi/access/certs",
+            cloudflare_access_allow_public_token_fallback=True,
+            honcho_chatgpt_gateway_enabled=True,
+        )
+        server, thread, base = self._start_server(config=config)
+        try:
+            body = json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/chatgpt-honcho",
+                data=body,
+                headers={
+                    "Authorization": "Bearer secret-token",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    "Host": "mcp.example.test",
+                },
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(req, timeout=5)
+
+            self.assertEqual(401, raised.exception.code)
+            payload = json.loads(raised.exception.read().decode("utf-8"))
+            self.assertEqual("cloudflare_access_required", payload["error"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_public_chatgpt_honcho_accepts_only_its_dedicated_access_audience(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            cloudflare_access_enabled=True,
+            cloudflare_access_team_domain="team.example.cloudflareaccess.com",
+            cloudflare_access_aud="aud-123",
+            cloudflare_access_chatgpt_honcho_aud="chatgpt-honcho-aud",
+            cloudflare_access_jwks_url="https://team.example.cloudflareaccess.com/cdn-cgi/access/certs",
+            honcho_chatgpt_gateway_enabled=True,
+        )
+        server, thread, base = self._start_server(config=config)
+        try:
+            body = json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/chatgpt-honcho",
+                data=body,
+                headers={
+                    "Cf-Access-Jwt-Assertion": "signed.jwt.token",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    "Host": "mcp.example.test",
+                },
+                method="POST",
+            )
+            with patch.object(
+                server_http,
+                "verify_cloudflare_access_jwt",
+                return_value={"email": "edgar@example.com"},
+            ) as verify:
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(200, response.status)
+            self.assertEqual(
+                ["recall_edgar_memory", "remember_edgar_memory"],
+                [tool["name"] for tool in payload["result"]["tools"]],
+            )
+            self.assertEqual(
+                "chatgpt-honcho-aud",
+                verify.call_args.kwargs["audience"],
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_public_chatgpt_honcho_access_claim_identity_is_not_logged(self):
+        """The dedicated memory route must retain only a fixed Access success audit event."""
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            cloudflare_access_enabled=True,
+            cloudflare_access_team_domain="team.example.cloudflareaccess.com",
+            cloudflare_access_aud="aud-123",
+            cloudflare_access_chatgpt_honcho_aud="chatgpt-honcho-aud",
+            cloudflare_access_jwks_url="https://team.example.cloudflareaccess.com/cdn-cgi/access/certs",
+            honcho_chatgpt_gateway_enabled=True,
+        )
+        claims = {
+            "email": "synthetic-chatgpt-honcho-identity@example.test",
+            "sub": "synthetic-chatgpt-honcho-subject-8c1f",
+        }
+        log_messages = []
+        server, thread, base = self._start_server(config=config)
+        try:
+            body = json.dumps(
+                {"jsonrpc": "2.0", "id": 114, "method": "tools/list", "params": {}}
+            ).encode("utf-8")
+            request = urllib.request.Request(
+                f"{base}{server_http.CHATGPT_HONCHO_MCP_PATH}",
+                data=body,
+                headers={
+                    "Cf-Access-Jwt-Assertion": "synthetic-access-jwt",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    "Host": "mcp.example.test",
+                },
+                method="POST",
+            )
+            with patch.object(
+                server_http,
+                "verify_cloudflare_access_jwt",
+                return_value=claims,
+            ), patch.object(server_http, "log", side_effect=log_messages.append):
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(200, response.status)
+            self.assertEqual(
+                ["recall_edgar_memory", "remember_edgar_memory"],
+                [tool["name"] for tool in payload["result"]["tools"]],
+            )
+            all_logs = "\n".join(log_messages)
+            self.assertIn(
+                "Cloudflare Access authenticated ChatGPT Honcho gateway request",
+                all_logs,
+            )
+            self.assertNotIn(claims["email"], all_logs)
+            self.assertNotIn(claims["sub"], all_logs)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_package_webhook_can_require_shared_secret(self):
         config = HandcraftServerConfig(
             mcp_api_token="secret-token",
@@ -1794,6 +1963,703 @@ class HonchoMcpFacadeTests(unittest.TestCase):
             self.assertEqual(server_http.HONCHO_MCP_UPSTREAM_URL, captured["url"])
             self.assertEqual("GET", captured["method"])
             self.assertEqual("Bearer honcho-secret", captured["headers"]["Authorization"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+
+class ChatGptHonchoGatewayTests(unittest.TestCase):
+    """Loopback coverage for the deliberately narrow ChatGPT Honcho gateway."""
+
+    def _start_server(self, config=None):
+        config = config or HandcraftServerConfig(
+            mcp_api_token="test-chatgpt-gateway-token",
+            base_url="https://mcp.example.test",
+            honcho_api_key="test-honcho-api-key",
+            honcho_chatgpt_gateway_enabled=True,
+            honcho_chatgpt_write_enabled=True,
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MCPHTTPHandler, config=config)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread, f"http://127.0.0.1:{server.server_address[1]}"
+
+    @staticmethod
+    def _post_mcp(
+        base: str,
+        method: str,
+        params: dict,
+        request_id: int = 1,
+        headers: dict | None = None,
+    ) -> tuple[int, dict]:
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            }
+        ).encode("utf-8")
+        request_headers = {
+            "Authorization": "Bearer test-chatgpt-gateway-token",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        request_headers.update(headers or {})
+        request = urllib.request.Request(
+            f"{base}{server_http.CHATGPT_HONCHO_MCP_PATH}",
+            data=body,
+            headers=request_headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+
+    @staticmethod
+    def _modern_mcp_params() -> dict:
+        return {
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": server_http.LATEST_PROTOCOL_VERSION,
+                "io.modelcontextprotocol/clientInfo": {
+                    "name": "chatgpt-honcho-gateway-test",
+                    "version": "1.0",
+                },
+                "io.modelcontextprotocol/clientCapabilities": {},
+            }
+        }
+
+    @staticmethod
+    def _modern_mcp_headers(method: str, tool_name: str | None = None) -> dict:
+        headers = {
+            "MCP-Protocol-Version": server_http.LATEST_PROTOCOL_VERSION,
+            "Mcp-Method": method,
+        }
+        if tool_name is not None:
+            headers["Mcp-Name"] = tool_name
+        return headers
+
+    def _chatgpt_tool_schemas(self, base: str) -> dict[str, dict]:
+        status, payload = self._post_mcp(base, "tools/list", {}, request_id=101)
+        self.assertEqual(200, status)
+        return {
+            tool["name"]: tool["outputSchema"]
+            for tool in payload["result"]["tools"]
+        }
+
+    def test_loopback_tools_list_is_exactly_the_safe_static_surface(self):
+        server, thread, base = self._start_server()
+        try:
+            status, payload = self._post_mcp(base, "tools/list", {}, request_id=1)
+
+            self.assertEqual(200, status)
+            tools = payload["result"]["tools"]
+            self.assertEqual(
+                ["recall_edgar_memory", "remember_edgar_memory"],
+                [tool["name"] for tool in tools],
+            )
+            self.assertEqual(2, len(tools))
+            self.assertFalse(any(tool["name"].startswith("honcho__") for tool in tools))
+
+            recall = tools[0]
+            self.assertEqual(
+                {
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "idempotentHint": True,
+                    "openWorldHint": False,
+                },
+                recall["annotations"],
+            )
+            write = tools[1]
+            self.assertEqual(
+                {
+                    "readOnlyHint": False,
+                    "destructiveHint": True,
+                    "idempotentHint": False,
+                    "openWorldHint": False,
+                },
+                write["annotations"],
+            )
+            self.assertFalse(write["inputSchema"]["additionalProperties"])
+            self.assertEqual(True, write["inputSchema"]["properties"]["confirm"]["const"])
+            self.assertEqual(
+                ["scope", "notice", "representation"],
+                recall["outputSchema"]["required"],
+            )
+            self.assertEqual(
+                ["status", "scope", "category", "saved_count"],
+                write["outputSchema"]["required"],
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_initialize_discover_and_modern_metadata_keep_the_gateway_identity(self):
+        server, thread, base = self._start_server()
+        try:
+            status, initialized = self._post_mcp(
+                base,
+                "initialize",
+                {"protocolVersion": server_http.LATEST_PROTOCOL_VERSION},
+                request_id=102,
+            )
+            self.assertEqual(200, status)
+            initialize_result = initialized["result"]
+            self.assertEqual(server_http.CHATGPT_HONCHO_SERVER_INFO, initialize_result["serverInfo"])
+            self.assertEqual(
+                server_http.CHATGPT_HONCHO_SERVER_INSTRUCTIONS,
+                initialize_result["instructions"],
+            )
+            self.assertNotIn("78+", initialize_result["instructions"])
+
+            status, discovered = self._post_mcp(
+                base,
+                "server/discover",
+                self._modern_mcp_params(),
+                request_id=103,
+                headers=self._modern_mcp_headers("server/discover"),
+            )
+            self.assertEqual(200, status)
+            discover_result = discovered["result"]
+            self.assertEqual("complete", discover_result["resultType"])
+            self.assertEqual(
+                server_http.CHATGPT_HONCHO_SERVER_INFO,
+                discover_result["_meta"]["io.modelcontextprotocol/serverInfo"],
+            )
+            self.assertNotIn("78+", discover_result["instructions"])
+
+            status, listed = self._post_mcp(
+                base,
+                "tools/list",
+                self._modern_mcp_params(),
+                request_id=104,
+                headers=self._modern_mcp_headers("tools/list"),
+            )
+            self.assertEqual(200, status)
+            list_result = listed["result"]
+            self.assertEqual("complete", list_result["resultType"])
+            self.assertEqual(
+                server_http.CHATGPT_HONCHO_SERVER_INFO,
+                list_result["_meta"]["io.modelcontextprotocol/serverInfo"],
+            )
+            self.assertEqual(
+                ["recall_edgar_memory", "remember_edgar_memory"],
+                [tool["name"] for tool in list_result["tools"]],
+            )
+            serialized = json.dumps(
+                {"initialize": initialize_result, "discover": discover_result, "list": list_result},
+                ensure_ascii=False,
+            )
+            self.assertNotIn("78+", serialized)
+            self.assertNotIn(server_http.SERVER_INFO["name"], serialized)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_loopback_recall_has_fixed_scope_and_rejects_scope_override(self):
+        calls = []
+        query = "private-query-for-fixed-scope-test"
+
+        def fake_honcho_api(config, method, relative_path, body=None, **kwargs):
+            calls.append(
+                {
+                    "method": method,
+                    "path": relative_path,
+                    "body": body,
+                    "has_config": config is not None,
+                }
+            )
+            return {"representation": "Curated representation only."}
+
+        server, thread, base = self._start_server()
+        try:
+            schemas = self._chatgpt_tool_schemas(base)
+            with patch.object(server_http, "call_honcho_api_json", side_effect=fake_honcho_api):
+                status, payload = self._post_mcp(
+                    base,
+                    "tools/call",
+                    {
+                        "name": "recall_edgar_memory",
+                        "arguments": {"query": query},
+                    },
+                    request_id=2,
+                )
+                self.assertEqual(200, status)
+                self.assertFalse(tool_is_error(payload))
+
+                _, override_payload = self._post_mcp(
+                    base,
+                    "tools/call",
+                    {
+                        "name": "recall_edgar_memory",
+                        "arguments": {
+                            "query": query,
+                            "workspace": "another-workspace",
+                            "peer": "another-peer",
+                        },
+                    },
+                    request_id=3,
+                )
+
+            self.assertTrue(tool_is_error(override_payload))
+            self.assertEqual(1, len(calls))
+            self.assertTrue(calls[0]["has_config"])
+            self.assertEqual("POST", calls[0]["method"])
+            self.assertEqual(
+                "/workspaces/edgar-team/peers/edgar/representation",
+                calls[0]["path"],
+            )
+            self.assertEqual(
+                {
+                    "search_query": query,
+                    "search_top_k": 10,
+                    "search_max_distance": 0.5,
+                    "include_most_frequent": False,
+                    "max_conclusions": 5,
+                },
+                calls[0]["body"],
+            )
+            self.assertEqual(
+                {"workspace": "edgar-team", "peer": "edgar", "mode": "curated_representation"},
+                payload["result"]["structuredContent"]["scope"],
+            )
+            jsonschema.Draft202012Validator(
+                schemas["recall_edgar_memory"]
+            ).validate(payload["result"]["structuredContent"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_loopback_remember_requires_confirm_and_uses_fixed_append_only_endpoint(self):
+        calls = []
+        log_messages = []
+        content = "Remember this synthetic append-only gateway test decision."
+
+        def fake_honcho_api(config, method, relative_path, body=None, **kwargs):
+            calls.append({"method": method, "path": relative_path, "body": body, "kwargs": kwargs})
+            stored_content = server_http._chatgpt_honcho_stored_conclusion_content("decision", content)
+            return [{
+                "id": "synthetic-conclusion",
+                "content": stored_content,
+                "observer_id": "edgar",
+                "observed_id": "edgar",
+            }]
+
+        server, thread, base = self._start_server()
+        try:
+            schemas = self._chatgpt_tool_schemas(base)
+            with patch.object(server_http, "log", side_effect=log_messages.append), patch.object(
+                server_http,
+                "call_honcho_api_json",
+                side_effect=fake_honcho_api,
+            ):
+                _, unconfirmed = self._post_mcp(
+                    base,
+                    "tools/call",
+                    {
+                        "name": "remember_edgar_memory",
+                        "arguments": {
+                            "content": content,
+                            "category": "decision",
+                        },
+                    },
+                    request_id=4,
+                )
+                self.assertTrue(tool_is_error(unconfirmed))
+                self.assertEqual([], calls)
+
+                status, saved = self._post_mcp(
+                    base,
+                    "tools/call",
+                    {
+                        "name": "remember_edgar_memory",
+                        "arguments": {
+                            "content": content,
+                            "category": "decision",
+                            "confirm": True,
+                        },
+                    },
+                    request_id=5,
+                )
+                self.assertEqual(200, status)
+                self.assertFalse(tool_is_error(saved))
+
+                _, override_payload = self._post_mcp(
+                    base,
+                    "tools/call",
+                    {
+                        "name": "remember_edgar_memory",
+                        "arguments": {
+                            "content": content,
+                            "category": "decision",
+                            "confirm": True,
+                            "workspace": "another-workspace",
+                        },
+                    },
+                    request_id=6,
+                )
+
+            self.assertTrue(tool_is_error(override_payload))
+            self.assertEqual(1, len(calls))
+            self.assertEqual("POST", calls[0]["method"])
+            self.assertEqual("/workspaces/edgar-team/conclusions", calls[0]["path"])
+            self.assertEqual(
+                {
+                    "conclusions": [
+                        {
+                            "content": "[category:decision]\\n" + content,
+                            "observer_id": "edgar",
+                            "observed_id": "edgar",
+                            "session_id": None,
+                        }
+                    ]
+                },
+                calls[0]["body"],
+            )
+            self.assertEqual(frozenset({201}), calls[0]["kwargs"]["expected_statuses"])
+            self.assertEqual(
+                {"workspace": "edgar-team", "peer": "edgar", "mode": "append_only_conclusion"},
+                saved["result"]["structuredContent"]["scope"],
+            )
+            self.assertEqual("decision", saved["result"]["structuredContent"]["category"])
+            self.assertEqual(1, saved["result"]["structuredContent"]["saved_count"])
+            self.assertNotIn(content, "\n".join(log_messages))
+            jsonschema.Draft202012Validator(
+                schemas["remember_edgar_memory"]
+            ).validate(saved["result"]["structuredContent"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_loopback_unknown_tool_is_rejected_without_upstream_call(self):
+        server, thread, base = self._start_server()
+        try:
+            with patch.object(server_http, "call_honcho_api_json") as honcho_api:
+                status, payload = self._post_mcp(
+                    base,
+                    "tools/call",
+                    {
+                        "name": "honcho__arbitrary_upstream_tool",
+                        "arguments": {},
+                    },
+                    request_id=7,
+                )
+
+            self.assertEqual(200, status)
+            self.assertTrue(tool_is_error(payload))
+            honcho_api.assert_not_called()
+            self.assertIn(
+                "not available",
+                payload["result"]["content"][0]["text"].lower(),
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_malformed_honcho_create_responses_are_never_reported_as_saved(self):
+        content = "Remember this synthetic malformed-response gateway test."
+        stored_content = server_http._chatgpt_honcho_stored_conclusion_content(
+            "decision", content
+        )
+        malformed_responses = {
+            "empty-list": [],
+            "object-instead-of-list": {},
+            "empty-item": [{}],
+            "missing-id": [
+                {
+                    "content": stored_content,
+                    "observer_id": "edgar",
+                    "observed_id": "edgar",
+                }
+            ],
+            "mismatched-content": [
+                {
+                    "id": "synthetic-conclusion",
+                    "content": "[category:decision]\\nwrong content",
+                    "observer_id": "edgar",
+                    "observed_id": "edgar",
+                }
+            ],
+        }
+
+        server, thread, base = self._start_server()
+        try:
+            for label, malformed_response in malformed_responses.items():
+                with self.subTest(label=label), patch.object(
+                    server_http,
+                    "call_honcho_api_json",
+                    return_value=malformed_response,
+                ) as honcho_api:
+                    status, payload = self._post_mcp(
+                        base,
+                        "tools/call",
+                        {
+                            "name": "remember_edgar_memory",
+                            "arguments": {
+                                "content": content,
+                                "category": "decision",
+                                "confirm": True,
+                            },
+                        },
+                        request_id=110,
+                    )
+
+                self.assertEqual(200, status)
+                self.assertTrue(tool_is_error(payload))
+                self.assertNotIn("structuredContent", payload["result"])
+                honcho_api.assert_called_once()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_caller_controlled_tool_notification_and_query_never_reach_gateway_logs(self):
+        log_messages = []
+        synthetic_secret = "synthetic-control-secret-9e7b2f"
+        server, thread, base = self._start_server()
+        try:
+            with patch.object(server_http, "log", side_effect=log_messages.append):
+                _, unknown_tool = self._post_mcp(
+                    base,
+                    "tools/call",
+                    {
+                        "name": f"unknown-tool-{synthetic_secret}",
+                        "arguments": {},
+                    },
+                    request_id=111,
+                )
+                self.assertTrue(tool_is_error(unknown_tool))
+
+                notification = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": f"notifications/progress/{synthetic_secret}",
+                        "params": {"data": synthetic_secret},
+                    }
+                ).encode("utf-8")
+                notification_request = urllib.request.Request(
+                    f"{base}{server_http.CHATGPT_HONCHO_MCP_PATH}",
+                    data=notification,
+                    headers={
+                        "Authorization": "Bearer test-chatgpt-gateway-token",
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(notification_request, timeout=5) as response:
+                    self.assertEqual(202, response.status)
+                    self.assertEqual(b"", response.read())
+
+                query_request = urllib.request.Request(
+                    (
+                        f"{base}{server_http.CHATGPT_HONCHO_MCP_PATH}?"
+                        f"{urllib.parse.urlencode({'x': synthetic_secret})}"
+                    ),
+                    data=json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 112,
+                            "method": "tools/list",
+                            "params": {},
+                        }
+                    ).encode("utf-8"),
+                    headers={
+                        "Authorization": "Bearer test-chatgpt-gateway-token",
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(query_request, timeout=5) as response:
+                    self.assertEqual(200, response.status)
+                    response.read()
+
+            self.assertNotIn(synthetic_secret, "\n".join(log_messages))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_modern_metadata_validation_errors_do_not_log_sensitive_client_values(self):
+        """Bad modern headers may return 400, but never echo their values into gateway logs."""
+        secret_version = "synthetic-secret-protocol-version-7e1f"
+        secret_request_id = "synthetic-secret-request-id-8c2a"
+        secret_method = "synthetic-secret-mcp-method-6d4b"
+        cases = [
+            (
+                "unsupported-version",
+                secret_version,
+                server_http.LATEST_PROTOCOL_VERSION,
+                "tools/list",
+                -32022,
+            ),
+            (
+                "method-mismatch",
+                server_http.LATEST_PROTOCOL_VERSION,
+                server_http.LATEST_PROTOCOL_VERSION,
+                secret_method,
+                -32020,
+            ),
+        ]
+        log_messages = []
+        server, thread, base = self._start_server()
+        try:
+            with patch.object(server_http, "log", side_effect=log_messages.append):
+                for (
+                    label,
+                    header_version,
+                    body_version,
+                    method_header,
+                    expected_error_code,
+                ) in cases:
+                    with self.subTest(label=label):
+                        body = json.dumps(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": secret_request_id,
+                                "method": "tools/list",
+                                "params": {
+                                    "_meta": {
+                                        "io.modelcontextprotocol/protocolVersion": body_version,
+                                        "io.modelcontextprotocol/clientInfo": {
+                                            "name": "synthetic-client",
+                                            "version": "1.0",
+                                        },
+                                        "io.modelcontextprotocol/clientCapabilities": {},
+                                    }
+                                },
+                            }
+                        ).encode("utf-8")
+                        request = urllib.request.Request(
+                            f"{base}{server_http.CHATGPT_HONCHO_MCP_PATH}",
+                            data=body,
+                            headers={
+                                "Authorization": "Bearer test-chatgpt-gateway-token",
+                                "Content-Type": "application/json",
+                                "Accept": "application/json, text/event-stream",
+                                "MCP-Protocol-Version": header_version,
+                                "Mcp-Method": method_header,
+                            },
+                            method="POST",
+                        )
+                        with self.assertRaises(urllib.error.HTTPError) as raised:
+                            urllib.request.urlopen(request, timeout=5)
+
+                        self.assertEqual(400, raised.exception.code)
+                        response_payload = json.loads(raised.exception.read().decode("utf-8"))
+                        self.assertEqual(expected_error_code, response_payload["error"]["code"])
+
+            all_logs = "\n".join(log_messages)
+            self.assertNotIn(secret_version, all_logs)
+            self.assertNotIn(secret_request_id, all_logs)
+            self.assertNotIn(secret_method, all_logs)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_loopback_sensitive_query_and_rejected_secret_content_never_reach_logs(self):
+        log_messages = []
+        calls = []
+        query = "private-query-unique-6289"
+        secret_like_content = "api_key=synthetic-value-that-must-never-appear-in-logs"
+        representation = "private-representation-unique-6289"
+
+        def fake_honcho_api(config, method, relative_path, body=None, **kwargs):
+            calls.append({"method": method, "path": relative_path, "body": body})
+            return {"representation": representation}
+
+        server, thread, base = self._start_server()
+        try:
+            with patch.object(server_http, "log", side_effect=log_messages.append), patch.object(
+                server_http,
+                "call_honcho_api_json",
+                side_effect=fake_honcho_api,
+            ):
+                _, recall = self._post_mcp(
+                    base,
+                    "tools/call",
+                    {
+                        "name": "recall_edgar_memory",
+                        "arguments": {"query": query},
+                    },
+                    request_id=8,
+                )
+                _, rejected_write = self._post_mcp(
+                    base,
+                    "tools/call",
+                    {
+                        "name": "remember_edgar_memory",
+                        "arguments": {
+                            "content": secret_like_content,
+                            "category": "decision",
+                            "confirm": True,
+                        },
+                    },
+                    request_id=9,
+                )
+
+            self.assertFalse(tool_is_error(recall))
+            self.assertTrue(tool_is_error(rejected_write))
+            self.assertEqual(1, len(calls), "Secret-like content must be rejected before any upstream call.")
+            all_logs = "\n".join(log_messages)
+            self.assertNotIn(query, all_logs)
+            self.assertNotIn(secret_like_content, all_logs)
+            self.assertNotIn(representation, all_logs)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_recall_redacts_synthetic_token_jwt_and_bearer_before_returning_memory(self):
+        api_key = "synthetic-api-key-should-not-be-returned"
+        bearer = "syntheticBearerToken_1234567890"
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWJqZWN0MTIzNDU2.c2lnbmF0dXJlMTIzNDU2"
+        representation = "\n".join(
+            [
+                "Safe context line.",
+                f"api_key={api_key}",
+                f"Authorization: Bearer {bearer}",
+                f"Bearer {bearer}",
+                jwt,
+            ]
+        )
+
+        server, thread, base = self._start_server()
+        try:
+            with patch.object(
+                server_http,
+                "call_honcho_api_json",
+                return_value={"representation": representation},
+            ):
+                status, payload = self._post_mcp(
+                    base,
+                    "tools/call",
+                    {
+                        "name": "recall_edgar_memory",
+                        "arguments": {"query": "safe recall request"},
+                    },
+                    request_id=113,
+                )
+
+            self.assertEqual(200, status)
+            self.assertFalse(tool_is_error(payload))
+            structured = payload["result"]["structuredContent"]
+            returned = structured["representation"]
+            self.assertIn("Safe context line.", returned)
+            self.assertGreaterEqual(returned.count("[REDACTED: possible secret]"), 3)
+            self.assertNotIn(api_key, returned)
+            self.assertNotIn(bearer, returned)
+            self.assertNotIn(jwt, returned)
+            self.assertIn("untrusted reference data", structured["notice"].lower())
+            self.assertIn("redacted", structured["notice"].lower())
         finally:
             server.shutdown()
             server.server_close()

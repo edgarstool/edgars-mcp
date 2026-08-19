@@ -2665,6 +2665,74 @@ class ChatGptHonchoGatewayTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    def test_chatgpt_honcho_protected_resource_metadata_points_to_cloudflare_access(self):
+        """The OAuth protected-resource metadata for /chatgpt-honcho must direct
+        clients to the Cloudflare Access authorization server, not the backend's
+        own built-in OAuth server.  This is the root cause fix for the
+        invalid_client error that occurs when ChatGPT follows RFC 9728 discovery
+        and lands on the backend /authorize instead of Cloudflare Access OAuth."""
+        cf_team_domain = "testteam.cloudflareaccess.com"
+        config = HandcraftServerConfig(
+            mcp_api_token="test-chatgpt-gateway-token",
+            base_url="https://mcp.example.test",
+            honcho_api_key="test-honcho-api-key",
+            honcho_chatgpt_gateway_enabled=True,
+            honcho_chatgpt_write_enabled=True,
+            cloudflare_access_team_domain=cf_team_domain,
+        )
+        server, thread, base = self._start_server(config)
+        try:
+            req = urllib.request.Request(
+                f"{base}/.well-known/oauth-protected-resource{server_http.CHATGPT_HONCHO_MCP_PATH}",
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                meta = json.loads(resp.read().decode("utf-8"))
+
+            self.assertEqual(
+                [f"https://{cf_team_domain}"],
+                meta["authorization_servers"],
+                "chatgpt-honcho metadata must point to Cloudflare Access, not backend OAuth",
+            )
+            self.assertEqual(
+                f"https://mcp.example.test{server_http.CHATGPT_HONCHO_MCP_PATH}",
+                meta["resource"],
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_mcp_path_protected_resource_metadata_still_points_to_backend(self):
+        """Sanity check: the /mcp path metadata must still point to the backend
+        OAuth server (unchanged behaviour)."""
+        config = HandcraftServerConfig(
+            mcp_api_token="test-chatgpt-gateway-token",
+            base_url="https://mcp.example.test",
+            honcho_api_key="test-honcho-api-key",
+            honcho_chatgpt_gateway_enabled=True,
+            honcho_chatgpt_write_enabled=True,
+            cloudflare_access_team_domain="testteam.cloudflareaccess.com",
+        )
+        server, thread, base = self._start_server(config)
+        try:
+            req = urllib.request.Request(
+                f"{base}/.well-known/oauth-protected-resource/mcp",
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                meta = json.loads(resp.read().decode("utf-8"))
+
+            self.assertEqual(
+                ["https://mcp.example.test"],
+                meta["authorization_servers"],
+                "/mcp metadata must still point to backend OAuth",
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
 
 class CacheTraceRotationScriptTests(unittest.TestCase):
     def test_cache_trace_rotation_archives_then_reopens_log(self):

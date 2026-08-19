@@ -4170,7 +4170,14 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             if not self._builtin_oauth_enabled_for_request():
                 self._send_builtin_oauth_disabled()
                 return
-            self._handle_resource_metadata(resource_path=CHATGPT_HONCHO_MCP_PATH)
+            # ChatGPT Honcho gateway uses Cloudflare Access Managed OAuth,
+            # so the authorization server must be the Access team domain,
+            # NOT the backend's own built-in OAuth server.
+            cf_issuer = self.server.config.cloudflare_access_issuer
+            self._handle_resource_metadata(
+                resource_path=CHATGPT_HONCHO_MCP_PATH,
+                authorization_server=cf_issuer or None,
+            )
         elif path == "/.well-known/openid-configuration":
             if not self._builtin_oauth_enabled_for_request():
                 self._send_builtin_oauth_disabled()
@@ -4260,12 +4267,17 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
     def _handle_openid_configuration(self) -> None:
         self._send_oauth_json(build_openid_configuration_metadata(self.server.config.base_url))
 
-    def _handle_resource_metadata(self, resource_path: str = MCP_PATH) -> None:
+    def _handle_resource_metadata(
+        self,
+        resource_path: str = MCP_PATH,
+        authorization_server: str | None = None,
+    ) -> None:
         base_url = self.server.config.base_url.rstrip("/")
         resource = build_mcp_resource_url(base_url, resource_path)
+        auth_server = authorization_server or base_url
         self._send_oauth_json({
             "resource": resource,
-            "authorization_servers": [base_url],
+            "authorization_servers": [auth_server],
             "scopes_supported": [OAUTH_SCOPE],
             "bearer_methods_supported": ["header"],
             "resource_documentation": resource,
@@ -4357,6 +4369,22 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         code_challenge = params.get("code_challenge", [""])[0]
         code_challenge_method = params.get("code_challenge_method", [""])[0]
 
+        # If client_id looks like a URL (e.g. ChatGPT DCR metadata document),
+        # and Cloudflare Access Managed OAuth is configured, redirect the entire
+        # authorization request to the CF Access authorization endpoint.
+        # This handles the case where ChatGPT ignores path-scoped PRM and goes
+        # directly to the backend's root /.well-known/oauth-authorization-server.
+        cf_issuer = self.server.config.cloudflare_access_issuer
+        if cf_issuer and client_id.startswith("https://"):
+            cf_auth_url = f"{cf_issuer}/cdn-cgi/access/oauth/authorization"
+            redirect_target = f"{cf_auth_url}?{query_string}"
+            log(f"OAuth /authorize → redirecting URL-based client to Cloudflare Access: {client_id[:60]}...")
+            self.send_response(302)
+            self.send_header("Location", redirect_target)
+            self._add_cors_headers()
+            self.end_headers()
+            return
+
         client = get_oauth_client(client_id)
         if response_type != "code":
             self._send_oauth_json(oauth_error("unsupported_response_type", "response_type must be code"), 400)
@@ -4408,6 +4436,38 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         else:
             log(f"OAuth /token failed: {error} (client_id={label})")
 
+    def _proxy_to_cloudflare_access(self, endpoint_path: str, raw_body: bytes, content_type: str) -> None:
+        """Proxy a POST request to Cloudflare Access OAuth endpoint."""
+        cf_issuer = self.server.config.cloudflare_access_issuer
+        target_url = f"{cf_issuer}/cdn-cgi/access/oauth/{endpoint_path}"
+        try:
+            req = urllib.request.Request(
+                target_url,
+                data=raw_body,
+                headers={"Content-Type": content_type, "Accept": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                resp_body = resp.read()
+                self.send_response(resp.status)
+                for header in ("Content-Type", "Cache-Control"):
+                    val = resp.getheader(header)
+                    if val:
+                        self.send_header(header, val)
+                self._add_cors_headers()
+                self.end_headers()
+                self.wfile.write(resp_body)
+        except urllib.error.HTTPError as exc:
+            resp_body = exc.read()
+            self.send_response(exc.code)
+            self.send_header("Content-Type", "application/json")
+            self._add_cors_headers()
+            self.end_headers()
+            self.wfile.write(resp_body)
+        except Exception as exc:
+            log(f"OAuth proxy to CF Access {endpoint_path} failed: {exc}")
+            self._send_oauth_json({"error": "server_error", "error_description": "upstream proxy error"}, 502)
+
     def _handle_token(self) -> None:
         content_length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(content_length) if content_length > 0 else b""
@@ -4427,6 +4487,15 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         basic_credentials = parse_basic_client_credentials(self.headers.get("Authorization", ""))
         if basic_credentials and not client_id:
             client_id = basic_credentials[0]
+
+        # If client_id is URL-based (ChatGPT DCR metadata document) and
+        # Cloudflare Access is configured, proxy the token exchange to CF Access.
+        cf_issuer = self.server.config.cloudflare_access_issuer
+        if cf_issuer and client_id.startswith("https://"):
+            log(f"OAuth /token → proxying to Cloudflare Access for URL client: {client_id[:60]}...")
+            self._proxy_to_cloudflare_access("token", raw, self.headers.get("Content-Type", "application/x-www-form-urlencoded"))
+            return
+
         client = get_oauth_client(client_id)
         if not client:
             self._log_token_failure("invalid_client", client_id=client_id)
@@ -4491,6 +4560,21 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
     def _handle_register(self) -> None:
         content_length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(content_length) if content_length > 0 else b""
+
+        # If Cloudflare Access is configured and the DCR request contains a
+        # client_uri or client_id that looks like a URL, proxy to CF Access.
+        cf_issuer = self.server.config.cloudflare_access_issuer
+        if cf_issuer and raw:
+            try:
+                peek = json.loads(raw)
+                client_uri = peek.get("client_uri", "") or peek.get("client_id", "")
+                if isinstance(client_uri, str) and client_uri.startswith("https://"):
+                    log(f"OAuth /register → proxying to Cloudflare Access for URL client: {client_uri[:60]}...")
+                    self._proxy_to_cloudflare_access("registration", raw, self.headers.get("Content-Type", "application/json"))
+                    return
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
         meta = parse_request_params(raw, self.headers.get("Content-Type", "application/json"))
         redirect_uris = meta.get("redirect_uris", [])
         if not isinstance(redirect_uris, list) or not redirect_uris:

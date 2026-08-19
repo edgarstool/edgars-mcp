@@ -2224,3 +2224,110 @@ class VisibleBrowserTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChatGptHonchoLogtoGatewayTests(unittest.TestCase):
+    def _config(self):
+        return EdgarsMcpServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            cloudflare_access_enabled=True,
+            cloudflare_access_team_domain="team.example.cloudflareaccess.com",
+            cloudflare_access_aud="aud-123",
+            cloudflare_access_jwks_url="https://team.example.cloudflareaccess.com/cdn-cgi/access/certs",
+            honcho_chatgpt_gateway_enabled=True,
+            honcho_chatgpt_write_enabled=True,
+            logto_issuer="https://tenant.example/oidc",
+            logto_jwks_url="https://tenant.example/oidc/jwks",
+            logto_resource="https://mcp.example.test/chatgpt-honcho",
+            honcho_local_api_base="http://127.0.0.1:8000/v3",
+        )
+
+    def _start_server(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MCPHTTPHandler, config=self._config())
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread, f"http://127.0.0.1:{server.server_address[1]}"
+    def test_chatgpt_honcho_prm_points_to_logto(self):
+        server, thread, base = self._start_server()
+        try:
+            with urllib.request.urlopen(
+                f"{base}/.well-known/oauth-protected-resource/chatgpt-honcho",
+                timeout=5,
+            ) as response:
+                metadata = json.loads(response.read().decode("utf-8"))
+            self.assertEqual("https://mcp.example.test/chatgpt-honcho", metadata["resource"])
+            self.assertEqual(["https://tenant.example/oidc"], metadata["authorization_servers"])
+            self.assertEqual(["memory:read", "memory:write"], metadata["scopes_supported"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_chatgpt_honcho_missing_bearer_advertises_logto_prm(self):
+        server, thread, base = self._start_server()
+        try:
+            req = urllib.request.Request(f"{base}/chatgpt-honcho", method="GET")
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(req, timeout=5)
+            self.assertEqual(401, raised.exception.code)
+            authenticate = raised.exception.headers["WWW-Authenticate"]
+            self.assertIn(
+                'resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/chatgpt-honcho"',
+                authenticate,
+            )
+            self.assertIn('scope="memory:read memory:write"', authenticate)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_chatgpt_honcho_tools_list_is_exactly_two_tools(self):
+        response = server_http.handle_chatgpt_honcho_tools_list(1, {}, self._config())
+        tools = response["result"]["tools"]
+        self.assertEqual(
+            ["recall_edgar_memory", "remember_edgar_memory"],
+            [tool["name"] for tool in tools],
+        )
+
+    def test_chatgpt_honcho_remember_requires_explicit_confirm(self):
+        response = server_http.handle_chatgpt_honcho_tools_call(
+            1,
+            {"name": "remember_edgar_memory", "arguments": {
+                "content": "EDG-313 synthetic memory marker",
+                "category": "project_context",
+                "confirm": False,
+            }},
+            self._config(),
+        )
+        self.assertTrue(tool_is_error(response))
+
+    def test_chatgpt_honcho_recall_uses_self_hosted_honcho_api(self):
+        with patch.object(
+            server_http,
+            "call_chatgpt_honcho_api_json",
+            return_value={"representation": "synthetic remembered fact"},
+            create=True,
+        ) as call:
+            response = server_http.handle_chatgpt_honcho_tools_call(
+                1,
+                {"name": "recall_edgar_memory", "arguments": {"query": "synthetic fact"}},
+                self._config(),
+            )
+        self.assertFalse(tool_is_error(response))
+        self.assertIn("synthetic remembered fact", tool_text(response))
+        self.assertIn(
+            "/workspaces/edgar-team/peers/edgar/representation",
+            call.call_args.args[2],
+        )
+
+    def test_regular_mcp_cloudflare_access_requirement_is_unchanged(self):
+        config = self._config()
+        handler_path = server_http.CHATGPT_HONCHO_MCP_PATH
+        self.assertEqual("/chatgpt-honcho", handler_path)
+        self.assertTrue(config.cloudflare_access_enabled)
+        self.assertEqual("aud-123", config.cloudflare_access_aud)
+
+
+if __name__ == "__main__":
+    unittest.main()

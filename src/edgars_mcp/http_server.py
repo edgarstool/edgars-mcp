@@ -121,6 +121,18 @@ def load_discord_webhook_token() -> str:
     return os.getenv("MCP_DISCORD_WEBHOOK_TOKEN", "").strip()
 
 
+def load_logto_issuer() -> str:
+    return os.getenv("MCP_LOGTO_ISSUER", "").strip().rstrip("/")
+
+
+def load_logto_jwks_url() -> str:
+    return os.getenv("MCP_LOGTO_JWKS_URL", "").strip()
+
+
+def load_logto_resource() -> str:
+    return os.getenv("MCP_LOGTO_RESOURCE", "").strip().rstrip("/")
+
+
 @dataclass(frozen=True)
 class EdgarsMcpServerConfig:
     mcp_api_token: str
@@ -139,6 +151,12 @@ class EdgarsMcpServerConfig:
     honcho_user_name: str = "Edgar"
     honcho_workspace_id: str = "edgar-team"
     honcho_assistant_name: str = "hermes_default"
+    honcho_chatgpt_gateway_enabled: bool = False
+    honcho_chatgpt_write_enabled: bool = False
+    logto_issuer: str = ""
+    logto_jwks_url: str = ""
+    logto_resource: str = ""
+    honcho_local_api_base: str = "http://127.0.0.1:8000/v3"
 
     @property
     def public_hostname(self) -> str:
@@ -267,6 +285,14 @@ SERVER_INSTRUCTIONS = (
     "Linear、Notion、AI 代理委派、媒體生成等 78+ 工具。"
 )
 MCP_PATH = "/mcp"
+CHATGPT_HONCHO_MCP_PATH = "/chatgpt-honcho"
+CHATGPT_HONCHO_SCOPES = ("memory:read", "memory:write")
+CHATGPT_HONCHO_WORKSPACE_ID = "edgar-team"
+CHATGPT_HONCHO_PEER_ID = "edgar"
+CHATGPT_HONCHO_SERVER_INFO = {"name": "edgars-honcho-memory-gateway", "version": "0.2.0"}
+CHATGPT_HONCHO_SERVER_INSTRUCTIONS = (
+    "Edgar 的 Logto-protected Honcho memory gateway；只提供固定 edgar-team/edgar 的 recall 與 remember。"
+)
 HEALTH_PATH = "/health"
 PACKAGE_WEBHOOK_PATH = "/webhook/package"
 LINEAR_WEBHOOK_PATH = "/webhook/linear"
@@ -1808,6 +1834,202 @@ def make_tool_json_response(data: dict, *, is_error: bool = False) -> dict:
         "structuredContent": data,
         "isError": is_error,
     }
+
+
+CHATGPT_HONCHO_TOOLS = [
+    {
+        "name": "recall_edgar_memory",
+        "title": "Recall Edgar memory",
+        "description": "Read curated memory from fixed self-hosted Honcho scope edgar-team/edgar.",
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"query": {"type": "string", "minLength": 3, "maxLength": 500}},
+            "required": ["query"],
+        },
+        "securitySchemes": [{"type": "oauth2", "scopes": ["memory:read"]}],
+    },
+    {
+        "name": "remember_edgar_memory",
+        "title": "Remember Edgar memory",
+        "description": "Append one confirmed non-sensitive conclusion to fixed self-hosted Honcho scope edgar-team/edgar.",
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "content": {"type": "string", "minLength": 12, "maxLength": 600},
+                "category": {"type": "string", "enum": ["preference", "decision", "project_context", "working_rule"]},
+                "confirm": {"type": "boolean", "const": True},
+            },
+            "required": ["content", "category", "confirm"],
+        },
+        "securitySchemes": [{"type": "oauth2", "scopes": ["memory:write"]}],
+    },
+]
+
+class LogtoAccessAuthError(RuntimeError):
+    pass
+
+
+LOGTO_JWKS_LOCK = threading.Lock()
+LOGTO_JWKS_CLIENTS: dict[str, object] = {}
+
+
+def call_chatgpt_honcho_api_json(config, method: str, relative_path: str, body: dict | None = None,
+                                  *, expected_statuses: frozenset[int] = frozenset({200})) -> object:
+    url = config.honcho_local_api_base.rstrip("/") + relative_path
+    data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+    headers = {"Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+            if resp.status not in expected_statuses:
+                raise HonchoMcpError(f"self-host Honcho HTTP {resp.status}")
+    except urllib.error.HTTPError as exc:
+        raise HonchoMcpError(f"self-host Honcho HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise HonchoMcpError("self-host Honcho unreachable") from exc
+    return json.loads(raw.decode("utf-8")) if raw else {}
+
+
+def handle_chatgpt_honcho_recall(req_id, arguments: dict, config) -> dict:
+    if set(arguments) != {"query"}:
+        return make_response(req_id, make_tool_text_response("recall requires only query", is_error=True))
+    query = arguments.get("query")
+    if not isinstance(query, str) or not 3 <= len(query.strip()) <= 500:
+        return make_response(req_id, make_tool_text_response("query must contain 3 to 500 characters", is_error=True))
+    try:
+        payload = call_chatgpt_honcho_api_json(
+            config, "POST",
+            f"/workspaces/{CHATGPT_HONCHO_WORKSPACE_ID}/peers/{CHATGPT_HONCHO_PEER_ID}/representation",
+            {"search_query": query.strip(), "search_top_k": 10, "search_max_distance": 0.5,
+             "include_most_frequent": False, "max_conclusions": 5},
+        )
+        representation = payload.get("representation", "") if isinstance(payload, dict) else ""
+        if not isinstance(representation, str):
+            raise HonchoMcpError("representation is not text")
+    except HonchoMcpError:
+        return make_response(req_id, make_tool_text_response("Honcho memory lookup failed.", is_error=True))
+    return make_response(req_id, make_tool_json_response({
+        "scope": {"workspace": CHATGPT_HONCHO_WORKSPACE_ID, "peer": CHATGPT_HONCHO_PEER_ID},
+        "representation": representation,
+    }))
+
+
+def handle_chatgpt_honcho_remember(req_id, arguments: dict, config) -> dict:
+    allowed = {"content", "category", "confirm"}
+    if set(arguments) != allowed:
+        return make_response(req_id, make_tool_text_response("remember requires content, category, confirm", is_error=True))
+    if arguments.get("confirm") is not True:
+        return make_response(req_id, make_tool_text_response("confirm must be true after explicit user request", is_error=True))
+    if not config.honcho_chatgpt_write_enabled:
+        return make_response(req_id, make_tool_text_response("ChatGPT Honcho writes are disabled", is_error=True))
+    content = arguments.get("content")
+    category = arguments.get("category")
+    if not isinstance(content, str) or not 12 <= len(content.strip()) <= 600:
+        return make_response(req_id, make_tool_text_response("content must contain 12 to 600 characters", is_error=True))
+    if category not in {"preference", "decision", "project_context", "working_rule"}:
+        return make_response(req_id, make_tool_text_response("category is not allowed", is_error=True))
+    stored = f"[category:{category}]\n{content.strip()}"
+    try:
+        payload = call_chatgpt_honcho_api_json(
+            config, "POST", f"/workspaces/{CHATGPT_HONCHO_WORKSPACE_ID}/conclusions",
+            {"conclusions": [{"content": stored, "observer_id": CHATGPT_HONCHO_PEER_ID,
+                              "observed_id": CHATGPT_HONCHO_PEER_ID, "session_id": None}]},
+            expected_statuses=frozenset({201}),
+        )
+    except HonchoMcpError:
+        return make_response(req_id, make_tool_text_response("Honcho memory was not saved.", is_error=True))
+    saved_count = len(payload) if isinstance(payload, list) else 0
+    if saved_count != 1:
+        return make_response(req_id, make_tool_text_response("Honcho did not confirm one saved conclusion.", is_error=True))
+
+    return make_response(req_id, make_tool_json_response({
+        "status": "saved",
+        "scope": {"workspace": CHATGPT_HONCHO_WORKSPACE_ID, "peer": CHATGPT_HONCHO_PEER_ID},
+        "category": category,
+        "saved_count": saved_count,
+    }))
+
+
+def handle_chatgpt_honcho_tools_list(req_id, params: dict, config=None) -> dict:
+    del params, config
+    return make_response(req_id, {"tools": CHATGPT_HONCHO_TOOLS, "ttlMs": 60000, "cacheScope": "public"})
+
+
+def handle_chatgpt_honcho_tools_call(req_id, params: dict, config=None) -> dict:
+    name = params.get("name")
+    arguments = params.get("arguments", {})
+    if not isinstance(arguments, dict):
+        return make_response(req_id, make_tool_text_response("tools/call arguments must be an object", is_error=True))
+    if name == "recall_edgar_memory":
+        return handle_chatgpt_honcho_recall(req_id, arguments, config)
+    if name == "remember_edgar_memory":
+        return handle_chatgpt_honcho_remember(req_id, arguments, config)
+    return make_response(req_id, make_tool_text_response("This ChatGPT Honcho tool is not available.", is_error=True))
+
+
+def dispatch_chatgpt_honcho(msg: dict, config=None):
+    method = msg.get("method", "")
+    req_id = msg.get("id")
+    params = msg.get("params") or {}
+    if req_id is None:
+        return None
+    if method == "initialize":
+        version = str(params.get("protocolVersion") or PROTOCOL_VERSION)
+        return make_response(req_id, {
+            "protocolVersion": version,
+            "capabilities": build_server_capabilities(),
+            "serverInfo": CHATGPT_HONCHO_SERVER_INFO,
+            "instructions": CHATGPT_HONCHO_SERVER_INSTRUCTIONS,
+        })
+    if method == "server/discover":
+        return make_response(req_id, {
+            "protocolVersion": LATEST_PROTOCOL_VERSION,
+            "supportedVersions": SUPPORTED_PROTOCOL_VERSIONS,
+            "capabilities": build_server_capabilities(),
+            "serverInfo": CHATGPT_HONCHO_SERVER_INFO,
+            "instructions": CHATGPT_HONCHO_SERVER_INSTRUCTIONS,
+            "ttlMs": 60000, "cacheScope": "public",
+        })
+    if method == "ping":
+        return make_response(req_id, {})
+    if method == "tools/list":
+        return handle_chatgpt_honcho_tools_list(req_id, params, config)
+
+    if method == "tools/call":
+        return handle_chatgpt_honcho_tools_call(req_id, params, config)
+    return make_error(req_id, -32601, "Method not found")
+
+
+def verify_logto_access_token(token: str, config, required_scopes=()) -> dict:
+    if not token:
+        raise LogtoAccessAuthError("Missing bearer token")
+    if jwt is None or PyJWKClient is None:
+        raise LogtoAccessAuthError("PyJWT is required for Logto bearer validation")
+    if not config.logto_issuer or not config.logto_jwks_url or not config.logto_resource:
+        raise LogtoAccessAuthError("Logto resource-server configuration is incomplete")
+    with LOGTO_JWKS_LOCK:
+        jwk_client = LOGTO_JWKS_CLIENTS.get(config.logto_jwks_url)
+        if jwk_client is None:
+            jwk_client = PyJWKClient(config.logto_jwks_url)
+            LOGTO_JWKS_CLIENTS[config.logto_jwks_url] = jwk_client
+    try:
+        signing_key = jwk_client.get_signing_key_from_jwt(token)
+        claims = jwt.decode(
+            token, signing_key.key, algorithms=["ES384"],
+            issuer=config.logto_issuer, audience=config.logto_resource,
+        )
+    except Exception as exc:
+        raise LogtoAccessAuthError("Logto access token is invalid") from exc
+    raw_scope = claims.get("scope", "") if isinstance(claims, dict) else ""
+    scopes = set(raw_scope.split()) if isinstance(raw_scope, str) else set()
+
+    missing = [scope for scope in required_scopes if scope not in scopes]
+    if missing:
+        raise LogtoAccessAuthError("Logto access token lacks required scope")
+    return claims if isinstance(claims, dict) else {}
 
 
 class SafeMcpWriteError(RuntimeError):
@@ -3466,6 +3688,10 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 self._send_builtin_oauth_disabled()
                 return
             self._handle_resource_metadata(resource_path=MCP_PATH)
+        elif path == "/.well-known/oauth-protected-resource/chatgpt-honcho":
+            if not self.server.config.honcho_chatgpt_gateway_enabled:
+                self.send_response(404); self.end_headers(); return
+            self._handle_chatgpt_honcho_resource_metadata()
         elif path == "/.well-known/openid-configuration":
             if not self._builtin_oauth_enabled_for_request():
                 self._send_builtin_oauth_disabled()
@@ -3489,6 +3715,16 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self._send_oauth_json(linear_oauth_status_payload())
         elif path == LINEAR_OAUTH_BOOTSTRAP_PATH:
             self._handle_linear_oauth_bootstrap()
+        elif path == CHATGPT_HONCHO_MCP_PATH:
+            if not self.server.config.honcho_chatgpt_gateway_enabled:
+                self.send_response(404); self.end_headers(); return
+            if not self._ensure_chatgpt_honcho_authorized():
+                return
+            body = json.dumps({"server": CHATGPT_HONCHO_SERVER_INFO, "protocolVersion": PROTOCOL_VERSION}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self._add_cors_headers(); self.end_headers(); self.wfile.write(body)
         elif path == "/mcp":
             if not self._ensure_mcp_request_authorized():
                 return
@@ -3552,6 +3788,72 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             "resource_documentation": build_mcp_resource_url(base_url),
             "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
         })
+
+
+    def _handle_chatgpt_honcho_resource_metadata(self) -> None:
+        config = self.server.config
+        self._send_oauth_json({
+            "resource": config.logto_resource,
+            "authorization_servers": [config.logto_issuer],
+            "scopes_supported": list(CHATGPT_HONCHO_SCOPES),
+            "bearer_methods_supported": ["header"],
+            "resource_documentation": config.logto_resource,
+        })
+
+
+    def _send_chatgpt_honcho_unauthorized(self, description: str, *, insufficient_scope: bool = False) -> None:
+        base = self.server.config.base_url.rstrip("/")
+        metadata = base + "/.well-known/oauth-protected-resource/chatgpt-honcho"
+        error = "insufficient_scope" if insufficient_scope else "invalid_token"
+        body = b"Unauthorized"
+        self.send_response(403 if insufficient_scope else 401)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header(
+            "WWW-Authenticate",
+            f'Bearer resource_metadata="{metadata}", scope="memory:read memory:write", '
+            f'error="{error}", error_description="{description}"',
+        )
+        self._add_cors_headers(); self.end_headers(); self.wfile.write(body)
+
+    def _ensure_chatgpt_honcho_authorized(self, required_scopes=()):
+        auth = self.headers.get("Authorization", "")
+        if auth[:7].lower() != "bearer ":
+            self._send_chatgpt_honcho_unauthorized("Missing Logto bearer token")
+            return False
+        try:
+            return verify_logto_access_token(auth[7:].strip(), self.server.config, required_scopes)
+        except LogtoAccessAuthError as exc:
+            insufficient = "scope" in str(exc).lower()
+            self._send_chatgpt_honcho_unauthorized(str(exc), insufficient_scope=insufficient)
+            return False
+
+
+    def _handle_chatgpt_honcho_mcp(self) -> None:
+        claims = self._ensure_chatgpt_honcho_authorized()
+        if claims is False:
+            return
+        origin = self.headers.get("Origin", "")
+        if origin and not self._is_allowed_origin(origin):
+            self.send_response(403); self.end_headers(); return
+        content_length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(content_length)
+        try:
+            msg = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            self._send_json(make_error(None, -32700, f"Parse error: {exc}"), status=400); return
+        if not isinstance(msg, dict):
+            self._send_json(make_error(None, -32600, "Invalid Request: expected JSON object"), status=400); return
+        required = ()
+        if msg.get("method") == "tools/call":
+            name = (msg.get("params") or {}).get("name")
+            required = ("memory:write",) if name == "remember_edgar_memory" else ("memory:read",)
+        if required and not self._ensure_chatgpt_honcho_authorized(required):
+            return
+        response = dispatch_chatgpt_honcho(msg, self.server.config)
+        if response is None:
+            self.send_response(202); self._add_cors_headers(); self.end_headers(); return
+        self._send_json(response)
 
     def _handle_health(self) -> None:
         base_url = self.server.config.base_url.rstrip("/")
@@ -3840,6 +4142,11 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return
         if parsed_path == LINEAR_WEBHOOK_PATH or parsed_path == LINEAR_WEBHOOK_PATH_ALIAS:
             self._handle_linear_webhook()
+            return
+        if parsed_path == CHATGPT_HONCHO_MCP_PATH:
+            if not self.server.config.honcho_chatgpt_gateway_enabled:
+                self.send_response(404); self.end_headers(); return
+            self._handle_chatgpt_honcho_mcp()
             return
         if parsed_path != MCP_PATH:
             self.send_response(404)
@@ -4276,6 +4583,16 @@ def validate_http_startup_config() -> EdgarsMcpServerConfig:
         load_cloudflare_access_jwks_url(),
         cloudflare_access_team_domain,
     )
+    honcho_chatgpt_gateway_enabled = load_bool_env("HONCHO_CHATGPT_GATEWAY_ENABLED", False)
+    logto_issuer = load_logto_issuer()
+    logto_jwks_url = load_logto_jwks_url()
+    logto_resource = load_logto_resource() or f"{base_url.rstrip('/')}{CHATGPT_HONCHO_MCP_PATH}"
+
+    if honcho_chatgpt_gateway_enabled:
+        if jwt is None or PyJWKClient is None:
+            raise RuntimeError("PyJWT with PyJWKClient support is required for Logto ChatGPT Honcho gateway")
+        if not logto_issuer or not logto_jwks_url:
+            raise RuntimeError("MCP_LOGTO_ISSUER and MCP_LOGTO_JWKS_URL are required when HONCHO_CHATGPT_GATEWAY_ENABLED=true")
 
     if cloudflare_access_enabled:
         if jwt is None or PyJWKClient is None:
@@ -4314,6 +4631,12 @@ def validate_http_startup_config() -> EdgarsMcpServerConfig:
         honcho_user_name=os.getenv("HONCHO_USER_NAME", "Edgar").strip() or "Edgar",
         honcho_workspace_id=os.getenv("HONCHO_WORKSPACE_ID", "edgar-team").strip() or "edgar-team",
         honcho_assistant_name=os.getenv("HONCHO_ASSISTANT_NAME", "hermes_default").strip() or "hermes_default",
+        honcho_chatgpt_gateway_enabled=honcho_chatgpt_gateway_enabled,
+        honcho_chatgpt_write_enabled=load_bool_env("HONCHO_CHATGPT_WRITE_ENABLED", False),
+        logto_issuer=logto_issuer,
+        logto_jwks_url=logto_jwks_url,
+        logto_resource=logto_resource,
+        honcho_local_api_base=os.getenv("HONCHO_LOCAL_API_BASE", "http://127.0.0.1:8000/v3").strip().rstrip("/"),
     )
 
 

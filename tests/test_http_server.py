@@ -2329,5 +2329,87 @@ class ChatGptHonchoLogtoGatewayTests(unittest.TestCase):
         self.assertEqual("aud-123", config.cloudflare_access_aud)
 
 
+class MainMcpLogtoAuthTests(unittest.TestCase):
+    def _config(self):
+        config = EdgarsMcpServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            cloudflare_access_enabled=True,
+            cloudflare_access_team_domain="team.example.cloudflareaccess.com",
+            cloudflare_access_aud="aud-123",
+            cloudflare_access_jwks_url="https://team.example.cloudflareaccess.com/cdn-cgi/access/certs",
+            logto_issuer="https://tenant.example/oidc",
+            logto_jwks_url="https://tenant.example/oidc/jwks",
+            logto_resource="https://mcp.example.test/chatgpt-honcho",
+            logto_mcp_enabled=True,
+            logto_mcp_resource="https://mcp.example.test/mcp",
+        )
+        return config
+
+    def _start_server(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MCPHTTPHandler, config=self._config())
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread, f"http://127.0.0.1:{server.server_address[1]}"
+
+    def test_main_mcp_prm_points_to_logto(self):
+        server, thread, base = self._start_server()
+        try:
+            req = urllib.request.Request(
+                f"{base}/.well-known/oauth-protected-resource/mcp",
+                headers={"Host": "mcp.example.test"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                metadata = json.loads(response.read().decode("utf-8"))
+            self.assertEqual("https://mcp.example.test/mcp", metadata["resource"])
+            self.assertEqual(["https://tenant.example/oidc"], metadata["authorization_servers"])
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=5)
+
+    def test_main_mcp_missing_bearer_uses_logto_challenge_not_cloudflare(self):
+        server, thread, base = self._start_server()
+        try:
+            req = urllib.request.Request(f"{base}/mcp", headers={"Host": "mcp.example.test"})
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(req, timeout=5)
+            self.assertEqual(401, raised.exception.code)
+            authenticate = raised.exception.headers["WWW-Authenticate"]
+            self.assertIn(
+                'resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/mcp"',
+                authenticate,
+            )
+            body = raised.exception.read().decode("utf-8")
+            self.assertNotIn("cloudflare_access_required", body)
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=5)
+
+    def test_main_mcp_accepts_verified_logto_bearer_for_tools_list(self):
+        server, thread, base = self._start_server()
+        try:
+            payload = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {},
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}/mcp",
+                data=payload,
+                method="POST",
+                headers={
+                    "Host": "mcp.example.test",
+                    "Authorization": "Bearer logto-access-token",
+                    "Content-Type": "application/json",
+                },
+            )
+            with patch.object(server_http, "verify_logto_access_token", return_value={"sub": "edgar"}):
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(1, result["id"])
+            self.assertIn("tools", result["result"])
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=5)
+
+
 if __name__ == "__main__":
     unittest.main()

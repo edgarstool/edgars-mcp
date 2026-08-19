@@ -156,6 +156,8 @@ class EdgarsMcpServerConfig:
     logto_issuer: str = ""
     logto_jwks_url: str = ""
     logto_resource: str = ""
+    logto_mcp_enabled: bool = False
+    logto_mcp_resource: str = ""
     honcho_local_api_base: str = "http://127.0.0.1:8000/v3"
 
     @property
@@ -3679,11 +3681,17 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 return
             self._handle_oauth_metadata()
         elif path == "/.well-known/oauth-protected-resource":
+            if self._mcp_uses_logto():
+                self._handle_logto_mcp_resource_metadata()
+                return
             if not self._builtin_oauth_enabled_for_request():
                 self._send_builtin_oauth_disabled()
                 return
             self._handle_resource_metadata()
         elif path == "/.well-known/oauth-protected-resource/mcp":
+            if self._mcp_uses_logto():
+                self._handle_logto_mcp_resource_metadata()
+                return
             if not self._builtin_oauth_enabled_for_request():
                 self._send_builtin_oauth_disabled()
                 return
@@ -3789,6 +3797,32 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
         })
 
+
+    def _handle_logto_mcp_resource_metadata(self) -> None:
+        config = self.server.config
+        base = config.base_url.rstrip("/")
+        resource = config.logto_mcp_resource or f"{base}{MCP_PATH}"
+        self._send_oauth_json({
+            "resource": resource,
+            "authorization_servers": [config.logto_issuer],
+            "scopes_supported": [OAUTH_SCOPE],
+            "bearer_methods_supported": ["header"],
+            "resource_documentation": resource,
+        })
+
+    def _send_logto_mcp_unauthorized(self, description: str) -> None:
+        base = self.server.config.base_url.rstrip("/")
+        metadata = base + "/.well-known/oauth-protected-resource/mcp"
+        body = b"Unauthorized"
+        self.send_response(401)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header(
+            "WWW-Authenticate",
+            f'Bearer resource_metadata="{metadata}", scope="{OAUTH_SCOPE}", '
+            f'error="invalid_token", error_description="{description}"',
+        )
+        self._add_cors_headers(); self.end_headers(); self.wfile.write(body)
 
     def _handle_chatgpt_honcho_resource_metadata(self) -> None:
         config = self.server.config
@@ -4333,14 +4367,26 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         hostname = self._request_hostname()
         return bool(hostname) and hostname == self.server.config.public_hostname
 
+    def _mcp_uses_logto(self) -> bool:
+        config = self.server.config
+        if not config.logto_mcp_enabled:
+            return False
+        if self.headers.get("X-Edgars-Mcp-Client-Mode", "").strip().lower() == "stdio-local":
+            return False
+        return self._request_targets_base_hostname()
+
     def _builtin_oauth_enabled_for_request(self) -> bool:
         config = self.server.config
+        if self._mcp_uses_logto():
+            return False
         if not config.cloudflare_access_enabled or not config.cloudflare_access_disable_builtin_oauth:
             return True
         return not self._request_targets_base_hostname()
 
     def _mcp_auth_required(self) -> bool:
         config = self.server.config
+        if self._mcp_uses_logto():
+            return True
         if self._requires_cloudflare_access_for_request(MCP_PATH):
             return True
         if self._builtin_oauth_enabled_for_request():
@@ -4353,7 +4399,15 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return "static"
         if not self._mcp_auth_required():
             return "none"
-
+        if self._mcp_uses_logto():
+            auth = self.headers.get("Authorization", "")
+            if auth[:7].lower() == "bearer ":
+                try:
+                    verify_logto_access_token(auth[7:].strip(), config)
+                    return "logto"
+                except LogtoAccessAuthError:
+                    return "unknown"
+            return "unknown"
         access_jwt = self.headers.get("Cf-Access-Jwt-Assertion", "").strip()
         if access_jwt and config.cloudflare_access_enabled:
             try:
@@ -4361,7 +4415,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 return "cf_access"
             except CloudflareAccessAuthError:
                 pass
-
         auth = self.headers.get("Authorization", "")
         if auth[:7].lower() == "bearer ":
             token = auth[7:].strip()
@@ -4372,20 +4425,24 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         return "unknown"
 
     def _ensure_mcp_request_authorized(self) -> bool:
-        """全綠授權責任鏈：Cloudflare Access JWT 或 Bearer（靜態 / 內建 OAuth / CIMD）
-        任一種有效即放行；只有所有方法都沒有有效憑證時才回 401。
-
-        修正重點：舊版在主網域上把 CF Access 與 Bearer 設成互斥，且 bearer fallback
-        預設關閉，導致帶「正確 Bearer OAuth token」的客戶端（Claude、ChatGPT 連接器）
-        也被誤擋成 401。改成責任鏈後，不管客戶端用哪種正統方法都會通過。
-        """
         config = self.server.config
-
-        # 完全未要求授權的設定（純本機 / 開發）→ 維持原行為，直接放行。
         if not self._mcp_auth_required():
             return True
 
-        # 方法 1：Cloudflare Access JWT（有帶且驗過就綠）
+        if self._mcp_uses_logto():
+            auth = self.headers.get("Authorization", "")
+            if auth[:7].lower() != "bearer ":
+                self._send_logto_mcp_unauthorized("Missing Logto bearer token")
+                return False
+            try:
+                claims = verify_logto_access_token(auth[7:].strip(), config)
+                ident = claims.get("email") or claims.get("sub") or "logto-user"
+                log(f"Logto authenticated MCP request: {ident}")
+                return True
+            except LogtoAccessAuthError as exc:
+                self._send_logto_mcp_unauthorized(str(exc))
+                return False
+
         access_jwt = self.headers.get("Cf-Access-Jwt-Assertion", "").strip()
         if access_jwt and config.cloudflare_access_enabled:
             try:
@@ -4396,13 +4453,11 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             except CloudflareAccessAuthError as exc:
                 log(f"Cloudflare Access JWT rejected, trying bearer: {exc}")
 
-        # 方法 2：Bearer token（靜態 MCP_API_TOKEN / 內建 OAuth / CIMD 發出的）
         auth = self.headers.get("Authorization", "")
         has_bearer = auth[:7].lower() == "bearer "
         if has_bearer and bearer_token_is_authorized(auth[7:].strip(), config.mcp_api_token):
             return True
 
-        # 全部方法皆無有效憑證 → 回最合適的 401（含 discovery 指標）
         if self._requires_cloudflare_access_for_request(MCP_PATH) and not has_bearer:
             self._send_cloudflare_access_unauthorized(
                 "This endpoint accepts a Cloudflare Access session or a valid bearer token. "
@@ -4421,6 +4476,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     def _requires_cloudflare_access_for_request(self, path: str) -> bool:
         config = self.server.config
+        if path == MCP_PATH and self._mcp_uses_logto():
+            return False
         if not config.cloudflare_access_enabled:
             return False
         if not self._request_targets_base_hostname():
@@ -4584,15 +4641,21 @@ def validate_http_startup_config() -> EdgarsMcpServerConfig:
         cloudflare_access_team_domain,
     )
     honcho_chatgpt_gateway_enabled = load_bool_env("HONCHO_CHATGPT_GATEWAY_ENABLED", False)
+    logto_mcp_enabled = load_bool_env("MCP_LOGTO_ENABLED", False)
     logto_issuer = load_logto_issuer()
     logto_jwks_url = load_logto_jwks_url()
-    logto_resource = load_logto_resource() or f"{base_url.rstrip('/')}{CHATGPT_HONCHO_MCP_PATH}"
+    logto_resource = load_logto_resource()
+    if honcho_chatgpt_gateway_enabled and not logto_resource:
+        logto_resource = f"{base_url.rstrip('/')}{CHATGPT_HONCHO_MCP_PATH}"
+    logto_mcp_resource = os.getenv("MCP_LOGTO_MCP_RESOURCE", "").strip().rstrip("/")
+    if logto_mcp_enabled and not logto_mcp_resource:
+        logto_mcp_resource = f"{base_url.rstrip('/')}{MCP_PATH}"
 
-    if honcho_chatgpt_gateway_enabled:
+    if honcho_chatgpt_gateway_enabled or logto_mcp_enabled:
         if jwt is None or PyJWKClient is None:
-            raise RuntimeError("PyJWT with PyJWKClient support is required for Logto ChatGPT Honcho gateway")
+            raise RuntimeError("PyJWT with PyJWKClient support is required for Logto MCP authentication")
         if not logto_issuer or not logto_jwks_url:
-            raise RuntimeError("MCP_LOGTO_ISSUER and MCP_LOGTO_JWKS_URL are required when HONCHO_CHATGPT_GATEWAY_ENABLED=true")
+            raise RuntimeError("MCP_LOGTO_ISSUER and MCP_LOGTO_JWKS_URL are required when Logto MCP authentication is enabled")
 
     if cloudflare_access_enabled:
         if jwt is None or PyJWKClient is None:
@@ -4636,6 +4699,8 @@ def validate_http_startup_config() -> EdgarsMcpServerConfig:
         logto_issuer=logto_issuer,
         logto_jwks_url=logto_jwks_url,
         logto_resource=logto_resource,
+        logto_mcp_enabled=logto_mcp_enabled,
+        logto_mcp_resource=logto_mcp_resource,
         honcho_local_api_base=os.getenv("HONCHO_LOCAL_API_BASE", "http://127.0.0.1:8000/v3").strip().rstrip("/"),
     )
 

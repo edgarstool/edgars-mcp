@@ -3307,24 +3307,8 @@ class SafeMcpWriteTests(unittest.TestCase):
                         }
                     }
                 }
-            if "comments(last: 5)" in query:
-                return {
-                    "data": {
-                        "issues": {
-                            "nodes": [
-                                {
-                                    "id": "issue-uuid",
-                                    "identifier": "WHO-123",
-                                    "title": "Safe MCP test",
-                                    "url": "https://linear.app/issue/WHO-123",
-                                    "state": {"name": "Done"},
-                                    "team": {"states": {"nodes": [{"id": "done-id", "name": "Done"}]}},
-                                    "comments": {"nodes": [{"id": "comment-1", "body": "verified", "createdAt": "now"}]},
-                                }
-                            ]
-                        }
-                    }
-                }
+            if "comments(" in query:
+                self.fail("Linear update verification must use comment(id:), not a recent-comments query")
             return {
                 "data": {
                     "issues": {

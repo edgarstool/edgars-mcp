@@ -3233,9 +3233,10 @@ class SafeMcpWriteTests(unittest.TestCase):
             issue = server_http._linear_issue_by_identifier("WHO-123")
 
         self.assertEqual("WHO-123", issue["identifier"])
+        self.assertIn("$issueNumber: Float!", captured["query"])
         self.assertIn("team: { key: { eqIgnoreCase: $teamKey } }", captured["query"])
         self.assertIn("number: { eq: $issueNumber }", captured["query"])
-        self.assertEqual({"teamKey": "WHO", "issueNumber": 123}, captured["variables"])
+        self.assertEqual({"teamKey": "WHO", "issueNumber": 123.0}, captured["variables"])
 
     def test_linear_issue_lookup_uses_uuid_query_for_uuid_input(self):
         captured = {}
@@ -3263,31 +3264,51 @@ class SafeMcpWriteTests(unittest.TestCase):
         self.assertIn("query LinearIssueByUuid", captured["query"])
         self.assertEqual({"id": "123e4567-e89b-12d3-a456-426614174000"}, captured["variables"])
 
+    def test_linear_comment_lookup_uses_direct_comment_query(self):
+        captured = {}
+
+        def fake_linear_graphql(query, variables=None):
+            captured["query"] = query
+            captured["variables"] = variables
+            return {
+                "data": {
+                    "comment": {
+                        "id": variables["id"],
+                        "body": "verified",
+                        "issue": {"id": "issue-uuid"},
+                    }
+                }
+            }
+
+        with patch.object(server_http, "_linear_graphql", side_effect=fake_linear_graphql):
+            comment = server_http._linear_comment_by_id("comment-1")
+
+        self.assertEqual("comment-1", comment["id"])
+        self.assertIn("query LinearCommentById", captured["query"])
+        self.assertEqual({"id": "comment-1"}, captured["variables"])
+
 
     def test_linear_update_issue_verifies_state_and_comment(self):
+        issue_state = {"name": "Todo"}
+
         def fake_linear_graphql(query, variables=None):
             if "issueUpdate" in query:
+                issue_state["name"] = "Done"
                 return {"data": {"issueUpdate": {"issue": {"identifier": "WHO-123", "state": {"name": "Done"}}}}}
             if "commentCreate" in query:
                 return {"data": {"commentCreate": {"comment": {"id": "comment-1", "body": variables["body"]}}}}
-            if "comments(last: 5)" in query:
+            if "query LinearCommentById" in query:
                 return {
                     "data": {
-                        "issues": {
-                            "nodes": [
-                                {
-                                    "id": "issue-uuid",
-                                    "identifier": "WHO-123",
-                                    "title": "Safe MCP test",
-                                    "url": "https://linear.app/issue/WHO-123",
-                                    "state": {"name": "Done"},
-                                    "team": {"states": {"nodes": [{"id": "done-id", "name": "Done"}]}},
-                                    "comments": {"nodes": [{"id": "comment-1", "body": "verified", "createdAt": "now"}]},
-                                }
-                            ]
+                        "comment": {
+                            "id": variables["id"],
+                            "body": "verified",
+                            "issue": {"id": "issue-uuid"},
                         }
                     }
                 }
+            if "comments(" in query:
+                self.fail("Linear update verification must use comment(id:), not a recent-comments query")
             return {
                 "data": {
                     "issues": {
@@ -3297,7 +3318,7 @@ class SafeMcpWriteTests(unittest.TestCase):
                                 "identifier": "WHO-123",
                                 "title": "Safe MCP test",
                                 "url": "https://linear.app/issue/WHO-123",
-                                "state": {"name": "Todo"},
+                                "state": {"name": issue_state["name"]},
                                 "team": {"states": {"nodes": [{"id": "done-id", "name": "Done"}]}},
                             }
                         ]

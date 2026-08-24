@@ -7932,7 +7932,7 @@ def _linear_issue_by_identifier(identifier: str, *, include_comments: bool = Fal
     if identifier_match:
         team_key, issue_number = identifier_match.groups()
         query = f"""
-        query LinearIssueByKeyAndNumber($teamKey: String!, $issueNumber: Int!) {{
+        query LinearIssueByKeyAndNumber($teamKey: String!, $issueNumber: Float!) {{
             issues(filter: {{
                 team: {{ key: {{ eqIgnoreCase: $teamKey }} }}
                 number: {{ eq: $issueNumber }}
@@ -7945,7 +7945,7 @@ def _linear_issue_by_identifier(identifier: str, *, include_comments: bool = Fal
         """
         data = _linear_graphql(query, {
             "teamKey": team_key,
-            "issueNumber": int(issue_number),
+            "issueNumber": float(issue_number),
         })
         nodes = data["data"]["issues"]["nodes"]
         return nodes[0] if nodes else None
@@ -7966,6 +7966,24 @@ def _linear_issue_by_identifier(identifier: str, *, include_comments: bool = Fal
         return data["data"].get("issue")
 
     return None
+
+
+def _linear_comment_by_id(comment_id: str) -> dict | None:
+    comment_id = (comment_id or "").strip()
+    if not comment_id:
+        return None
+
+    query = """
+    query LinearCommentById($id: String!) {
+        comment(id: $id) {
+            id
+            body
+            issue { id }
+        }
+    }
+    """
+    data = _linear_graphql(query, {"id": comment_id})
+    return data["data"].get("comment")
 
 
 def handle_linear_issues(req_id, arguments: dict) -> dict:
@@ -8117,7 +8135,7 @@ def handle_linear_update_issue(req_id, arguments: dict) -> dict:
         if not results:
             return make_response(req_id, make_tool_text_response("Nothing to update (provide state or comment)"))
 
-        verified = _linear_issue_by_identifier(issue_id, include_comments=bool(comment))
+        verified = _linear_issue_by_identifier(issue_id)
         if not verified:
             return make_response(req_id, make_tool_text_response(
                 format_safe_mcp_failure("Linear issue update", issue_id, "updated issue could not be re-fetched"),
@@ -8137,13 +8155,19 @@ def handle_linear_update_issue(req_id, arguments: dict) -> dict:
                 ))
             verification.append(f"Verified state: {verified_state}")
         if comment:
-            comment_nodes = verified.get("comments", {}).get("nodes", [])
-            if not any(node.get("id") == comment_id for node in comment_nodes):
+            verified_comment = _linear_comment_by_id(comment_id)
+            comment_matches = (
+                verified_comment
+                and verified_comment.get("id") == comment_id
+                and verified_comment.get("body") == comment
+                and (verified_comment.get("issue") or {}).get("id") == iss_uuid
+            )
+            if not comment_matches:
                 return make_response(req_id, make_tool_text_response(
                     format_safe_mcp_failure(
                         "Linear issue update",
                         issue_id,
-                        "created comment was not present in recent comments read-back",
+                        "created comment failed direct id/body/issue read-back",
                     ),
                     is_error=True,
                 ))

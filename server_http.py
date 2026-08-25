@@ -1048,6 +1048,31 @@ TOOLS = [
     },
     # ── Git 工具 ─────────────────────────────────────────────────────────────
     {
+        "name": "qmd_search",
+        "description": "Search Edgar's local knowledge base (Agent-KB + Obsidian, indexed by QMD) and return ranked results as JSON. mode: search=BM25 keyword (fast, default), vsearch=vector/semantic, query=hybrid+rerank (best, slower). Optional collection: agent-kb or obsidian.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query text"},
+                "mode": {"type": "string", "description": "search (default) | vsearch | query"},
+                "collection": {"type": "string", "description": "Optional collection filter: agent-kb or obsidian"},
+                "n": {"type": "integer", "description": "Max results (default 5, max 25)"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "qmd_get",
+        "description": "Fetch a document from Edgar's QMD knowledge base by its qmd:// URI (from qmd_search results) and return its content.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "uri": {"type": "string", "description": "qmd:// URI or file path, e.g. qmd://agent-kb/RULES.md"},
+            },
+            "required": ["uri"],
+        },
+    },
+    {
         "name": "git_status",
         "description": "Show git working tree status for a repository.",
         "inputSchema": {
@@ -1609,6 +1634,8 @@ TOOLS = [
 ]
 
 READ_ONLY_TOOL_NAMES = {
+    "qmd_search",
+    "qmd_get",
     "echo",
     "agent_job_status",
     "agent_job_list",
@@ -3421,6 +3448,10 @@ def handle_tools_call(req_id, params: dict, config: HandcraftServerConfig | None
         return handle_sys_info(req_id, arguments)
     if name == "sys_processes":
         return handle_sys_processes(req_id, arguments)
+    if name == "qmd_search":
+        return handle_qmd_search(req_id, arguments)
+    if name == "qmd_get":
+        return handle_qmd_get(req_id, arguments)
 
     # ── Git
     if name == "git_status":
@@ -5994,6 +6025,69 @@ def handle_sys_run(req_id, arguments: dict) -> dict:
         ))
     except Exception as e:
         return make_response(req_id, make_tool_text_response(f"Error: {e}", is_error=True))
+
+
+def _run_qmd(args, timeout=120):
+    # qmd is an npm shim (qmd.cmd) on Windows; invoke via cmd /c so it resolves.
+    return subprocess.run(
+        ["cmd", "/c", "qmd", *args],
+        capture_output=True, text=True, timeout=timeout, shell=False,
+    )
+
+
+def handle_qmd_search(req_id, arguments: dict) -> dict:
+    query = str(arguments.get("query", "")).strip()
+    if not query:
+        return make_response(req_id, make_tool_text_response("Error: query is required", is_error=True))
+    mode = str(arguments.get("mode", "search")).strip().lower()
+    if mode not in {"search", "vsearch", "query"}:
+        mode = "search"
+    try:
+        n = int(arguments.get("n", 5))
+    except (TypeError, ValueError):
+        n = 5
+    n = max(1, min(n, 25))
+    collection = str(arguments.get("collection", "")).strip()
+    args = [mode, query, "--format", "json", "-n", str(n)]
+    if collection:
+        args += ["-c", collection]
+    timeout = 180 if mode == "query" else 60
+    try:
+        result = _run_qmd(args, timeout=timeout)
+        out = (result.stdout or "").strip()
+        if result.returncode != 0:
+            return make_response(req_id, make_tool_text_response(
+                "qmd error (exit %d): %s" % (result.returncode, (result.stderr or out).strip()[:500]),
+                is_error=True,
+            ))
+        try:
+            data = json.loads(out) if out else []
+        except json.JSONDecodeError:
+            return make_response(req_id, make_tool_text_response(out or "(no results)"))
+        return make_response(req_id, make_tool_json_response({"mode": mode, "query": query, "results": data}))
+    except subprocess.TimeoutExpired:
+        return make_response(req_id, make_tool_text_response("Error: qmd timed out after %ds" % timeout, is_error=True))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response("Error: %s" % e, is_error=True))
+
+
+def handle_qmd_get(req_id, arguments: dict) -> dict:
+    uri = str(arguments.get("uri", "")).strip()
+    if not uri:
+        return make_response(req_id, make_tool_text_response("Error: uri is required", is_error=True))
+    try:
+        result = _run_qmd(["get", uri], timeout=30)
+        out = (result.stdout or "").strip()
+        if result.returncode != 0:
+            return make_response(req_id, make_tool_text_response(
+                "qmd error (exit %d): %s" % (result.returncode, (result.stderr or out).strip()[:500]),
+                is_error=True,
+            ))
+        return make_response(req_id, make_tool_text_response(out or "(empty)"))
+    except subprocess.TimeoutExpired:
+        return make_response(req_id, make_tool_text_response("Error: qmd get timed out", is_error=True))
+    except Exception as e:
+        return make_response(req_id, make_tool_text_response("Error: %s" % e, is_error=True))
 
 
 def handle_sys_info(req_id, arguments: dict) -> dict:

@@ -52,7 +52,7 @@ Cloudflare Access（建議 public 模式）
 > run_http.cmd
 > ```
 >
-> 缺 token 時 server 印 `MCP_API_TOKEN is required` 後 exit。詳見下方第 4 節「Secrets / Doppler 管理」。
+> 缺 token 時 server 印 `MCP_API_TOKEN is required and must be a non-empty string. Refusing to start.` 後以失敗狀態退出。詳見下方第 4 節「Secrets / Doppler 管理」。
 
 
 ### 啟動 HTTP server（常用）

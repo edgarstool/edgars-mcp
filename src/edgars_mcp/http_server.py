@@ -44,6 +44,15 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from .mmx_handlers import DISPATCH, hmi, hmvd, hms, hmu, hmv, hmsq, hmc, hmq
 from .config import RuntimePaths, tool_capability
+from .chatgpt_honcho import (
+    CHATGPT_HONCHO_PATH,
+    CHATGPT_HONCHO_METADATA_PATH,
+    ChatgptHonchoConfig,
+    HonchoStagingClient,
+    build_resource_metadata as build_chatgpt_honcho_resource_metadata,
+    dispatch as dispatch_chatgpt_honcho,
+    verify_logto_access_token as verify_chatgpt_honcho_logto_token,
+)
 
 try:
     import jwt
@@ -139,6 +148,11 @@ class EdgarsMcpServerConfig:
     honcho_user_name: str = "Edgar"
     honcho_workspace_id: str = "edgar-team"
     honcho_assistant_name: str = "hermes_default"
+    chatgpt_honcho_enabled: bool = False
+    chatgpt_honcho_issuer: str = ""
+    chatgpt_honcho_userinfo_url: str = ""
+    chatgpt_honcho_upstream_url: str = "http://127.0.0.1:18000"
+    chatgpt_honcho_workspace_id: str = "edg313-chatgpt-dev"
 
     @property
     def public_hostname(self) -> str:
@@ -3451,7 +3465,24 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        if path == "/.well-known/oauth-authorization-server":
+        if path == CHATGPT_HONCHO_METADATA_PATH:
+            if not self.server.config.chatgpt_honcho_enabled:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self._handle_chatgpt_honcho_metadata()
+        elif path == CHATGPT_HONCHO_PATH:
+            if not self.server.config.chatgpt_honcho_enabled:
+                self.send_response(404)
+                self.end_headers()
+                return
+            if not self._ensure_chatgpt_honcho_authorized():
+                return
+            self._send_oauth_json({
+                "server": {"name": "edgars-chatgpt-honcho-dev", "version": "0.1.0"},
+                "protocolVersion": PROTOCOL_VERSION,
+            })
+        elif path == "/.well-known/oauth-authorization-server":
             if not self._builtin_oauth_enabled_for_request():
                 self._send_builtin_oauth_disabled()
                 return
@@ -3521,6 +3552,78 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         self._add_cors_headers()
         self.end_headers()
         self.wfile.write(body)
+
+    def _chatgpt_honcho_config(self) -> ChatgptHonchoConfig:
+        config = self.server.config
+        return ChatgptHonchoConfig(
+            enabled=config.chatgpt_honcho_enabled,
+            resource_url=f"{config.base_url.rstrip('/')}{CHATGPT_HONCHO_PATH}",
+            issuer=config.chatgpt_honcho_issuer,
+            userinfo_url=config.chatgpt_honcho_userinfo_url,
+            upstream_url=config.chatgpt_honcho_upstream_url,
+            workspace_id=config.chatgpt_honcho_workspace_id,
+        )
+
+    def _handle_chatgpt_honcho_metadata(self) -> None:
+        self._send_oauth_json(build_chatgpt_honcho_resource_metadata(self._chatgpt_honcho_config()))
+
+    def _send_chatgpt_honcho_unauthorized(self, description: str) -> None:
+        body = b"Unauthorized"
+        metadata_url = f"{self.server.config.base_url.rstrip('/')}{CHATGPT_HONCHO_METADATA_PATH}"
+        self.send_response(401)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header(
+            "WWW-Authenticate",
+            f'Bearer resource_metadata="{metadata_url}", error="invalid_token", error_description="{description}"',
+        )
+        self._add_cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _ensure_chatgpt_honcho_authorized(self) -> bool:
+        auth = self.headers.get("Authorization", "")
+        if auth[:7].lower() != "bearer ":
+            self._send_chatgpt_honcho_unauthorized("Authorize with Logto to continue.")
+            return False
+        token = auth[7:].strip()
+        try:
+            claims = verify_chatgpt_honcho_logto_token(
+                token,
+                self.server.config.chatgpt_honcho_userinfo_url,
+            )
+            ident = claims.get("email") or claims.get("sub") or "logto-user"
+            log(f"ChatGPT Honcho Logto authenticated request: {ident}")
+            return True
+        except Exception as exc:
+            log(f"ChatGPT Honcho Logto bearer rejected: {type(exc).__name__}")
+            self._send_chatgpt_honcho_unauthorized("Logto bearer token is invalid or expired.")
+            return False
+
+    def _handle_chatgpt_honcho_post(self) -> None:
+        origin = self.headers.get("Origin", "")
+        if origin and not self._is_allowed_origin(origin):
+            self.send_response(403)
+            self.end_headers()
+            return
+        content_length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(content_length)
+        try:
+            msg = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            self._send_json(make_error(None, -32700, f"Parse error: {exc}"), status=400)
+            return
+        if not isinstance(msg, dict):
+            self._send_json(make_error(None, -32600, "Invalid Request: expected JSON object"), status=400)
+            return
+        client = HonchoStagingClient(self._chatgpt_honcho_config())
+        response = dispatch_chatgpt_honcho(msg, client)
+        if response is None:
+            self.send_response(202)
+            self._add_cors_headers()
+            self.end_headers()
+            return
+        self._send_json(response)
 
     def _send_mcp_unauthorized(self, *, error: str, description: str) -> None:
         body = b"Unauthorized"
@@ -3820,6 +3923,15 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
     # ── 主要端點 ──────────────────────────────────────────────────────────────
     def do_POST(self):
         parsed_path = urllib.parse.urlparse(self.path).path
+        if parsed_path == CHATGPT_HONCHO_PATH:
+            if not self.server.config.chatgpt_honcho_enabled:
+                self.send_response(404)
+                self.end_headers()
+                return
+            if not self._ensure_chatgpt_honcho_authorized():
+                return
+            self._handle_chatgpt_honcho_post()
+            return
         if parsed_path == "/token":
             if not self._builtin_oauth_enabled_for_request():
                 self._send_builtin_oauth_disabled()
@@ -4314,6 +4426,11 @@ def validate_http_startup_config() -> EdgarsMcpServerConfig:
         honcho_user_name=os.getenv("HONCHO_USER_NAME", "Edgar").strip() or "Edgar",
         honcho_workspace_id=os.getenv("HONCHO_WORKSPACE_ID", "edgar-team").strip() or "edgar-team",
         honcho_assistant_name=os.getenv("HONCHO_ASSISTANT_NAME", "hermes_default").strip() or "hermes_default",
+        chatgpt_honcho_enabled=load_bool_env("CHATGPT_HONCHO_DEV_ENABLED", False),
+        chatgpt_honcho_issuer=os.getenv("CHATGPT_HONCHO_LOGTO_ISSUER", "").strip(),
+        chatgpt_honcho_userinfo_url=os.getenv("CHATGPT_HONCHO_LOGTO_USERINFO_URL", "").strip(),
+        chatgpt_honcho_upstream_url=os.getenv("CHATGPT_HONCHO_UPSTREAM_URL", "http://127.0.0.1:18000").strip(),
+        chatgpt_honcho_workspace_id=os.getenv("CHATGPT_HONCHO_WORKSPACE_ID", "edg313-chatgpt-dev").strip() or "edg313-chatgpt-dev",
     )
 
 

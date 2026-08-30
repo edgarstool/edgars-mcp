@@ -1,7 +1,7 @@
 """
 手刻 MCP Server - Streamable HTTP 版本
 協議版本: 2025-11-25
-依賴: Python 標準庫；啟用 Cloudflare Access 模式時額外使用 PyJWT
+依賴: Python 標準庫；啟用 Descope 模式時額外使用 PyJWT + descope SDK
 
 端點:
 - POST /mcp
@@ -146,13 +146,15 @@ class HandcraftServerConfig:
     mcp_api_token: str
     base_url: str
     webhook_base_url: str = ""
-    cloudflare_access_enabled: bool = False
-    cloudflare_access_team_domain: str = ""
-    cloudflare_access_aud: str = ""
-    cloudflare_access_chatgpt_honcho_aud: str = ""
-    cloudflare_access_jwks_url: str = ""
-    cloudflare_access_disable_builtin_oauth: bool = True
-    cloudflare_access_allow_public_token_fallback: bool = False
+    # DEPRECATED: Cloudflare Access fields kept for config loading compatibility.
+    # These fields are no longer used; CF Access auth mode has been removed.
+    cloudflare_access_enabled: bool = False  # Always False, ignored
+    cloudflare_access_team_domain: str = ""  # Deprecated, ignored
+    cloudflare_access_aud: str = ""  # Deprecated, ignored
+    cloudflare_access_chatgpt_honcho_aud: str = ""  # Deprecated, ignored
+    cloudflare_access_jwks_url: str = ""  # Deprecated, ignored
+    cloudflare_access_disable_builtin_oauth: bool = True  # Deprecated, ignored
+    cloudflare_access_allow_public_token_fallback: bool = False  # Deprecated, ignored
     descope_enabled: bool = False
     descope_project_id: str = ""
     descope_audience: str = ""
@@ -179,12 +181,6 @@ class HandcraftServerConfig:
         return (urllib.parse.urlparse(candidate).hostname or "").lower()
 
     @property
-    def cloudflare_access_issuer(self) -> str:
-        if not self.cloudflare_access_team_domain:
-            return ""
-        return f"https://{self.cloudflare_access_team_domain}"
-
-    @property
     def descope_jwks_url(self) -> str:
         if not self.descope_project_id:
             return ""
@@ -207,13 +203,6 @@ class HandcraftServerConfig:
         if not self.descope_project_id:
             return ""
         return f"https://api.descope.com/oauth2/v1/{self.descope_project_id}/token"
-
-    def cloudflare_access_audience_for_path(self, path: str) -> str:
-        """Return the Access audience dedicated to this public MCP route."""
-        if path == CHATGPT_HONCHO_MCP_PATH:
-            return self.cloudflare_access_chatgpt_honcho_aud
-        return self.cloudflare_access_aud
-
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
@@ -476,8 +465,6 @@ def with_openid_scope(query_string: str) -> str:
     if not found:
         out.append(("scope", OAUTH_OIDC_SCOPE_SPACE))
     return urllib.parse.urlencode(out)
-CLOUDFLARE_ACCESS_JWKS_LOCK = threading.Lock()
-CLOUDFLARE_ACCESS_JWKS_CLIENTS: dict[str, object] = {}
 DESCOPE_JWKS_LOCK = threading.Lock()
 DESCOPE_JWKS_CLIENTS: dict[str, object] = {}
 DESCOPE_SDK_CLIENTS_LOCK = threading.Lock()
@@ -2004,10 +1991,6 @@ class HonchoMcpError(RuntimeError):
     pass
 
 
-class CloudflareAccessAuthError(RuntimeError):
-    pass
-
-
 class DescopeAuthError(RuntimeError):
     pass
 
@@ -2848,56 +2831,6 @@ def oauth_access_token_is_valid(token: str) -> bool:
             OAUTH_ACCESS_TOKENS.pop(token, None)
             return False
         return True
-
-
-def get_cloudflare_access_jwk_client(jwks_url: str):
-    if PyJWKClient is None:
-        raise CloudflareAccessAuthError(
-            "PyJWT with PyJWKClient support is required when Cloudflare Access mode is enabled."
-        )
-    with CLOUDFLARE_ACCESS_JWKS_LOCK:
-        client = CLOUDFLARE_ACCESS_JWKS_CLIENTS.get(jwks_url)
-        if client is None:
-            client = PyJWKClient(jwks_url)
-            CLOUDFLARE_ACCESS_JWKS_CLIENTS[jwks_url] = client
-        return client
-
-
-def verify_cloudflare_access_jwt(
-    token: str,
-    config: HandcraftServerConfig,
-    *,
-    audience: str | None = None,
-) -> dict:
-    if not token:
-        raise CloudflareAccessAuthError("Missing Cf-Access-Jwt-Assertion header.")
-    if not config.cloudflare_access_enabled:
-        raise CloudflareAccessAuthError("Cloudflare Access mode is not enabled for this server.")
-    if jwt is None:
-        raise CloudflareAccessAuthError("PyJWT is required to verify Cloudflare Access JWTs.")
-
-    expected_audience = audience if audience is not None else config.cloudflare_access_aud
-    if not expected_audience:
-        raise CloudflareAccessAuthError("Cloudflare Access audience is not configured for this route.")
-
-    try:
-        jwk_client = get_cloudflare_access_jwk_client(config.cloudflare_access_jwks_url)
-        signing_key = jwk_client.get_signing_key_from_jwt(token)
-        claims = jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["RS256"],
-            audience=expected_audience,
-            issuer=config.cloudflare_access_issuer,
-        )
-    except InvalidTokenError as exc:
-        raise CloudflareAccessAuthError(f"Cloudflare Access JWT invalid: {exc}") from exc
-    except CloudflareAccessAuthError:
-        raise
-    except Exception as exc:
-        raise CloudflareAccessAuthError(f"Cloudflare Access JWT verification failed: {exc}") from exc
-
-    return claims if isinstance(claims, dict) else {}
 
 
 def get_descope_sdk_client(project_id: str):
@@ -4317,50 +4250,23 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         if path == "/.well-known/oauth-authorization-server":
-            if not self._builtin_oauth_enabled_for_request():
-                self._send_builtin_oauth_disabled()
-                return
             self._handle_oauth_metadata()
         elif path == "/.well-known/oauth-protected-resource":
-            if not self._builtin_oauth_enabled_for_request():
-                self._send_builtin_oauth_disabled()
-                return
             self._handle_resource_metadata()
         elif path == "/.well-known/oauth-protected-resource/mcp":
-            if not self._builtin_oauth_enabled_for_request():
-                self._send_builtin_oauth_disabled()
-                return
             self._handle_resource_metadata(resource_path=MCP_PATH)
         elif path == f"/.well-known/oauth-protected-resource{CHATGPT_HONCHO_MCP_PATH}":
             if not self.server.config.honcho_chatgpt_gateway_enabled:
                 self.send_response(404)
                 self.end_headers()
                 return
-            if not self._builtin_oauth_enabled_for_request():
-                self._send_builtin_oauth_disabled()
-                return
-            # ChatGPT Honcho gateway uses Cloudflare Access Managed OAuth,
-            # so the authorization server must be the Access team domain,
-            # NOT the backend's own built-in OAuth server.
-            cf_issuer = self.server.config.cloudflare_access_issuer
-            self._handle_resource_metadata(
-                resource_path=CHATGPT_HONCHO_MCP_PATH,
-                authorization_server=cf_issuer or None,
-            )
+            # ChatGPT Honcho gateway now uses builtin OAuth or Descope
+            self._handle_resource_metadata(resource_path=CHATGPT_HONCHO_MCP_PATH)
         elif path == "/.well-known/openid-configuration":
-            if not self._builtin_oauth_enabled_for_request():
-                self._send_builtin_oauth_disabled()
-                return
             self._handle_openid_configuration()
         elif path == "/authorize":
-            if not self._builtin_oauth_enabled_for_request():
-                self._send_builtin_oauth_disabled()
-                return
             self._handle_authorize(parsed.query)
         elif path == HEALTH_PATH:
-            if self._requires_cloudflare_access_for_request(path):
-                if not self._ensure_mcp_request_authorized(path):
-                    return
             self._handle_health()
         elif path == LINEAR_OAUTH_AUTHORIZE_PATH:
             self._handle_linear_oauth_authorize()
@@ -4502,13 +4408,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 "mcp_api_token_configured": bool(self.server.config.mcp_api_token),
                 "oauth_public_client_id": OAUTH_STATIC_CLIENT_ID,
                 "oauth_active_tokens": len(OAUTH_ACCESS_TOKENS),
-                "oauth_mode": (
-                    "cloudflare_access_managed"
-                    if self.server.config.cloudflare_access_enabled
-                    else "handcraft_builtin"
-                ),
-                "cloudflare_access_enabled": self.server.config.cloudflare_access_enabled,
-                "cloudflare_access_aud_configured": bool(self.server.config.cloudflare_access_aud),
+                "oauth_mode": "descope" if self.server.config.descope_enabled else "handcraft_builtin",
                 "descope_enabled": self.server.config.descope_enabled,
                 "descope_project_configured": bool(self.server.config.descope_project_id),
                 "descope_sdk": DescopeClient is not None,
@@ -4568,22 +4468,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         resource = params.get("resource", [""])[0]
         code_challenge = params.get("code_challenge", [""])[0]
         code_challenge_method = params.get("code_challenge_method", [""])[0]
-
-        # If client_id looks like a URL (e.g. ChatGPT DCR metadata document),
-        # and Cloudflare Access Managed OAuth is configured, redirect the entire
-        # authorization request to the CF Access authorization endpoint.
-        # This handles the case where ChatGPT ignores path-scoped PRM and goes
-        # directly to the backend's root /.well-known/oauth-authorization-server.
-        cf_issuer = self.server.config.cloudflare_access_issuer
-        if cf_issuer and client_id.startswith("https://"):
-            cf_auth_url = f"{cf_issuer}/cdn-cgi/access/oauth/authorization"
-            redirect_target = f"{cf_auth_url}?{query_string}"
-            log(f"OAuth /authorize → redirecting URL-based client to Cloudflare Access: {client_id[:60]}...")
-            self.send_response(302)
-            self.send_header("Location", redirect_target)
-            self._add_cors_headers()
-            self.end_headers()
-            return
 
         descope_authz = self.server.config.descope_authorization_endpoint
         if self.server.config.descope_enabled and descope_authz:
@@ -4653,38 +4537,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         else:
             log(f"OAuth /token failed: {error} (client_id={label})")
 
-    def _proxy_to_cloudflare_access(self, endpoint_path: str, raw_body: bytes, content_type: str) -> None:
-        """Proxy a POST request to Cloudflare Access OAuth endpoint."""
-        cf_issuer = self.server.config.cloudflare_access_issuer
-        target_url = f"{cf_issuer}/cdn-cgi/access/oauth/{endpoint_path}"
-        try:
-            req = urllib.request.Request(
-                target_url,
-                data=raw_body,
-                headers={"Content-Type": content_type, "Accept": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                resp_body = resp.read()
-                self.send_response(resp.status)
-                for header in ("Content-Type", "Cache-Control"):
-                    val = resp.getheader(header)
-                    if val:
-                        self.send_header(header, val)
-                self._add_cors_headers()
-                self.end_headers()
-                self.wfile.write(resp_body)
-        except urllib.error.HTTPError as exc:
-            resp_body = exc.read()
-            self.send_response(exc.code)
-            self.send_header("Content-Type", "application/json")
-            self._add_cors_headers()
-            self.end_headers()
-            self.wfile.write(resp_body)
-        except Exception as exc:
-            log(f"OAuth proxy to CF Access {endpoint_path} failed: {exc}")
-            self._send_oauth_json({"error": "server_error", "error_description": "upstream proxy error"}, 502)
-
     def _handle_token(self) -> None:
         content_length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(content_length) if content_length > 0 else b""
@@ -4704,14 +4556,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         basic_credentials = parse_basic_client_credentials(self.headers.get("Authorization", ""))
         if basic_credentials and not client_id:
             client_id = basic_credentials[0]
-
-        # If client_id is URL-based (ChatGPT DCR metadata document) and
-        # Cloudflare Access is configured, proxy the token exchange to CF Access.
-        cf_issuer = self.server.config.cloudflare_access_issuer
-        if cf_issuer and client_id.startswith("https://"):
-            log(f"OAuth /token → proxying to Cloudflare Access for URL client: {client_id[:60]}...")
-            self._proxy_to_cloudflare_access("token", raw, self.headers.get("Content-Type", "application/x-www-form-urlencoded"))
-            return
 
         client = get_oauth_client(client_id)
         if not client:
@@ -4778,20 +4622,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(content_length) if content_length > 0 else b""
 
-        # If Cloudflare Access is configured and the DCR request contains a
-        # client_uri or client_id that looks like a URL, proxy to CF Access.
-        cf_issuer = self.server.config.cloudflare_access_issuer
-        if cf_issuer and raw:
-            try:
-                peek = json.loads(raw)
-                client_uri = peek.get("client_uri", "") or peek.get("client_id", "")
-                if isinstance(client_uri, str) and client_uri.startswith("https://"):
-                    log(f"OAuth /register → proxying to Cloudflare Access for URL client: {client_uri[:60]}...")
-                    self._proxy_to_cloudflare_access("registration", raw, self.headers.get("Content-Type", "application/json"))
-                    return
-            except (json.JSONDecodeError, AttributeError):
-                pass
-
         meta = parse_request_params(raw, self.headers.get("Content-Type", "application/json"))
         redirect_uris = meta.get("redirect_uris", [])
         if not isinstance(redirect_uris, list) or not redirect_uris:
@@ -4841,15 +4671,9 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed_path = urllib.parse.urlparse(self.path).path
         if parsed_path == "/token":
-            if not self._builtin_oauth_enabled_for_request():
-                self._send_builtin_oauth_disabled()
-                return
             self._handle_token()
             return
         if parsed_path == "/register":
-            if not self._builtin_oauth_enabled_for_request():
-                self._send_builtin_oauth_disabled()
-                return
             self._handle_register()
             return
         if parsed_path == "/webhook/discord":
@@ -5449,15 +5273,12 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         return bool(hostname) and hostname == self.server.config.public_hostname
 
     def _builtin_oauth_enabled_for_request(self) -> bool:
-        config = self.server.config
-        if not config.cloudflare_access_enabled or not config.cloudflare_access_disable_builtin_oauth:
-            return True
-        return not self._request_targets_base_hostname()
+        # Builtin OAuth is always available (CF Access mode deprecated)
+        return True
 
     def _mcp_auth_required(self, resource_path: str = MCP_PATH) -> bool:
+        del resource_path  # unused after CF Access removal
         config = self.server.config
-        if self._requires_cloudflare_access_for_request(resource_path):
-            return True
         if self._builtin_oauth_enabled_for_request():
             return True
         return bool(config.mcp_api_token)
@@ -5469,89 +5290,31 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         if not self._mcp_auth_required(resource_path):
             return "none"
 
-        access_jwt = self.headers.get("Cf-Access-Jwt-Assertion", "").strip()
-        if access_jwt and config.cloudflare_access_enabled:
-            try:
-                verify_cloudflare_access_jwt(
-                    access_jwt,
-                    config,
-                    audience=config.cloudflare_access_audience_for_path(resource_path),
-                )
-                return "cf_access"
-            except CloudflareAccessAuthError:
-                pass
-
         auth = self.headers.get("Authorization", "")
         if auth[:7].lower() == "bearer ":
             token = auth[7:].strip()
             if config.mcp_api_token and hmac.compare_digest(token, config.mcp_api_token):
                 return "static"
+            if config.descope_enabled:
+                try:
+                    verify_descope_jwt(token, config)
+                    return "descope"
+                except DescopeAuthError:
+                    pass
             if oauth_access_token_is_valid(token):
                 return "oauth"
-        return "unknown"
+        return "none"
 
     def _ensure_mcp_request_authorized(self, resource_path: str = MCP_PATH) -> bool:
-        """Use one explicit boundary: Access JWT on public host, bearer locally."""
+        """Validate bearer token: Descope JWT, static token, or builtin OAuth."""
+        del resource_path  # unused after CF Access removal
         config = self.server.config
 
-        if not self._mcp_auth_required(resource_path):
+        if not self._mcp_auth_required():
             return True
 
         auth = self.headers.get("Authorization", "")
         has_bearer = auth[:7].lower() == "bearer "
-
-        if self._requires_cloudflare_access_for_request(resource_path):
-            expected_audience = config.cloudflare_access_audience_for_path(resource_path)
-            if not expected_audience:
-                log(f"Cloudflare Access audience is missing for route={resource_path}")
-                self._send_json(
-                    {
-                        "ok": False,
-                        "error": "cloudflare_access_audience_not_configured",
-                    },
-                    status=503,
-                )
-                return False
-
-            access_jwt = self.headers.get("Cf-Access-Jwt-Assertion", "").strip()
-            if access_jwt:
-                try:
-                    claims = verify_cloudflare_access_jwt(
-                        access_jwt,
-                        config,
-                        audience=expected_audience,
-                    )
-                    if resource_path == CHATGPT_HONCHO_MCP_PATH:
-                        # The ChatGPT memory gateway deliberately avoids logging a
-                        # caller identity alongside memory-query traffic.  Its
-                        # route is enough for operational correlation, while the
-                        # Access JWT itself remains the authorization boundary.
-                        log("Cloudflare Access authenticated ChatGPT Honcho gateway request")
-                    else:
-                        ident = claims.get("email") or claims.get("sub") or "cloudflare-access-user"
-                        log(f"Cloudflare Access authenticated request: {ident}")
-                    return True
-                except CloudflareAccessAuthError as exc:
-                    log(f"Cloudflare Access JWT rejected: {exc}")
-
-            # This migration switch is deliberately opt-in. It supports a narrowly
-            # controlled recovery path without allowing the origin's in-memory OAuth
-            # tokens to become a public authentication boundary.
-            if (
-                resource_path == MCP_PATH
-                and config.cloudflare_access_allow_public_token_fallback
-                and has_bearer
-                and config.mcp_api_token
-                and hmac.compare_digest(auth[7:].strip(), config.mcp_api_token)
-            ):
-                log("Public MCP request accepted through explicit static-token fallback")
-                return True
-
-            self._send_cloudflare_access_unauthorized(
-                "This public endpoint requires Cloudflare Access. Complete Managed OAuth in your MCP client and retry.",
-                resource_path=resource_path,
-            )
-            return False
 
         if has_bearer and bearer_token_is_authorized(auth[7:].strip(), config.mcp_api_token, config):
             return True
@@ -5566,79 +5329,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             resource_path=resource_path,
         )
         return False
-
-    def _requires_cloudflare_access_for_request(self, path: str) -> bool:
-        config = self.server.config
-        if not config.cloudflare_access_enabled:
-            return False
-        if not self._request_targets_base_hostname():
-            return False
-        return path in {MCP_PATH, CHATGPT_HONCHO_MCP_PATH, HEALTH_PATH}
-
-    def _send_builtin_oauth_disabled(self) -> None:
-        self._send_oauth_json(
-            oauth_error(
-                "not_found",
-                "Public OAuth is managed by Cloudflare Access for this hostname.",
-            ),
-            404,
-        )
-
-    def _send_cloudflare_access_unauthorized(
-        self,
-        description: str,
-        *,
-        resource_path: str = MCP_PATH,
-    ) -> None:
-        # Cloudflare Access is the sole public OAuth authority.  Do not advertise
-        # this origin's legacy OAuth resource metadata here, otherwise clients can
-        # choose a competing authorization flow instead of the Access flow.
-        del resource_path
-        body = json.dumps(
-            {
-                "ok": False,
-                "error": "cloudflare_access_required",
-                "error_description": description,
-            },
-            ensure_ascii=False,
-        ).encode("utf-8")
-        safe_description = description.replace("\\", "\\\\").replace('"', '\\"')
-        self.send_response(401)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header(
-            "WWW-Authenticate",
-            f'Bearer error="invalid_token", error_description="{safe_description}"',
-        )
-        self._add_cors_headers()
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _authenticate_public_request_via_cloudflare_access(
-        self,
-        resource_path: str = MCP_PATH,
-    ):
-        access_jwt = self.headers.get("Cf-Access-Jwt-Assertion", "").strip()
-        if not access_jwt:
-            if (
-                resource_path == MCP_PATH
-                and self.server.config.cloudflare_access_allow_public_token_fallback
-            ):
-                return None
-            self._send_cloudflare_access_unauthorized(
-                "This public endpoint is protected by Cloudflare Access. Complete Managed OAuth in your MCP client and retry.",
-                resource_path=resource_path,
-            )
-            return False
-        try:
-            return verify_cloudflare_access_jwt(
-                access_jwt,
-                self.server.config,
-                audience=self.server.config.cloudflare_access_audience_for_path(resource_path),
-            )
-        except CloudflareAccessAuthError as exc:
-            self._send_cloudflare_access_unauthorized(str(exc), resource_path=resource_path)
-            return False
 
     def _authenticate_bearer_request(self) -> bool:
         if not self._mcp_auth_required():
@@ -5790,7 +5480,7 @@ def validate_http_bind_host(raw_host: str | None) -> str:
 
 def validate_http_startup_config() -> HandcraftServerConfig:
     base_url = validate_base_url(load_base_url())
-    cloudflare_access_enabled = load_bool_env("MCP_CLOUDFLARE_ACCESS_ENABLED", False)
+    # CF Access fields kept for backward compatibility but deprecated
     cloudflare_access_team_domain = validate_cloudflare_access_team_domain(
         load_cloudflare_access_team_domain()
     )
@@ -5803,46 +5493,25 @@ def validate_http_startup_config() -> HandcraftServerConfig:
         cloudflare_access_team_domain,
     )
 
-    if cloudflare_access_enabled:
-        if jwt is None or PyJWKClient is None:
-            raise RuntimeError(
-                "PyJWT with PyJWKClient support is required when MCP_CLOUDFLARE_ACCESS_ENABLED=true"
-            )
-        if not cloudflare_access_team_domain:
-            raise RuntimeError(
-                "MCP_CLOUDFLARE_ACCESS_TEAM_DOMAIN is required when MCP_CLOUDFLARE_ACCESS_ENABLED=true"
-            )
-        if not cloudflare_access_aud:
-            raise RuntimeError(
-                "MCP_CLOUDFLARE_ACCESS_AUD is required when MCP_CLOUDFLARE_ACCESS_ENABLED=true"
-            )
+    # CF Access validation removed — mode is deprecated
     if honcho_chatgpt_gateway_enabled:
         if not honcho_api_key:
             raise RuntimeError(
                 "HONCHO_API_KEY is required when HONCHO_CHATGPT_GATEWAY_ENABLED=true"
-            )
-        if cloudflare_access_enabled and not cloudflare_access_chatgpt_honcho_aud:
-            raise RuntimeError(
-                "MCP_CLOUDFLARE_ACCESS_CHATGPT_HONCHO_AUD is required when the ChatGPT Honcho gateway uses Cloudflare Access"
             )
 
     return HandcraftServerConfig(
         mcp_api_token=validate_mcp_api_token(load_mcp_api_token()),
         base_url=base_url,
         webhook_base_url=validate_optional_base_url(load_webhook_base_url(), base_url),
-        cloudflare_access_enabled=cloudflare_access_enabled,
+        # DEPRECATED: Cloudflare Access fields kept for config loading compatibility
+        cloudflare_access_enabled=False,  # Force disabled
         cloudflare_access_team_domain=cloudflare_access_team_domain,
         cloudflare_access_aud=cloudflare_access_aud,
         cloudflare_access_chatgpt_honcho_aud=cloudflare_access_chatgpt_honcho_aud,
         cloudflare_access_jwks_url=cloudflare_access_jwks_url,
-        cloudflare_access_disable_builtin_oauth=load_bool_env(
-            "MCP_CLOUDFLARE_ACCESS_DISABLE_BUILTIN_OAUTH",
-            True,
-        ),
-        cloudflare_access_allow_public_token_fallback=load_bool_env(
-            "MCP_CLOUDFLARE_ACCESS_ALLOW_PUBLIC_TOKEN_FALLBACK",
-            False,
-        ),
+        cloudflare_access_disable_builtin_oauth=False,  # Ignored
+        cloudflare_access_allow_public_token_fallback=False,  # Ignored
         descope_enabled=load_bool_env("MCP_DESCOPE_ENABLED", False),
         descope_project_id=os.getenv("MCP_DESCOPE_PROJECT_ID", "").strip(),
         descope_audience=os.getenv("MCP_DESCOPE_AUDIENCE", "").strip(),
@@ -5880,9 +5549,7 @@ def main() -> None:
     log(
         "Auth mode: "
         + (
-            "Cloudflare Access managed public endpoint"
-            if config.cloudflare_access_enabled
-            else "Descope JWT validation"
+            "Descope JWT validation"
             if config.descope_enabled
             else "Built-in bearer/OAuth"
         )
@@ -7790,7 +7457,7 @@ _VISIBLE_BROWSER_RUNTIME = _VisibleBrowserRuntime()
 def _visible_browser_permitted() -> bool:
     if not BROWSER_VISIBLE_LOCAL_ONLY:
         return True
-    return _mcp_auth_kind.get("unknown") in {"none", "static", "cf_access"}
+    return _mcp_auth_kind.get("unknown") in {"none", "static"}
 
 
 def _visible_browser_access_error() -> str:

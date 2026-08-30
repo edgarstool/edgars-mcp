@@ -89,6 +89,13 @@ from server_http import (
 # Import adapters
 from fastapi_adapters import get_query_string
 
+# Import FastMCP auth provider (Phase 2.2)
+from fastmcp_auth import (
+    create_auth_provider as create_fastmcp_auth_provider,
+    build_protected_resource_metadata,
+    get_starlette_routes_for_prm,
+)
+
 # ── Origin whitelist (DNS rebinding protection, spec requirement) ─────────────
 ALLOWED_HOSTNAMES = {
     "localhost",
@@ -152,6 +159,16 @@ def create_config() -> HandcraftServerConfig:
 
 
 config = create_config()
+
+# ── Create FastMCP auth provider (Phase 2.2) ──────────────────────────────────
+# Only creates provider when Descope is enabled; returns None otherwise
+fastmcp_auth_provider = create_fastmcp_auth_provider(
+    base_url=str(config.base_url),
+    descope_enabled=config.descope_enabled,
+    descope_project_id=config.descope_project_id,
+    descope_audience=config.descope_audience,
+    auth_server_url=config.auth_server_url,
+)
 
 # ── Create FastAPI app ────────────────────────────────────────────────────────
 app = FastAPI(
@@ -260,9 +277,8 @@ async def get_oauth_authorization_server(request: Request) -> Response:
 
 @app.get("/.well-known/oauth-protected-resource")
 async def get_oauth_protected_resource(request: Request) -> Response:
-    """OAuth 2.0 Protected Resource Metadata."""
+    """OAuth 2.0 Protected Resource Metadata (RFC 9728)."""
     base_url = config.base_url.rstrip("/")
-    resource = build_mcp_resource_url(base_url, MCP_PATH)
     
     # Determine authorization server
     if config.auth_server_url:
@@ -272,6 +288,18 @@ async def get_oauth_protected_resource(request: Request) -> Response:
     else:
         auth_server = base_url
     
+    # Use FastMCP metadata builder when Descope is enabled (Phase 2.2)
+    if fastmcp_auth_provider:
+        metadata = build_protected_resource_metadata(
+            base_url=base_url,
+            mcp_path=MCP_PATH,
+            authorization_servers=[auth_server],
+            scopes_supported=OAUTH_OIDC_SCOPES,
+        )
+        return JSONResponse(content=metadata)
+    
+    # Hand-crafted fallback for built-in OAuth
+    resource = build_mcp_resource_url(base_url, MCP_PATH)
     return JSONResponse(content={
         "resource": resource,
         "authorization_servers": [auth_server],
@@ -284,10 +312,10 @@ async def get_oauth_protected_resource(request: Request) -> Response:
 
 @app.get("/.well-known/oauth-protected-resource/mcp")
 async def get_oauth_protected_resource_mcp(request: Request) -> Response:
-    """OAuth 2.0 Protected Resource Metadata for MCP endpoint."""
+    """OAuth 2.0 Protected Resource Metadata for MCP endpoint (path-aware PRM)."""
     base_url = config.base_url.rstrip("/")
-    resource = build_mcp_resource_url(base_url, MCP_PATH)
     
+    # Determine authorization server
     if config.auth_server_url:
         auth_server = config.auth_server_url
     elif config.descope_enabled and config.descope_issuer:
@@ -295,6 +323,18 @@ async def get_oauth_protected_resource_mcp(request: Request) -> Response:
     else:
         auth_server = base_url
     
+    # Use FastMCP metadata builder when Descope is enabled (Phase 2.2)
+    if fastmcp_auth_provider:
+        metadata = build_protected_resource_metadata(
+            base_url=base_url,
+            mcp_path=MCP_PATH,
+            authorization_servers=[auth_server],
+            scopes_supported=OAUTH_OIDC_SCOPES,
+        )
+        return JSONResponse(content=metadata)
+    
+    # Hand-crafted fallback for built-in OAuth
+    resource = build_mcp_resource_url(base_url, MCP_PATH)
     return JSONResponse(content={
         "resource": resource,
         "authorization_servers": [auth_server],

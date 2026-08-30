@@ -1,4 +1,4 @@
-﻿"""
+"""
 手刻 MCP Server - Streamable HTTP 版本
 協議版本: 2025-11-25
 依賴: Python 標準庫；啟用 Cloudflare Access 模式時額外使用 PyJWT
@@ -51,6 +51,11 @@ except ImportError:  # pragma: no cover - optional dependency in legacy mode
     jwt = None
     InvalidTokenError = Exception
     PyJWKClient = None
+
+try:
+    from descope import DescopeClient
+except ImportError:  # pragma: no cover - optional until MCP_DESCOPE_ENABLED
+    DescopeClient = None
 
 # ── mmx handler aliases（對應 dispatch 的完整名稱）─────────────────────────────
 handle_mmx_image_generate   = hmi
@@ -148,6 +153,10 @@ class HandcraftServerConfig:
     cloudflare_access_jwks_url: str = ""
     cloudflare_access_disable_builtin_oauth: bool = True
     cloudflare_access_allow_public_token_fallback: bool = False
+    descope_enabled: bool = False
+    descope_project_id: str = ""
+    descope_audience: str = ""
+    auth_server_url: str = ""  # override: custom AS (e.g. https://auth.edgars.tools)
     package_webhook_token: str = ""
     linear_webhook_token: str = ""
     discord_webhook_token: str = ""
@@ -174,6 +183,30 @@ class HandcraftServerConfig:
         if not self.cloudflare_access_team_domain:
             return ""
         return f"https://{self.cloudflare_access_team_domain}"
+
+    @property
+    def descope_jwks_url(self) -> str:
+        if not self.descope_project_id:
+            return ""
+        return f"https://api.descope.com/{self.descope_project_id}/.well-known/jwks.json"
+
+    @property
+    def descope_issuer(self) -> str:
+        if not self.descope_project_id:
+            return ""
+        return f"https://api.descope.com/{self.descope_project_id}"
+
+    @property
+    def descope_authorization_endpoint(self) -> str:
+        if not self.descope_project_id:
+            return ""
+        return f"https://api.descope.com/oauth2/v1/{self.descope_project_id}/authorize"
+
+    @property
+    def descope_token_endpoint(self) -> str:
+        if not self.descope_project_id:
+            return ""
+        return f"https://api.descope.com/oauth2/v1/{self.descope_project_id}/token"
 
     def cloudflare_access_audience_for_path(self, path: str) -> str:
         """Return the Access audience dedicated to this public MCP route."""
@@ -424,8 +457,31 @@ OAUTH_CIMD_CACHE_TTL_SECONDS = int(os.getenv("MCP_OAUTH_CIMD_CACHE_TTL_SECONDS",
 OAUTH_CIMD_FETCH_TIMEOUT_SECONDS = float(os.getenv("MCP_OAUTH_CIMD_FETCH_TIMEOUT_SECONDS", "10"))
 OAUTH_CIMD_MAX_BYTES = int(os.getenv("MCP_OAUTH_CIMD_MAX_BYTES", str(64 * 1024)))
 OAUTH_OIDC_SCOPES = ["openid", "profile", "email", OAUTH_SCOPE]
+OAUTH_OIDC_SCOPE_SPACE = " ".join(OAUTH_OIDC_SCOPES)
+
+
+def with_openid_scope(query_string: str) -> str:
+    """Descope OIDC authorize requires openid. ChatGPT connector fails without it."""
+    pairs = urllib.parse.parse_qsl(query_string or "", keep_blank_values=True)
+    found = False
+    out: list[tuple[str, str]] = []
+    for key, value in pairs:
+        if key == "scope":
+            parts = value.split()
+            if "openid" not in parts:
+                parts.insert(0, "openid")
+            value = " ".join(parts)
+            found = True
+        out.append((key, value))
+    if not found:
+        out.append(("scope", OAUTH_OIDC_SCOPE_SPACE))
+    return urllib.parse.urlencode(out)
 CLOUDFLARE_ACCESS_JWKS_LOCK = threading.Lock()
 CLOUDFLARE_ACCESS_JWKS_CLIENTS: dict[str, object] = {}
+DESCOPE_JWKS_LOCK = threading.Lock()
+DESCOPE_JWKS_CLIENTS: dict[str, object] = {}
+DESCOPE_SDK_CLIENTS_LOCK = threading.Lock()
+DESCOPE_SDK_CLIENTS: dict[str, object] = {}
 TOOLS = [
     {
         "name": "echo",
@@ -1866,6 +1922,7 @@ ALLOWED_HOSTNAMES = {
     "127.0.0.1",
     "mcp.whoasked.vip",
     "mcp.edgars.tools",
+    "auth.edgars.tools",
     "chatgpt.com",
     "chat.openai.com",
     # ChatGPT MCP connector may POST with these Origins after OAuth (CIMD flow).
@@ -1948,6 +2005,10 @@ class HonchoMcpError(RuntimeError):
 
 
 class CloudflareAccessAuthError(RuntimeError):
+    pass
+
+
+class DescopeAuthError(RuntimeError):
     pass
 
 
@@ -2461,7 +2522,7 @@ def make_www_authenticate_header(
 ) -> str:
     parts = [
         f'resource_metadata="{build_oauth_protected_resource_metadata_url(base_url, resource_path)}"',
-        f'scope="{OAUTH_SCOPE}"',
+        f'scope="{OAUTH_OIDC_SCOPE_SPACE}"',
     ]
     if error:
         parts.append(f'error="{error}"')
@@ -2839,9 +2900,78 @@ def verify_cloudflare_access_jwt(
     return claims if isinstance(claims, dict) else {}
 
 
-def bearer_token_is_authorized(token: str, static_token: str) -> bool:
+def get_descope_sdk_client(project_id: str):
+    if DescopeClient is None:
+        raise DescopeAuthError("descope Python SDK is required (pip install descope).")
+    with DESCOPE_SDK_CLIENTS_LOCK:
+        client = DESCOPE_SDK_CLIENTS.get(project_id)
+        if client is None:
+            client = DescopeClient(project_id=project_id)
+            DESCOPE_SDK_CLIENTS[project_id] = client
+        return client
+
+
+def descope_validate_audiences(config: HandcraftServerConfig) -> list[str] | str | None:
+    """Official Descope MCP access tokens include the MCP URL in aud.
+    Widget session JWTs use project id. Pass both so SDK accepts either."""
+    out: list[str] = []
+    aud = (config.descope_audience or "").strip()
+    if aud:
+        out.append(aud)
+    pid = (config.descope_project_id or "").strip()
+    if pid and pid not in out:
+        out.append(pid)
+    if not out:
+        return None
+    return out if len(out) > 1 else out[0]
+
+
+def verify_descope_jwt(token: str, config: HandcraftServerConfig) -> dict:
+    """Validate a Bearer token with the official Descope SDK (no hand-decode)."""
+    if not token:
+        raise DescopeAuthError("Missing Bearer token.")
+    if not config.descope_enabled or not config.descope_project_id:
+        raise DescopeAuthError("Descope mode is not enabled.")
+    try:
+        client = get_descope_sdk_client(config.descope_project_id)
+        jwt_response = client.validate_session(
+            session_token=token,
+            audience=descope_validate_audiences(config),
+        )
+        return jwt_response if isinstance(jwt_response, dict) else {}
+    except DescopeAuthError:
+        raise
+    except Exception as exc:
+        raise DescopeAuthError(f"Descope session invalid: {exc}") from exc
+
+
+def fetch_descope_as_metadata(config: HandcraftServerConfig) -> dict | None:
+    """Live Descope RFC8414 document — official AS metadata, not a homemade copy."""
+    issuer = (config.descope_issuer or "").rstrip("/")
+    if not issuer:
+        return None
+    url = f"{issuer}/.well-known/oauth-authorization-server"
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        return payload if isinstance(payload, dict) else None
+    except Exception as exc:
+        log(f"Descope AS metadata fetch failed: {exc}")
+        return None
+
+
+def bearer_token_is_authorized(
+    token: str, static_token: str, config: "HandcraftServerConfig | None" = None
+) -> bool:
     if static_token and hmac.compare_digest(token, static_token):
         return True
+    if config is not None and config.descope_enabled:
+        try:
+            verify_descope_jwt(token, config)
+            return True
+        except DescopeAuthError:
+            pass
     return oauth_access_token_is_valid(token)
 
 
@@ -4301,10 +4431,31 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _handle_oauth_metadata(self) -> None:
-        self._send_oauth_json(build_oauth_authorization_server_metadata(self.server.config.base_url))
+        config = self.server.config
+        if config.descope_enabled and config.descope_issuer:
+            meta = fetch_descope_as_metadata(config)
+            if meta:
+                self._send_oauth_json(meta)
+                return
+            self._send_oauth_json({
+                "issuer": config.descope_issuer,
+                "jwks_uri": config.descope_jwks_url,
+                "authorization_endpoint": config.descope_authorization_endpoint,
+                "token_endpoint": config.descope_token_endpoint,
+                "response_types_supported": ["code"],
+                "grant_types_supported": ["authorization_code"],
+                "code_challenge_methods_supported": ["S256"],
+                "token_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
+            })
+            return
+        self._send_oauth_json(build_oauth_authorization_server_metadata(config.base_url))
 
     def _handle_openid_configuration(self) -> None:
-        self._send_oauth_json(build_openid_configuration_metadata(self.server.config.base_url))
+        config = self.server.config
+        if config.descope_enabled and config.descope_issuer:
+            self._handle_oauth_metadata()
+            return
+        self._send_oauth_json(build_openid_configuration_metadata(config.base_url))
 
     def _handle_resource_metadata(
         self,
@@ -4313,11 +4464,18 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
     ) -> None:
         base_url = self.server.config.base_url.rstrip("/")
         resource = build_mcp_resource_url(base_url, resource_path)
-        auth_server = authorization_server or base_url
+        if authorization_server:
+            auth_server = authorization_server
+        elif self.server.config.auth_server_url:
+            auth_server = self.server.config.auth_server_url
+        elif self.server.config.descope_enabled and self.server.config.descope_issuer:
+            auth_server = self.server.config.descope_issuer
+        else:
+            auth_server = base_url
         self._send_oauth_json({
             "resource": resource,
             "authorization_servers": [auth_server],
-            "scopes_supported": [OAUTH_SCOPE],
+            "scopes_supported": OAUTH_OIDC_SCOPES,
             "bearer_methods_supported": ["header"],
             "resource_documentation": resource,
             "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
@@ -4351,6 +4509,9 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 ),
                 "cloudflare_access_enabled": self.server.config.cloudflare_access_enabled,
                 "cloudflare_access_aud_configured": bool(self.server.config.cloudflare_access_aud),
+                "descope_enabled": self.server.config.descope_enabled,
+                "descope_project_configured": bool(self.server.config.descope_project_id),
+                "descope_sdk": DescopeClient is not None,
             },
             "webhooks": [
                 PACKAGE_WEBHOOK_PATH,
@@ -4420,6 +4581,23 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             log(f"OAuth /authorize → redirecting URL-based client to Cloudflare Access: {client_id[:60]}...")
             self.send_response(302)
             self.send_header("Location", redirect_target)
+            self._add_cors_headers()
+            self.end_headers()
+            return
+
+        descope_authz = self.server.config.descope_authorization_endpoint
+        if self.server.config.descope_enabled and descope_authz:
+            qs = with_openid_scope(query_string)
+            if "resource=" not in (qs or ""):
+                resource_url = build_mcp_resource_url(
+                    self.server.config.base_url.rstrip("/"), MCP_PATH
+                )
+                extra = "resource=" + urllib.parse.quote(resource_url, safe="")
+                qs = f"{qs}&{extra}" if qs else extra
+            location = f"{descope_authz}?{qs}" if qs else descope_authz
+            log("OAuth /authorize → Descope official authorization_endpoint")
+            self.send_response(302)
+            self.send_header("Location", location)
             self._add_cors_headers()
             self.end_headers()
             return
@@ -5375,7 +5553,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             )
             return False
 
-        if has_bearer and bearer_token_is_authorized(auth[7:].strip(), config.mcp_api_token):
+        if has_bearer and bearer_token_is_authorized(auth[7:].strip(), config.mcp_api_token, config):
             return True
 
         self._send_mcp_unauthorized(
@@ -5476,7 +5654,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             )
             return False
         token = auth.removeprefix("Bearer ").strip()
-        if not bearer_token_is_authorized(token, api_token):
+        if not bearer_token_is_authorized(token, api_token, self.server.config):
             log("401 Unauthorized: invalid token")
             self._send_mcp_unauthorized(
                 error="invalid_token",
@@ -5665,6 +5843,10 @@ def validate_http_startup_config() -> HandcraftServerConfig:
             "MCP_CLOUDFLARE_ACCESS_ALLOW_PUBLIC_TOKEN_FALLBACK",
             False,
         ),
+        descope_enabled=load_bool_env("MCP_DESCOPE_ENABLED", False),
+        descope_project_id=os.getenv("MCP_DESCOPE_PROJECT_ID", "").strip(),
+        descope_audience=os.getenv("MCP_DESCOPE_AUDIENCE", "").strip(),
+        auth_server_url=os.getenv("MCP_AUTH_SERVER", "").strip(),
         package_webhook_token=load_package_webhook_token(),
         linear_webhook_token=load_linear_webhook_token(),
         discord_webhook_token=load_discord_webhook_token(),
@@ -5700,6 +5882,8 @@ def main() -> None:
         + (
             "Cloudflare Access managed public endpoint"
             if config.cloudflare_access_enabled
+            else "Descope JWT validation"
+            if config.descope_enabled
             else "Built-in bearer/OAuth"
         )
     )

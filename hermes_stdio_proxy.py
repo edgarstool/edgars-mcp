@@ -49,7 +49,7 @@ def make_error(req_id, code: int, message: str) -> dict:
 
 
 def load_auth_token() -> str:
-    for env_name in ("HERMES_HANDCRAFT_MCP_TOKEN", "MCP_API_TOKEN", "MCP_AUTH_TOKEN"):
+    for env_name in ("HERMES_HANDCRAFT_MCP_TOKEN", "EDGARS_TOOLS_API_TOKEN", "MCP_API_TOKEN", "MCP_AUTH_TOKEN"):
         token = os.getenv(env_name, "").strip()
         if token:
             return token

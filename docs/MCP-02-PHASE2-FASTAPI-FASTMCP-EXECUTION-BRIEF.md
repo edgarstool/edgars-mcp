@@ -1,15 +1,28 @@
 # MCP v2 Phase 2 施工任務書：FastAPI 外層 + FastMCP 局部 Metadata
 
 狀態：草案，等王世鈞（Edgar）確認後才可開工
-撰寫日期：2026-08-30
+撰寫日期：2026-08-30（2026-08-30 已依決策更新一次，見下方「決策更新」）
 承接文件：`docs/MCP-01-C.md`（架構決策報告）、`docs/V2-手刻升級清單.md`（手刻升級原則）
 保護點（rollback 用）：`checkpoint/pre-phase2-fastapi-fastmcp`（commit `9b0915fa`，已推上 `origin`）
 
 ---
 
+## 決策更新（2026-08-30，覆蓋原本三模式基線）
+
+王世鈞決定：**不再走 Cloudflare Access 這條授權路線**，之後只維護兩種模式——**手刻 bearer/OAuth（自己） + Descope JWT validation**。
+
+這改變了本文件原本的基線（原本是三選一：Cloudflare Access / Descope / built-in bearer）。以下段落已經按新決策更新；凡是提到「三種授權模式」的地方，現在都是**兩種**，Cloudflare Access 視為**棄用（deprecated）**，Phase 2 遷移**不需要保留它的行為、也不需要測試它**。
+
+**但有兩件事我先攤開來、還沒動手，等你確認：**
+
+1. **`chatgpt-honcho` gateway 路徑目前的設計是綁死 Cloudflare Access 的**（它的 well-known 端點會把 `authorization_server` 指向 Cloudflare Access team domain，這是它跟其他 well-known 端點不一樣的地方）。Access 不用了之後，這條路徑要嘛改成用 Descope/手刻 bearer 認證，要嘛跟著一起棄用——這是一個需要你決定的分岔點，不是我能自己選的，因為會影響 ChatGPT 那邊 Honcho 整合的認證方式。
+2. **Cloudflare 那邊（`mcp.edgars.tools` 的 Access Application/Policy）是否也要實際關掉？** 這是碰 Cloudflare 正式設定的動作，我不會自己動手，需要你明確說「關」才會列清單處理。程式碼裡「不再使用」跟 Cloudflare 後台「還開著但沒人用」是兩件不同的事，後者是個殘留的攻擊面，建議之後也一併關掉，但這次先只更新任務書、不碰 Cloudflare 設定。
+
+---
+
 ## 0. 給執行代理（Codex / Claude Code）的一句話原則
 
-> **外層 HTTP/ASGI/路由/headers/CORS 交給 FastAPI；OAuth discovery（`/.well-known/*`、PRM、WWW-Authenticate 挑戰）這一小層局部交給 FastMCP 的 `RemoteAuthProvider`；token 驗證、84 個工具的業務邏輯、webhook、Linear OAuth、Honcho proxy 全部保留手刻，原封不動搬過去掛成路由。**
+> **外層 HTTP/ASGI/路由/headers/CORS 交給 FastAPI；OAuth discovery（`/.well-known/*`、PRM、WWW-Authenticate 挑戰）這一小層局部交給 FastMCP 的 `RemoteAuthProvider`；token 驗證、84 個工具的業務邏輯、webhook、Linear OAuth、Honcho proxy 全部保留手刻，原封不動搬過去掛成路由。授權模式只剩「手刻 bearer/OAuth」與「Descope JWT」兩種，Cloudflare Access 相關程式碼視為棄用，不用保留其行為。**
 
 不是重寫，是「換外殼、留內臟」。任何一步如果變成「順手把 XX 也改用官方 SDK / FastMCP 寫」，就是範圍蔓延（scope creep），要停下來回報，不要自己延伸。
 
@@ -29,7 +42,7 @@
 
 ---
 
-## 2. 現況基線（Baseline，2026-08-30 量測）
+## 2. 現況基線（Baseline，2026-08-30 量測；授權模式已依決策更新改為兩種）
 
 | 項目 | 數值 |
 |---|---|
@@ -40,17 +53,18 @@
 | 已安裝但未使用的套件 | `fastmcp==3.2.0`（環境裡已經有，但 code 完全沒 import） |
 | 尚未安裝 | `fastapi`（import 直接失敗） |
 | Git 保護點 | branch `checkpoint/pre-phase2-fastapi-fastmcp` @ `9b0915fa`，已推到 `origin` |
+| 授權模式（**已更新**） | 只保留：① 手刻 bearer/OAuth（自己）② Descope JWT validation。**Cloudflare Access 模式棄用**，見上方「決策更新」 |
 
-### 2.1 現有路由清單（do_GET / do_POST / do_DELETE 逐條列出，Phase 2 必須全部等價保留）
+### 2.1 現有路由清單（do_GET / do_POST / do_DELETE 逐條列出，Phase 2 必須全部等價保留——除非標註為「隨 Access 一併棄用，待決」）
 
 **GET**
 - `/.well-known/oauth-authorization-server`（RFC 8414）
 - `/.well-known/oauth-protected-resource`（RFC 9728，全域）
 - `/.well-known/oauth-protected-resource/mcp`（RFC 9728，`/mcp` 專用）
-- `/.well-known/oauth-protected-resource/chatgpt-honcho`（ChatGPT-Honcho gateway 專用，authorization_server 指向 Cloudflare Access team domain，跟其他兩個不一樣，**這是最容易漏掉的分支**）
+- `/.well-known/oauth-protected-resource/chatgpt-honcho`（ChatGPT-Honcho gateway 專用，**目前 authorization_server 指向 Cloudflare Access team domain——隨 Access 一併棄用，待王世鈞決定改用 Descope/手刻 bearer 還是整條路徑一起收掉**，見上方「決策更新」第 1 點）
 - `/.well-known/openid-configuration`
 - `/authorize`（內建 OAuth authorize 端點）
-- `/health`（`HEALTH_PATH`，部分情境需要 Cloudflare Access 驗證才能存取）
+- `/health`（`HEALTH_PATH`，**原本部分情境需要 Cloudflare Access 驗證才能存取，Access 棄用後這段判斷邏輯要跟著簡化**）
 - `/linear/oauth/authorize`、`/linear/oauth/callback`、`/linear/oauth/status`、`/linear/oauth/bootstrap`
 - `/mcp`、`/chatgpt-honcho`（Streamable HTTP 規範明定：無 server-initiated SSE 時，已驗證的 GET 要回 405 + `Allow: POST, OPTIONS`，不是 404）
 
@@ -71,14 +85,14 @@
 **OPTIONS**
 - 全域 CORS preflight，回 200 + CORS headers
 
-### 2.2 授權模式（三選一，運行時動態判斷，Phase 2 絕對不能改變判斷邏輯本身）
+### 2.2 授權模式（**已更新：兩選一**，運行時動態判斷，Phase 2 絕對不能改變判斷邏輯本身）
 
-`main()` 啟動時 log 出三種模式：
-1. Cloudflare Access managed public endpoint（`config.cloudflare_access_enabled`）
+`main()` 啟動時原本 log 出三種模式，現在只保留兩種：
+1. ~~Cloudflare Access managed public endpoint（`config.cloudflare_access_enabled`）~~ ——**棄用**
 2. Descope JWT validation（`config.descope_enabled`，這次剛加的）
 3. Built-in bearer/OAuth（預設）
 
-三者互斥判斷寫在 `_ensure_mcp_request_authorized()` 與 `_requires_cloudflare_access_for_request()`。**這段是全案風險最高的部分，Phase 2 絕對不能重寫這段邏輯，只能原封不動搬過去當一個 dependency / middleware 呼叫。**
+原本互斥判斷寫在 `_ensure_mcp_request_authorized()` 與 `_requires_cloudflare_access_for_request()`。**Phase 2.1 執行時，這裡有一個具體要做的小改動（跟框架搬遷分開算）：把 `cloudflare_access_enabled` 分支停用／移除，簡化成 Descope / built-in bearer 兩選一。這是程式邏輯變更，不只是搬遷，執行前要跟王世鈞再確認一次影響範圍（尤其是 `_requires_cloudflare_access_for_request()` 目前還牽動 `/health` 端點的存取控制）。**
 
 ---
 
@@ -98,20 +112,20 @@
 │     ⚠️ 需要客製化 path-aware well-known（F15 已知 404 坑）│
 ├─────────────────────────────────────────────────────┤
 │  B. 手刻邏輯層（原封不動搬移，只改「怎麼被呼叫」不改「內容」）│
-│     - _ensure_mcp_request_authorized（三模式授權判斷）    │
+│     - _ensure_mcp_request_authorized（兩模式授權判斷：手刻 bearer / Descope）│
 │     - 84 個工具 + mmx_handlers.DISPATCH                │
 │     - Linear OAuth 全流程                              │
-│     - Honcho proxy、ChatGPT-Honcho gateway             │
+│     - Honcho proxy、ChatGPT-Honcho gateway（認證方式待決，見決策更新第1點）│
 │     - 所有 webhook（Discord/Package/Linear）            │
 │     - /token、/register（DCR）——是否交給 FastMCP 待評估   │
 └─────────────────────────────────────────────────────┘
 ```
 
 **明確不動的東西**：
-- `HandcraftServerConfig` dataclass 與其三種授權模式判斷邏輯
+- `HandcraftServerConfig` dataclass 與其授權模式判斷邏輯（**Cloudflare Access 分支例外，這是本次唯一預期要刪減的判斷邏輯**）
 - `TOOLS` 清單與所有 `handle_*` 工具函式本體
 - `mmx_handlers.DISPATCH`
-- Descope/Cloudflare Access 的 JWT 驗證細節
+- Descope 的 JWT 驗證細節
 - Linear OAuth 全流程（authorize/callback/status/bootstrap + token 儲存）
 - 所有 webhook handler 的簽章驗證邏輯
 
@@ -122,10 +136,11 @@
 | 地雷 | 來源 | 強制驗證動作 |
 |---|---|---|
 | FastMCP `RemoteAuthProvider` 的 PRM `resource` 欄位預設固定回根網址，不是實際 `/mcp` 端點 | PrefectHQ/fastmcp #1348 | Phase 2 完成後，逐一 curl 每個 `/.well-known/oauth-protected-resource*` 變體，人工比對 `resource` 欄位是否等於「該端點自己的完整 URL」，不能全部回根網址 |
-| `mcp` 依賴 1.17+ 後，well-known endpoint 改成「路徑感知」位置；`/.well-known/oauth-protected-resource` 可能回 404，只有帶路徑後綴的版本回 200 | PrefectHQ/fastmcp #2077 / #2123 | 對照本文件 2.1 節列出的**全部 4 個 well-known 變體**逐一測試，尤其是 `chatgpt-honcho` 那個要指向 Cloudflare Access issuer 而非內建 AS 的分支 |
+| `mcp` 依賴 1.17+ 後，well-known endpoint 改成「路徑感知」位置；`/.well-known/oauth-protected-resource` 可能回 404，只有帶路徑後綴的版本回 200 | PrefectHQ/fastmcp #2077 / #2123 | 對照本文件 2.1 節列出的**全部 4 個 well-known 變體**逐一測試；`chatgpt-honcho` 那個等決策更新第 1 點定案後，再確認它新的 authorization_server 指向對不對 |
 | FastAPI/FastMCP 掛進彼此若 lifespan 沒合併好，會炸 `StreamableHTTPSessionManager task group was not initialized` | `docs/MCP-01-C.md` F18 | 啟動後第一件事：對 `/mcp` 打一個完整的 `initialize` → `tools/list` → 呼叫一個工具的完整流程，跑通才算過，不能只看 server 有沒有噴 exception 就當作成功 |
 | FastMCP 預設 `transport="http"` + `host="0.0.0.0"` 完全無 auth | `docs/MCP-01-P.md` | FastMCP 只拿來產生 metadata，本身不能直接對外聽 port；必須確認最終 bind 的是 FastAPI/Uvicorn，FastMCP 只是被 mount 進去的 sub-app，沒有自己開獨立端口 |
 | `Host` header 判斷分支（`/mcp` + hostname == honcho_mcp_hostname → 走 Honcho proxy）容易在框架化路由時被忽略 | 本次盤點（2.1 節） | 這個分支要明確寫成一個 FastAPI dependency 或 middleware，不能只用 path 比對，要連 `Host` header 一起測 |
+| 移除 Cloudflare Access 分支後，`/health` 等原本依賴它做存取控制的端點可能變成「無條件開放」 | 本次決策更新 | 移除前先列出所有呼叫 `_requires_cloudflare_access_for_request()` 的地方，逐一確認移除後的存取控制邏輯是什麼（改成一律要 bearer/Descope？還是這幾個端點本來就該公開？），不能移除了事 |
 
 ---
 
@@ -139,13 +154,15 @@
 **驗收**：`uvicorn` 能把一個空的 FastAPI app 跑起來，port 不衝突。
 **回退**：刪分支即可，master 完全不受影響。
 
-### Phase 2.1：FastAPI 外層 mount 手刻邏輯（風險：中，這是最大一塊工）
+### Phase 2.1：FastAPI 外層 mount 手刻邏輯 + 移除 Cloudflare Access 分支（風險：中，這是最大一塊工）
 1. 建立 FastAPI app，把 `ThreadingHTTPServer` + `MCPHTTPHandler` 的每一條路由（2.1 節清單）逐一轉成 FastAPI route，**函式內容直接呼叫原本 `MCPHTTPHandler` 裡對應的 `_handle_*` 方法邏輯**（可以先用 adapter 包一層，讓手刻函式簽章不用大改）
 2. 把 CORS 從手動 `_add_cors_headers()` 換成 FastAPI 的 `CORSMiddleware`，但要對照現有允許清單（`ALLOWED_HOSTNAMES`）逐一比對，不能改寬也不能改窄
 3. `Host` header 分支（Honcho proxy）用 FastAPI 的 dependency 或自訂 middleware 顯式處理
-4. **這階段先不碰 FastMCP**，`.well-known/*` 還是先用原本手刻的 JSON 產生邏輯，只是換個方式掛路由——**目的是先驗證「换外殼」這件事本身沒把原本的行為改壞**
+4. **依決策更新**：移除 `config.cloudflare_access_enabled` 分支與 `_requires_cloudflare_access_for_request()`，簡化 `_ensure_mcp_request_authorized()` 為 Descope / built-in bearer 兩選一。先列出所有呼叫點（見第 4 節地雷表最後一列），逐一確認替代邏輯，不能只是刪掉判斷式
+5. `chatgpt-honcho` gateway 的認證方式：**等王世鈞在「決策更新」第 1 點回覆後再動**，這一步先跳過、留著原樣，不要自己猜答案硬改
+6. **這階段先不碰 FastMCP**，`.well-known/*` 還是先用原本手刻的 JSON 產生邏輯，只是換個方式掛路由——**目的是先驗證「换外殼」這件事本身沒把原本的行為改壞**
 
-**驗收**：MCP Inspector（官方測試工具）跑過 `initialize` → `tools/list` → 抽測 5 個代表性工具（含至少一個會呼叫外部 API 的、一個 mmx_handlers 的）→ 全部等價於 Phase 2 之前。三種授權模式（Cloudflare Access / Descope / built-in bearer）都要各測一次 401/200 行為。
+**驗收**：MCP Inspector（官方測試工具）跑過 `initialize` → `tools/list` → 抽測 5 個代表性工具（含至少一個會呼叫外部 API 的、一個 mmx_handlers 的）→ 全部等價於 Phase 2 之前。兩種授權模式（Descope / built-in bearer）都要各測一次 401/200 行為；確認移除 Cloudflare Access 分支後沒有端點意外變成無條件開放。
 **回退**：整個 Phase 2.1 若卡住，退回 `checkpoint/pre-phase2-fastapi-fastmcp`，`server_http.py` 完全不變。
 
 ### Phase 2.2：FastMCP 局部接手 PRM/discovery（風險：中高，地雷最多的一塊）
@@ -160,6 +177,7 @@
 1. 移除舊的 `BaseHTTPRequestHandler`/`ThreadingHTTPServer` 相關 code（確認 Phase 2.1/2.2 都穩定運行至少一週後再刪，不要一次做完馬上刪）
 2. 更新 `run_http.cmd`（可能要換成 `uvicorn` 啟動指令而非直接 `python server_http.py`）
 3. 更新本文件與 `docs/V2-手刻升級清單.md`，記錄最終落地版本
+4. 若王世鈞已確認要在 Cloudflare 後台關掉 `mcp.edgars.tools` 的 Access Application/Policy，這裡補一條待辦提醒去處理（**仍需另外列清單、單獨確認，不併入本次程式碼變更**）
 
 ---
 
@@ -168,7 +186,9 @@
 - [ ] MCP Inspector 完整測試通過（`initialize`、`tools/list`、抽測工具呼叫）
 - [ ] ChatGPT 連接器：新增 → OAuth 全綠 → 至少成功呼叫一個工具
 - [ ] Claude 連接器：新增 → OAuth 全綠 → 至少成功呼叫一個工具
-- [ ] 三種授權模式（Cloudflare Access / Descope / built-in bearer）各自的 401/200 行為與 Phase 2 之前逐條比對一致
+- [ ] 兩種授權模式（Descope / built-in bearer）各自的 401/200 行為與 Phase 2 之前逐條比對一致
+- [ ] Cloudflare Access 分支確認移除，且原本依賴它的端點（如 `/health`）存取控制邏輯有明確替代方案，不是意外變公開
+- [ ] `chatgpt-honcho` gateway 的認證方式已依王世鈞決策更新（改用 Descope/bearer，或整條路徑棄用）
 - [ ] 所有 webhook（Discord / Package / Linear 兩種路徑）功能等價
 - [ ] Linear OAuth 全流程（authorize/callback/status/bootstrap）功能等價
 - [ ] Honcho proxy（含 Host header 判斷分支）功能等價
@@ -181,6 +201,7 @@
 - ChatGPT 或 Claude 的 OAuth 從綠變紅，且 30 分鐘內無法定位原因
 - 任何工具呼叫的回應內容跟 Phase 2 之前不一致（不只是格式，是內容/行為）
 - 授權判斷邏輯出現「應該擋卻放行」的情況（安全性問題，優先權最高，立即回退整個 Phase）
+- 移除 Cloudflare Access 分支後，發現有端點因此變成無條件開放且未預期
 
 回退動作：`git checkout checkpoint/pre-phase2-fastapi-fastmcp`，或視當時進度回退到對應的 Phase 邊界 commit。
 
@@ -191,9 +212,11 @@
 1. `fastmcp==3.2.0` 是誰、何時、為何裝進這台機器的環境？跟這次 Phase 2 規劃無關的既有殘留，還是有人已經開始試驗？——**開工前建議先確認，避免踩到別人未完成的實驗**。
 2. `/token`、`/register`（DCR）是否要在 Phase 2.2 一併交給 FastMCP，還是永久保留手刻？本文件目前建議「先不動」，但這是可以在 Phase 2.2 驗收後重新評估的開放問題。
 3. 目前 production 是跑在哪個 port、單一 process 是否有多 worker 的計畫？`docs/V2-手刻升級清單.md` 提過「多 worker 無狀態確認」，Phase 2 換到 uvicorn 之後，如果之後要開多 worker，要重新確認手刻邏輯裡有沒有偷偷用了 in-memory 全域狀態（例如 `LINEAR_OAUTH_PENDING_STATES` 這種 module-level dict，多 worker 下會失效）。這個目前記錄在案，Phase 2 範圍內不處理，但要寫進已知限制。
+4. **（新增，2026-08-30）`chatgpt-honcho` gateway 拿掉 Cloudflare Access 之後要用什麼認證？** 見上方「決策更新」第 1 點，等王世鈞回覆才能動 Phase 2.1 的第 5 步。
+5. **（新增，2026-08-30）Cloudflare 後台 `mcp.edgars.tools` 的 Access Application/Policy 要不要實際關掉？** 這是 Cloudflare 正式設定變更，不在本次程式碼任務範圍內，需要王世鈞另外明確指示才會列清單處理。
 
 ---
 
 ## 9. 給執行代理的啟動 prompt（可直接複製貼給 Codex / Claude Code）
 
-> 請閱讀 `docs/MCP-02-PHASE2-FASTAPI-FASTMCP-EXECUTION-BRIEF.md` 全文，這是 Phase 2 的完整施工任務書。從 `checkpoint/pre-phase2-fastapi-fastmcp` 切出 `feat/mcp-v2-fastapi-fastmcp-phase2` 分支開始，嚴格按照第 5 節的 Phase 2.0 → 2.1 → 2.2 → 2.3 順序執行，每個 Phase 結束都要跑完該 Phase 的「驗收」項目才能進下一個 Phase。第 6 節的整體驗收標準是最終目標，第 7 節的回退條件是紅線，觸發就停下來回報，不要自己決定要不要繼續。第 4 節列的地雷是已知會出事的地方，每一項都要有對應的驗證證據（curl 輸出、測試截圖或 log），不能只憑「應該沒問題」就跳過。第 8 節的 Unknown 事項，卡住了就回報，不要自己猜測填空。
+> 請閱讀 `docs/MCP-02-PHASE2-FASTAPI-FASTMCP-EXECUTION-BRIEF.md` 全文，這是 Phase 2 的完整施工任務書（**2026-08-30 已更新：授權模式從三選一改為兩選一，Cloudflare Access 棄用**）。從 `checkpoint/pre-phase2-fastapi-fastmcp` 切出 `feat/mcp-v2-fastapi-fastmcp-phase2` 分支開始，嚴格按照第 5 節的 Phase 2.0 → 2.1 → 2.2 → 2.3 順序執行，每個 Phase 結束都要跑完該 Phase 的「驗收」項目才能進下一個 Phase。Phase 2.1 第 5 步（`chatgpt-honcho` 認證方式）在王世鈞回覆決策更新第 1 點之前先跳過，不要自己猜答案硬改。第 6 節的整體驗收標準是最終目標，第 7 節的回退條件是紅線，觸發就停下來回報，不要自己決定要不要繼續。第 4 節列的地雷是已知會出事的地方，每一項都要有對應的驗證證據（curl 輸出、測試截圖或 log），不能只憑「應該沒問題」就跳過。第 8 節的 Unknown 事項，卡住了就回報，不要自己猜測填空。

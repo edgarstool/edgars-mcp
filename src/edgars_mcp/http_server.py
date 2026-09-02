@@ -1785,7 +1785,6 @@ def handle_honcho_integrated_tool_call(req_id, name: str, arguments: dict,
 ALLOWED_HOSTNAMES = {
     "localhost",
     "127.0.0.1",
-    "mcp.whoasked.vip",
     "mcp.edgars.tools",
     "chatgpt.com",
     "chat.openai.com",

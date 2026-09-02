@@ -1920,7 +1920,6 @@ CHATGPT_HONCHO_TOOLS = [
 ALLOWED_HOSTNAMES = {
     "localhost",
     "127.0.0.1",
-    "mcp.whoasked.vip",
     "mcp.edgars.tools",
     "auth.edgars.tools",
     "chatgpt.com",

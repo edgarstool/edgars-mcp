@@ -1,1 +1,1 @@
-file:///workspace/edgar-os/knowledge-mcp/server.py
+PLACEHOLDER_LOAD_FROM_DISK

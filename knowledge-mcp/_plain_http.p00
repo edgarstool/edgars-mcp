@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""Edgar's Knowledge MCP — Streamable HTTP transport (Round 1).
+
+Thin adapter over https://knowledge-api.edgars.tools (NOT a new KB).
+Loads tool handlers from server.py.round1 when present (local Round1 test),
+else falls back to server.py. Deploy may still copy server.py.round1 → server.py.
+
+Endpoints:
+  POST/GET /mcp          Streamable HTTP MCP (auth required)
+  GET /health            ok + upstream knowledge-api health
+  GET /.well-known/oauth-protected-resource
+  GET /.well-known/oauth-protected-resource/mcp
+"""
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+
+def _load_kb_module() -> Any:
+    """Prefer sibling server.py.round1 for local Round1 testing without touching live server.py."""
+    from importlib.machinery import SourceFileLoader
+
+    here = Path(__file__).resolve().parent
+    round1 = here / "server.py.round1"
+    baseline = here / "server.py"
+    target = round1 if round1.is_file() else baseline
+    if not target.is_file():
+        raise ImportError(f"Neither {round1} nor {baseline} found")
+    # Unique module name avoids clobbering a previously imported `server`.
+    # SourceFileLoader required: spec_from_file_location returns no loader for *.round1.
+    mod_name = "edgars_knowledge_server_round1" if target.name.endswith(".round1") else "server"
+    loader = SourceFileLoader(mod_name, str(target))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise ImportError(f"Cannot load spec for {target}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    loader.exec_module(mod)
+    return mod
+
+
+kb = _load_kb_module()
+
+HOST = os.environ.get("HOST", "0.0.0.0")
+PORT = int(os.environ.get("PORT", "8787"))
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", f"http://127.0.0.1:{PORT}").rstrip("/")
+AUTH_SERVER = os.environ.get("EDGARS_AUTH_SERVER", "https://auth.edgars.tools").rstrip("/")
+MCP_API_TOKEN = os.environ.get("MCP_API_TOKEN", "").strip()
+# When MCP_API_TOKEN is unset, any non-empty Bearer is accepted (ChatGPT OAuth
+# presence check). Set MCP_TRUST_BEARER=0 to reject all non-canary tokens.
+MCP_TRUST_BEARER = os.environ.get("MCP_TRUST_BEARER", "1").strip() not in (
+    "0",
+    "false",
+    "False",
+    "no",
+)
+SERVER_NAME = "edgars-knowledge-http"
+SERVER_VERSION = "0.3.0-round1"
+PROTOCOL = getattr(kb, "PROTOCOL", "2025-11-25")
+MCP_PATH = "/mcp"
+
+
+def log(msg: str) -> None:
+    print(f"[{SERVER_NAME}] {msg}", file=sys.stderr, flush=True)
+
+
+def public_url(path: str = "") -> str:
+    if not path:
+        return PUBLIC_BASE_URL
+    if not path.startswith("/"):
+        path = "/" + path
+    return PUBLIC_BASE_URL + path
+
+
+def resource_metadata_document() -> dict[str, Any]:
+    return {
+        "resource": PUBLIC_BASE_URL,
+        "authorization_servers": [AUTH_SERVER],
+        "bearer_methods_supported": ["header"],
+        "scopes_supported": ["openid", "profile", "email"],
+        "resource_documentation": "https://knowledge-api.edgars.tools",
+    }
+
+
+def www_authenticate_value() -> str:
+    meta = public_url("/.well-known/oauth-protected-resource/mcp")
+    return (
+        f'Bearer realm="edgars-knowledge", '
+        f'resource_metadata="{meta}", '
+        f'scope="openid profile email"'
+    )
+
+
+def extract_be

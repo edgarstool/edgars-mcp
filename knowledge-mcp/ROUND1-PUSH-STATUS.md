@@ -1,7 +1,7 @@
 # Round1 push status
 
-- Local Round1 compile OK (`0.2.0-round1` / HTTP `0.3.0-round1`)
-- Prior `http_server.py` on branch was corrupted (`@file://` placeholder) — repair in flight
-- Live Grok plugin remains frozen on exact baseline
-- Auth probe: write path OK
-- Timestamp: 2026-09-06 Asia/Taipei
+- Branch `smith/knowledge-mcp-round1-p0` recreated from `forge/edgars-knowledge-mcp` @ `11ce9edaa527bd10d16674e144981ddb61b53995`.
+- Goal: replace z64 loaders with plain Round1 bodies from Path.read_text().
+- HTTP body sha256: `64d62a6f51090b3c514f181c3174b21462ef45452c51d40c48fedd05356265cb` (23646 chars).
+- Server body pending same treatment.
+- PR target: `forge/edgars-knowledge-mcp`.

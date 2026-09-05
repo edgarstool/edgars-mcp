@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Round1 HTTP adapter loader — joins `_round1_http.z64.p0..p3` then execs.
+"""Round2 HTTP adapter loader — executes body from sibling `_round2_http.z64` parts.
 
-Parts avoid GitHub MCP single-byte corruption seen on monolithic ~8k blobs.
-Runtime = Round1 `0.3.0-round1`.
+No `@file://` placeholders. Runtime: `0.3.0-round2` (loads Round2 server body).
 """
 from __future__ import annotations
 
@@ -11,6 +10,10 @@ import zlib
 from pathlib import Path
 
 _here = Path(__file__).resolve().parent
-_blob = "".join((_here / f"_round1_http.z64.p{i}").read_text(encoding="utf-8").strip() for i in range(4))
+_parts = sorted(_here.glob("_round2_http.z64.p*"), key=lambda p: int(p.name.rsplit("p", 1)[-1]))
+if _parts:
+    _blob = "".join(p.read_text(encoding="utf-8").strip() for p in _parts)
+else:
+    _blob = (_here / "_round2_http.z64").read_text(encoding="utf-8").strip()
 _code = zlib.decompress(base64.b64decode(_blob))
-exec(compile(_code, str(_here / "http_server.py.round1"), "exec"), globals())
+exec(compile(_code, str(_here / "http_server.py.round2"), "exec"), globals())

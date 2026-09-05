@@ -13,7 +13,7 @@ Branch: `smith/knowledge-mcp-round2-p0` → base `forge/edgars-knowledge-mcp`
 4. **QMD get honest miss** — unhydratable `qmd://` → `NOT_SUPPORTED` (no Honcho soft success)
 
 ## Ship form
-Plain `server.py` + `http_server.py` (no tip `@file://` loaders). Round1 `_round1_*.z64` blobs may remain as archive only.
+Tip `server.py`/`http_server.py` are thin loaders over `_round2_*.z64.p*` (no `@file://`). Expand for review: join parts → b64decode → zlib. Round1 `_round1_*.z64` archive may remain.
 
 ## Live
 **Live Grok plugin stays Round1** until Forge integrates this PR.

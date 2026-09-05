@@ -1,1 +1,1 @@
-PLACEHOLDER_WILL_REPLACE
+file:///workspace/edgar-os/knowledge-mcp/server.py

@@ -2,6 +2,12 @@
 
 本文件給 GitHub Copilot coding agent、OpenAI Codex、Claude Code、其他 coding agent 共用。請優先閱讀。
 
+## 溝通語言（強制）
+
+- 不論使用者用何種語言提問，一律以**繁體中文**回覆。
+- 技術／研究類專有名詞（例如 `snapshot`、`build`、`OAuth`、`MCP`）可保留英文原文，但必須在後面附上簡短中文說明。使用者非資工（CS，Computer Science）背景、英文閱讀吃力。
+- 盡量避免艱深術語；必要時用生活化的比喻解釋。
+
 ## 使用者身份
 
 - 日常稱呼：德德

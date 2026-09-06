@@ -1,0 +1,10 @@
+{
+  "name": "edgars-mcp (handcraft-mcp)",
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "mcp-http",
+      "command": "MCP_API_TOKEN=local-dev-token MCP_BIND_HOST=127.0.0.1 MCP_PORT=8765 python3 server_http.py"
+    }
+  ]
+}

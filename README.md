@@ -2,11 +2,11 @@
 
 Edgar 的本地 MCP（Model Context Protocol）Server。
 
-讓任何支援 MCP 的 AI（Claude、OpenClaw 等）能透過 HTTP 直接操作本機電腦，包含：檔案系統、Git、系統指令、瀏覽器、Obsidian Vault、Linear、Notion、Warp、Cursor、Factory.ai、AI 代理委派、免費圖片生成。
+讓任何支援 MCP 的 AI（Claude、OpenClaw 等）能透過 HTTP 直接操作本機電腦，包含：檔案系統、Git、系統指令、瀏覽器、Obsidian Vault、Linear、Warp、Cursor、Factory.ai、AI 代理委派、免費圖片生成。
 
-**目前工具數量：78 個**（最後校對：2026-07-06）
+**目前內建工具數量：70 個**（另加 `wrap_catalog`；最後校對：2026-09-08）
 
-> 不懂 Doppler 要填什麼？請看 **[Doppler 設定指南（新手版）](docs/DOPPLER-設定指南-新手版.md)**。  
+> Secrets 走 **1Password Connect**（.env.op + OP_CONNECT_HOST=http://127.0.0.1:8877 + op run）。  
 > 搞不清 mcp / webhooks / hooks 哪個是哪個？請看 **[網域分工（新手版）](docs/網域分工-新手版.md)**。
 > 想把 Honcho / 其他 MCP 統一放到 Cloudflare Portal？請看 **[Honcho MCP 上 Cloudflare 方案](docs/HONCHO-MCP-CLOUDFLARE-方案.md)**。
 > 要交給瀏覽器代理修 Cloudflare Dashboard credential？請看 **[Honcho MCP Dashboard Handoff](docs/CLOUDFLARE-HONCHO-MCP-DASHBOARD-HANDOFF.md)**。
@@ -19,9 +19,8 @@ Edgar 的本地 MCP（Model Context Protocol）Server。
 mcp-handcraft/
 ├── server_http.py      ← 主 HTTP MCP Server（port 8765，所有工具都在這）
 ├── server.py           ← stdio 入口（供本地 stdio client 使用）
-├── mmx_handlers.py     ← MiniMax 媒體生成 handlers
 ├── run.cmd             ← 啟動 stdio server
-├── run_http.cmd        ← 啟動 HTTP server（透過 Doppler 注入 secrets）
+├── run_http.cmd        ← 啟動 HTTP server（透過 op run + .env.op 注入 secrets）
 ├── run_stdio.cmd       ← 啟動 stdio proxy（Cursor / Hermes → 本機 HTTP MCP）
 ├── cloudflare/
 │   └── workers/        ← hooks/status Worker 的 source-of-truth
@@ -30,7 +29,6 @@ mcp-handcraft/
 │   ├── mcp.remote.example.json
 │   └── mcp.remote.stdio.example.json
 ├── docs/
-│   ├── DOPPLER-設定指南-新手版.md
 │   └── MCP-CLIENT-AUTH-最小正式方案.md
 ├── scripts/
 │   ├── start-mcp.ps1 ← 開啟：背景啟動 HTTP + 可選 cloudflared（寫 PID）
@@ -49,15 +47,14 @@ mcp-handcraft/
 > **⚠️ 啟動前必填:`MCP_API_TOKEN`**
 >
 > HTTP server 啟動時會讀 `MCP_API_TOKEN`,**沒設會直接中止**(fail-fast,不做 fallback)。
-> Token 由 Doppler 集中管理,啟動腳本自動注入,不要寫進命令列或 shell history。
+> Token 由 1Password Connect 集中管理，啟動腳本以 `op run --env-file .env.op` 自動注入，不要寫進命令列或 shell history。
 >
 > 最小啟動範例(`run_http.cmd` 自動走這條):
 >
 > ```powershell
-> # 1. 拿 token (需要先 doppler setup --project edgars-mcp --config prd)
-> $env:MCP_API_TOKEN = doppler secrets get MCP_API_TOKEN --plain
-> # 2. 啟動 server
-> python .\server_http.py
+> # 確認 Connect :8877 + .env.op 後啟動（自動 op run 注入）
+> .\run_http.cmd
+> # 或：powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-mcp.ps1
 > # → 監聽 http://127.0.0.1:8765/mcp,POST 要求 Authorization: Bearer <token>
 > ```
 >
@@ -89,7 +86,7 @@ cd V:\projects\edgars-mcp
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-HandcraftStack.ps1
 ```
 
-這會先確認 `http://127.0.0.1:8765/health`，必要時用 Doppler 啟動 `server_http.py`；再確認 `cloudflared` 程序；最後檢查 `https://mcp.edgars.tools/mcp` 是否回 200。
+這會先確認 `http://127.0.0.1:8765/health`，必要時用 `start-mcp.ps1` / `run_http.cmd`（op run）啟動 `server_http.py`；再確認 `cloudflared` 程序；最後檢查 `https://mcp.edgars.tools/mcp` 是否回 200。
 
 ### 啟動 OpenAI Secure MCP Tunnel（私有 MCP，不開公開入口）
 
@@ -110,9 +107,9 @@ OpenAI Secure MCP Tunnel 會讓本機 `tunnel-client` 對 OpenAI 建立 outbound
 # 目前僅保留概念說明；腳本檔未納入此 repo snapshot
 ```
 
-這個腳本會確認本機 `:8765` 健康，必要時透過 Doppler 啟動 `server_http.py`，再用 `sample_mcp_remote_no_auth` profile 執行 `tunnel-client init`、`doctor` 和 `run`。本機 MCP bearer 會透過 `Authorization: env:MCP_API_TOKEN` 這類 env reference 傳給 `tunnel-client`，不寫入 profile。保持該 process 運作時，ChatGPT / Codex / API 端才可透過 tunnel 呼叫本機 MCP。
+這個腳本會確認本機 `:8765` 健康，必要時透過 `start-mcp.ps1` / `run_http.cmd`（op run）啟動 `server_http.py`，再用 `sample_mcp_remote_no_auth` profile 執行 `tunnel-client init`、`doctor` 和 `run`。本機 MCP bearer 會透過 `Authorization: env:MCP_API_TOKEN` 這類 env reference 傳給 `tunnel-client`，不寫入 profile。保持該 process 運作時，ChatGPT / Codex / API 端才可透過 tunnel 呼叫本機 MCP。
 
-### 只啟動 HTTP server（透過 Doppler 注入 secrets）
+### 只啟動 HTTP server（透過 op run + .env.op 注入 secrets）
 
 ```powershell
 cd V:\projects\edgars-mcp
@@ -127,7 +124,7 @@ Invoke-RestMethod http://127.0.0.1:8765/health
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftHealth.ps1
 ```
 
-需要驗證帶 Bearer token 的 `/mcp` 路徑時，不要把 token 寫進命令列。先讓 `MCP_API_TOKEN` 由 Doppler 或目前 shell 的環境變數提供，再用 wrapper 送 header：
+需要驗證帶 Bearer token 的 `/mcp` 路徑時，不要把 token 寫進命令列。先讓 `MCP_API_TOKEN` 由 op run 或目前 shell 的環境變數提供，再用 wrapper 送 header：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-HandcraftMcp.ps1
@@ -147,11 +144,10 @@ Stop-Process -Id <OwningProcessId> -Force
 | 項目 | 說明 |
 |------|------|
 | Python | 3.11+ |
-| Doppler | secrets 管理，project `edgars-mcp`，config `prd` |
+| 1Password Connect | secrets：`.env.op` + `OP_CONNECT_HOST=http://127.0.0.1:8877` + `op run` |
 | Playwright | `powershell -File .\scripts\setup-playwright.ps1`（browser 工具需要；含 pip + Chromium） |
 | Claude Code | `winget install Anthropic.ClaudeCode` + `claude auth login` |
 | Ollama | 本地模型執行環境 |
-| mmx CLI | MiniMax 媒體生成 |
 | OpenAI tunnel-client | OpenAI Secure MCP Tunnel 用；本 repo snapshot 未附安裝腳本 |
 
 ---
@@ -226,7 +222,24 @@ https://mcp.edgars.tools/.well-known/oauth-protected-resource
 
 ---
 
-## 工具總覽（78 個）
+## 工具總覽（既有工具全部保留）
+
+另加永遠可見的 `wrap_catalog`。Playwright / Windows-MCP / Desktop Commander / Descope / cloudflared / 1Password Connect / OpenMontage / Hermes / OpenClaw 的完整工具面**預設關閉**，不是刪掉。
+
+開啟方式（可全開或單開）：
+
+```powershell
+$env:MCP_WRAP_ALL = "1"   # 或單開 MCP_WRAP_PLAYWRIGHT / MCP_WRAP_WINDOWS / MCP_WRAP_DESKTOP_COMMANDER / MCP_WRAP_DESCOPE / MCP_WRAP_CLOUDFLARED / MCP_WRAP_OP_CONNECT / MCP_WRAP_OPENMONTAGE / MCP_WRAP_HERMES / MCP_WRAP_OPENCLAW
+$env:MCP_WRAP_ALLOW_REMOTE = "1"  # 預設本機才能呼叫桌面類工具；要給遠端就再開這個
+```
+
+啟用後會以前綴展開完整上游 `tools/list`，不裁切：`pw__*`、`win__*`、`dc__*`、`descope__*` / `descope_mgmt__*`、`om__*`，以及 `cloudflared_cli`、`op_connect_cli`、`hermes_cli`、`openclaw_cli` 全 CLI。
+
+驗證：
+
+```powershell
+py -3 .\scripts\verify-wrapped-tools.py
+```
 
 ### 🤖 AI 代理（10）
 
@@ -356,7 +369,7 @@ V:\projects\edgars-mcp\reports
 | `warp_agent_run_status` | 查單一 run 狀態（JSON 詳情） |
 | `warp_agent_run_create` | 用 prompt + `environment_id` 啟動新 run |
 
-需要 Doppler：`WARP_API_KEY`（在 [oz.warp.dev/settings](https://oz.warp.dev/settings) 產生，前綴 `wk-`）。
+需要（`.env.op`）：`WARP_API_KEY`（在 [oz.warp.dev/settings](https://oz.warp.dev/settings) 產生，前綴 `wk-`）。
 
 ---
 
@@ -369,7 +382,7 @@ V:\projects\edgars-mcp\reports
 | `cursor_agent_create` | 建立 agent 並送出第一個 prompt（可選 repo URL） |
 | `cursor_agent_run_status` | 查 agent 某次 run 狀態 |
 
-需要 Doppler：`CURSOR_API_KEY`（Cursor Dashboard → API Keys）。
+需要（`.env.op`）：`CURSOR_API_KEY`（Cursor Dashboard → API Keys）。
 
 ---
 
@@ -382,16 +395,7 @@ V:\projects\edgars-mcp\reports
 | `factory_computers_list` | 列出 Droid Computers（持久開發環境） |
 | `factory_readiness_reports` | 列出 repo agent readiness 報告 |
 
-需要 Doppler：`FACTORY_API_KEY`（[app.factory.ai/settings/api-keys](https://app.factory.ai/settings/api-keys)）。
-
----
-
-### 📝 Notion（2）
-
-| 工具 | 說明 |
-|------|------|
-| `notion_get_page` | 讀取 Notion 頁面內容 |
-| `notion_search` | 搜尋 Notion workspace |
+需要（`.env.op`）：`FACTORY_API_KEY`（[app.factory.ai/settings/api-keys](https://app.factory.ai/settings/api-keys)）。
 
 ---
 
@@ -402,21 +406,6 @@ V:\projects\edgars-mcp\reports
 | `image_generate_free` | 免費圖片生成（Pollinations.AI，不需 API key），存為 PNG 到 `.screenshots/` |
 
 > 模型選項：`flux`（預設，高品質）、`turbo`（快速）、`gptimage`
-
----
-
-### 🎬 MiniMax 媒體（8，需付費帳號）
-
-| 工具 | 說明 |
-|------|------|
-| `mmx_image_generate` | 生成圖片 |
-| `mmx_video_generate` | 生成影片 |
-| `mmx_speech_synthesize` | 文字轉語音 |
-| `mmx_music_generate` | 生成音樂 |
-| `mmx_vision_describe` | 圖片描述 |
-| `mmx_search_query` | MiniMax 搜尋 |
-| `mmx_text_chat` | MiniMax 對話 |
-| `mmx_quota_show` | 查看剩餘額度 |
 
 ---
 
@@ -474,13 +463,13 @@ Templates/         ← 筆記模板
 
 ```powershell
 cd V:\projects\edgars-mcp
-doppler run -- python -m unittest test_server_http.py -v
+op run --env-file .env.op -- python -m unittest test_server_http.py -v
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftSecureStartup.ps1
 ```
 
 ---
 
-## 環境變數（由 Doppler 管理）
+## 環境變數（由 1Password Connect / `.env.op` 管理）
 
 | 變數 | 說明 |
 |------|------|
@@ -498,7 +487,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftSecu
 | `PERPLEXITY_API_KEY` | web_search 用 |
 | `OPENAI_API_KEY` | 備用 |
 | `LINEAR_API_KEY` | Linear issue 管理 |
-| `NOTION_API_KEY` | Notion 讀取 |
 | `TRACKTW_API_KEY` | TrackTW 物流查詢 |
 | `WARP_API_KEY` | Warp Oz 雲端 agent API |
 | `CURSOR_API_KEY` | Cursor Cloud Agents API |
@@ -510,6 +498,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftSecu
 | `MCP_LINEAR_WEBHOOK_TOKEN` | Linear webhook 共用 secret |
 | `MCP_DISCORD_WEBHOOK_TOKEN` | Discord webhook 共用 secret |
 | `MCP_PORT` | 本機 HTTP port（預設 8765；測試可覆蓋） |
+| `MCP_WRAP_ALL` | `1` 時開啟全部包裝來源的完整工具面（預設關） |
+| `MCP_WRAP_PLAYWRIGHT` / `MCP_WRAP_WINDOWS` / `MCP_WRAP_DESKTOP_COMMANDER` / `MCP_WRAP_DESCOPE` / `MCP_WRAP_CLOUDFLARED` / `MCP_WRAP_OP_CONNECT` / `MCP_WRAP_OPENMONTAGE` / `MCP_WRAP_HERMES` / `MCP_WRAP_OPENCLAW` | 單開某一個完整工具面 |
+| `MCP_WRAP_ALLOW_REMOTE` | `1` 時允許遠端客戶端呼叫桌面類包裝工具（預設本機） |
 
 ---
 
@@ -585,7 +576,7 @@ webhook 不會走 Cloudflare Access 的瀏覽器登入流程。若要保留公�
 
 並讓呼叫方用 `Authorization: Bearer <secret>` 或 `X-Handcraft-Webhook-Token` 送進來。本檔不保存 token，也不要把 runtime log、`.screenshots/`、`__pycache__/` 或圖片檔 commit 進 repo。
 
-本 repo 內未保留 `gateway.cmd`；目前 HTTP / gateway 相關啟動路徑是 `run_http.cmd` 與 `scripts\Start-HandcraftStack.ps1`，兩者都走 Doppler/env 注入，不需要把 token 當參數傳入。手動探測 `/mcp` 時請使用 `scripts\Invoke-HandcraftMcp.ps1`，避免 `Authorization: Bearer ...` 出現在 shell history 或程序命令列。
+本 repo 內未保留 `gateway.cmd`；目前 HTTP / gateway 相關啟動路徑是 `run_http.cmd` 與 `scripts\Start-HandcraftStack.ps1`，兩者都走 op run / env 注入，不需要把 token 當參數傳入。手動探測 `/mcp` 時請使用 `scripts\Invoke-HandcraftMcp.ps1`，避免 `Authorization: Bearer ...` 出現在 shell history 或程序命令列。
 
 ---
 

@@ -1,4 +1,4 @@
-"""
+﻿"""
 手刻 MCP Server - Streamable HTTP 版本
 協議版本: 2025-11-25
 依賴: Python 標準庫；啟用 Cloudflare Access 模式時額外使用 PyJWT
@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
-from mmx_handlers import DISPATCH, hmi, hmvd, hms, hmu, hmv, hmsq, hmc, hmq
+from edgar_wrappers import dispatch_wrap_tool, list_wrap_tools
 
 try:
     import jwt
@@ -57,17 +57,7 @@ try:
 except ImportError:  # pragma: no cover - optional until MCP_DESCOPE_ENABLED
     DescopeClient = None
 
-# ── mmx handler aliases（對應 dispatch 的完整名稱）─────────────────────────────
-handle_mmx_image_generate   = hmi
-handle_mmx_video_generate   = hmv
-handle_mmx_speech_synthesize = hms
-handle_mmx_music_generate   = hmu
-handle_mmx_vision_describe  = hmvd
-handle_mmx_search_query     = hmsq
-handle_mmx_text_chat        = hmc
-handle_mmx_quota_show       = hmq
-
-# ── Secrets（由 Doppler 注入）─────────────────────────────────────────────────
+# ── Secrets（由 op run + .env.op / Connect 注入）─────────────────────────────────
 def load_mcp_api_token() -> str:
     return os.getenv("MCP_API_TOKEN", "").strip()
 
@@ -140,6 +130,72 @@ def load_honcho_chatgpt_write_enabled() -> bool:
 def load_honcho_mcp_hostname() -> str:
     return os.getenv("HONCHO_MCP_HOSTNAME", "honcho-mcp.edgars.tools").strip().lower()
 
+
+def resolve_cli(
+    cmd_name: str,
+    env_var: str | None = None,
+    known_paths: list[str] | None = None,
+) -> str:
+    """Deterministic executable/CLI resolver.
+    Priority: env override (e.g. QMD_CMD) > shutil.which > known EdgarOS npm/bin paths > name fallback.
+    No scattered hardcodes; no secrets.
+    """
+    if env_var:
+        p = os.getenv(env_var, "").strip()
+        if p and os.path.exists(p):
+            return p
+    p = shutil.which(cmd_name)
+    if p:
+        return p
+    if known_paths:
+        for p in known_paths:
+            if os.path.exists(p):
+                return p
+    return cmd_name
+
+
+QMD_KNOWN_PATHS = [
+    r"C:\Users\EdgarsTool\AppData\Roaming\npm\qmd.cmd",
+    r"C:\Users\EdgarsTool\AppData\Roaming\npm\qmd.ps1",
+]
+CODEX_KNOWN_PATHS = [r"C:\Users\EdgarsTool\AppData\Roaming\npm\codex.cmd"]
+CLAUDE_KNOWN_PATHS: list[str] = []
+GEMINI_KNOWN_PATHS: list[str] = []
+COPILOT_KNOWN_PATHS = [r"C:\Users\EdgarsTool\AppData\Roaming\npm\copilot.cmd"]
+DROID_KNOWN_PATHS = [r"C:\Users\EdgarsTool\bin\droid.exe"]
+OLLAMA_KNOWN_PATHS = [r"C:\Users\EdgarsTool\AppData\Local\Programs\Ollama\ollama.exe"]
+
+
+def probe_runtime_capabilities() -> dict:
+    """Lightweight runtime capability probe (internal).
+    Reports resolved path/version/readiness for qmd + agent CLIs. No secrets.
+    """
+    probes: dict = {}
+    for name, env_var, known in [
+        ("qmd", "QMD_CMD", QMD_KNOWN_PATHS),
+        ("codex", "CODEX_CMD", CODEX_KNOWN_PATHS),
+        ("claude", "CLAUDE_CMD", CLAUDE_KNOWN_PATHS),
+        ("droid", "DROID_CMD", DROID_KNOWN_PATHS),
+        ("gemini", "GEMINI_CMD", GEMINI_KNOWN_PATHS),
+        ("ollama", "OLLAMA_CMD", OLLAMA_KNOWN_PATHS),
+    ]:
+        path = resolve_cli(name, env_var, known)
+        version = "unknown"
+        ready = False
+        if path and path != name:
+            ready = os.path.exists(path) or bool(shutil.which(name))
+            try:
+                if ready:
+                    r = subprocess.run(
+                        [path, "--version"],
+                        capture_output=True, text=True, timeout=5, shell=False
+                    )
+                    if r.returncode == 0:
+                        version = (r.stdout or r.stderr).strip().split("\n")[0][:120]
+            except Exception:
+                pass
+        probes[name] = {"path": path, "version": version, "ready": ready}
+    return probes
 
 @dataclass(frozen=True)
 class HandcraftServerConfig:
@@ -223,7 +279,6 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
         self.config = config
 
 
-NOTION_API_KEY      = os.getenv("NOTION_API_KEY", "")
 PERPLEXITY_API_KEY  = os.getenv("PERPLEXITY_API_KEY", "")
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
 LINEAR_API_KEY      = os.getenv("LINEAR_API_KEY", "")
@@ -289,12 +344,13 @@ BROWSER_VISIBLE_TOOL_NAMES = {
 }
 _mcp_auth_kind: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_auth_kind", default="unknown")
 
-CODEX_CMD = r"C:\Users\EdgarsTool\AppData\Roaming\npm\codex.cmd"
-CLAUDE_CMD = shutil.which("claude") or "claude"
-GEMINI_CMD = shutil.which("gemini") or "gemini"
-COPILOT_CMD = shutil.which("copilot") or r"C:\Users\EdgarsTool\AppData\Roaming\npm\copilot.cmd"
-DROID_CMD = shutil.which("droid") or r"C:\Users\EdgarsTool\bin\droid.exe"
-OLLAMA_CMD = r"C:\Users\EdgarsTool\AppData\Local\Programs\Ollama\ollama.exe"
+CODEX_CMD = resolve_cli("codex", "CODEX_CMD", CODEX_KNOWN_PATHS)
+CLAUDE_CMD = resolve_cli("claude", "CLAUDE_CMD", CLAUDE_KNOWN_PATHS)
+GEMINI_CMD = resolve_cli("gemini", "GEMINI_CMD", GEMINI_KNOWN_PATHS)
+COPILOT_CMD = resolve_cli("copilot", "COPILOT_CMD", COPILOT_KNOWN_PATHS)
+DROID_CMD = resolve_cli("droid", "DROID_CMD", DROID_KNOWN_PATHS)
+OLLAMA_CMD = resolve_cli("ollama", "OLLAMA_CMD", OLLAMA_KNOWN_PATHS)
+QMD_CMD = resolve_cli("qmd", "QMD_CMD", QMD_KNOWN_PATHS)
 OLLAMA_HOST_RAW = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").strip()
 OLLAMA_HOST = OLLAMA_HOST_RAW if OLLAMA_HOST_RAW.startswith(("http://", "https://")) else f"http://{OLLAMA_HOST_RAW}"
 CODEX_DEFAULT_WORKDIR = r"C:\Users\EdgarsTool"
@@ -314,7 +370,7 @@ MCP_NAME_HEADER_SOURCES = {
 }
 SERVER_INSTRUCTIONS = (
     "Edgar 的本地 MCP（mcp-handcraft）：檔案系統、Git、系統指令、瀏覽器、Obsidian、"
-    "Linear、Notion、AI 代理委派、媒體生成等 78+ 工具。"
+    "Linear、AI 代理委派等內建工具。"
 )
 CHATGPT_HONCHO_SERVER_INSTRUCTIONS = (
     "Edgar 的 ChatGPT Honcho memory gateway。只提供兩項固定 scope 功能："
@@ -456,7 +512,7 @@ OAUTH_CIMD_CACHE: dict[str, dict] = {}
 OAUTH_CIMD_CACHE_TTL_SECONDS = int(os.getenv("MCP_OAUTH_CIMD_CACHE_TTL_SECONDS", "86400"))
 OAUTH_CIMD_FETCH_TIMEOUT_SECONDS = float(os.getenv("MCP_OAUTH_CIMD_FETCH_TIMEOUT_SECONDS", "10"))
 OAUTH_CIMD_MAX_BYTES = int(os.getenv("MCP_OAUTH_CIMD_MAX_BYTES", str(64 * 1024)))
-OAUTH_OIDC_SCOPES = ["openid", "profile", "email", OAUTH_SCOPE]
+OAUTH_OIDC_SCOPES = ["openid", "profile", "email", OAUTH_SCOPE, "edgars-master-line"]
 OAUTH_OIDC_SCOPE_SPACE = " ".join(OAUTH_OIDC_SCOPES)
 
 
@@ -761,170 +817,6 @@ TOOLS = [
             },
             "required": ["task"],
         },
-    },
-    {
-        "name": "notion_search",
-        "description": (
-            "Search pages and databases in Notion. Returns a list of matching pages "
-            "with their titles, IDs, and URLs. Use this to find Notion content by keyword."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search keyword to find in Notion pages and databases.",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max number of results to return (default 10, max 20).",
-                },
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "notion_get_page",
-        "description": (
-            "Fetch the content of a specific Notion page by its page ID or URL. "
-            "Returns the page title and all text blocks."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "page_id": {
-                    "type": "string",
-                    "description": "Notion page ID (UUID format) or full Notion page URL.",
-                },
-            },
-            "required": ["page_id"],
-        },
-    },
-    {
-        "name": "mmx_image_generate",
-        "description": (
-            "Generate images using MiniMax AI image-01 model. "
-            "Returns image URLs or saved file paths."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "prompt": {"type": "string", "description": "Image description prompt."},
-                "aspect_ratio": {"type": "string", "description": "Aspect ratio like 16:9, 1:1, 9:16."},
-                "n": {"type": "integer", "description": "Number of images to generate (default 1)."},
-                "out_dir": {"type": "string", "description": "Directory to save images."},
-            },
-            "required": ["prompt"],
-        },
-    },
-    {
-        "name": "mmx_video_generate",
-        "description": (
-            "Generate videos using MiniMax AI Hailuo-2.3 model. "
-            "This is async — set async=true to get a job_id immediately, "
-            "or wait for the video to be generated and returned as a file path."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "prompt": {"type": "string", "description": "Video description prompt."},
-                "async": {"type": "boolean", "description": "Return job_id immediately without waiting."},
-                "first_frame": {"type": "string", "description": "Path or URL to first frame image."},
-                "download": {"type": "string", "description": "File path to save the video."},
-            },
-            "required": ["prompt"],
-        },
-    },
-    {
-        "name": "mmx_speech_synthesize",
-        "description": (
-            "Text-to-speech using MiniMax speech-2.8-hd model. "
-            "Converts text to audio file (mp3 by default)."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "text": {"type": "string", "description": "Text to synthesize (max 10k chars)."},
-                "text_file": {"type": "string", "description": "Path to text file (use - for stdin)."},
-                "voice": {"type": "string", "description": "Voice ID (default: English_expressive_narrator)."},
-                "model": {"type": "string", "description": "Model: speech-2.8-hd, speech-2.6, or speech-02."},
-                "speed": {"type": "number", "description": "Speed multiplier."},
-                "format": {"type": "string", "description": "Audio format (default: mp3)."},
-                "out": {"type": "string", "description": "Output file path."},
-            },
-            "required": ["text"],
-        },
-    },
-    {
-        "name": "mmx_music_generate",
-        "description": (
-            "Generate music using MiniMax music-2.5 model. "
-            "Can create songs with vocals or instrumental music."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "prompt": {"type": "string", "description": "Music style/description prompt."},
-                "lyrics": {"type": "string", "description": "Song lyrics with structure tags."},
-                "vocals": {"type": "string", "description": "Vocal style description."},
-                "genre": {"type": "string", "description": "Music genre."},
-                "mood": {"type": "string", "description": "Mood or emotion."},
-                "instruments": {"type": "string", "description": "Instruments to feature."},
-                "bpm": {"type": "number", "description": "Exact tempo in BPM."},
-                "instrumental": {"type": "boolean", "description": "Generate instrumental without vocals."},
-                "out": {"type": "string", "description": "Output file path."},
-            },
-        },
-    },
-    {
-        "name": "mmx_vision_describe",
-        "description": (
-            "Image understanding via MiniMax VL model. "
-            "Describes or answers questions about an image."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "image": {"type": "string", "description": "Image path or URL."},
-                "file_id": {"type": "string", "description": "Pre-uploaded file ID."},
-                "prompt": {"type": "string", "description": "Question about the image."},
-            },
-            "required": ["image"],
-        },
-    },
-    {
-        "name": "mmx_search_query",
-        "description": "Web search via MiniMax AI.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "q": {"type": "string", "description": "Search query."},
-            },
-            "required": ["q"],
-        },
-    },
-    {
-        "name": "mmx_text_chat",
-        "description": (
-            "Chat completion using MiniMax MiniMax-M2.7 model. "
-            "Supports multi-turn conversation and system prompts."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "message": {"type": "string", "description": "Message text. Prefix with role: to set role."},
-                "system": {"type": "string", "description": "System prompt."},
-                "model": {"type": "string", "description": "Model ID (default: MiniMax-M2.7)."},
-                "max_tokens": {"type": "integer", "description": "Max tokens (default: 4096)."},
-                "temperature": {"type": "number", "description": "Sampling temperature (0.0-1.0)."},
-            },
-            "required": ["message"],
-        },
-    },
-    {
-        "name": "mmx_quota_show",
-        "description": "Display MiniMax Token Plan usage and remaining quotas.",
-        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "ollama_agent",
@@ -1688,17 +1580,12 @@ TOOLS = [
 ]
 
 READ_ONLY_TOOL_NAMES = {
+    "wrap_catalog",
     "qmd_search",
     "qmd_get",
     "echo",
     "agent_job_status",
     "agent_job_list",
-    "notion_search",
-    "notion_get_page",
-    "mmx_vision_describe",
-    "mmx_search_query",
-    "mmx_text_chat",
-    "mmx_quota_show",
     "fs_list",
     "fs_read",
     "fs_search",
@@ -3183,11 +3070,10 @@ def run_codex_task(task: str, working_dir: str) -> tuple[str, bool]:
                 "/c",
                 CODEX_CMD,
                 "exec",
-                "--full-auto",
                 "--ephemeral",
                 "--skip-git-repo-check",
-                "-C", working_dir,
-                "-o", tmp_path,
+                "--cd", working_dir,
+                "--output-last-message", tmp_path,
                 task,
             ],
             cwd=working_dir,
@@ -3244,7 +3130,7 @@ def run_claude_code_task(task: str, working_dir: str) -> tuple[str, bool]:
 
     try:
         result = run_agent_command(
-            ["cmd.exe", "/c", CLAUDE_CMD, "-p", task, "--output-format", "text"],
+            ["cmd.exe", "/c", CLAUDE_CMD, "--print", task, "--output-format", "text"],
             cwd=working_dir,
             # Force Claude Code to use the locally logged-in first-party account.
             # Doppler or shell-level Anthropic API settings can otherwise override
@@ -3315,6 +3201,7 @@ def run_droid_task(task: str, working_dir: str) -> tuple[str, bool]:
                 "/c",
                 DROID_CMD,
                 "exec",
+                "--auto", "medium",
                 task,
                 "--cwd",
                 working_dir,
@@ -3350,6 +3237,10 @@ def summarize_error_reason(output: str) -> str:
         return "connection_aborted"
     if "internal error" in lowered or "unexpected critical error" in lowered:
         return "upstream_error"
+    if "ineligible" in lowered or "unsupported_client" in lowered or "ineligibletiererror" in lowered or "tier error" in lowered or "unsupported" in lowered:
+        return "account_ineligible"
+    if "command not found" in lowered or "not found" in lowered or "no such file" in lowered:
+        return "cli_missing"
     return "error"
 
 
@@ -3359,6 +3250,8 @@ _TRANSIENT_FALLBACK_REASONS = frozenset({
     "rate_limited",
     "connection_aborted",
     "upstream_error",
+    "account_ineligible",
+    "cli_missing",
 })
 
 
@@ -3373,10 +3266,14 @@ def should_fallback(tool_name: str, output: str, is_error: bool) -> bool:
         return True
 
     reason = summarize_error_reason(output)
+    # Continue fallback on CLI incompatibility, account ineligibility, missing cmd, quota/rate, timeout, transient upstream.
+    # Only stop for genuine task/content failures (where another model would repeat the same bad task).
+    if reason in {"account_ineligible", "cli_missing", "quota_exceeded", "rate_limited", "timeout", "connection_aborted", "upstream_error"}:
+        return True
     if tool_name in {"gemini_agent", "copilot_agent", "droid_agent"}:
         return reason in _TRANSIENT_FALLBACK_REASONS
     if tool_name == "codex_agent":
-        return reason in {"timeout", "connection_aborted", "upstream_error"}
+        return reason in {"timeout", "connection_aborted", "upstream_error", "account_ineligible", "cli_missing"}
     return False
 
 
@@ -3485,7 +3382,10 @@ def handle_tools_list(req_id, params: dict, config: HandcraftServerConfig | None
     honcho_tools = fetch_honcho_tool_descriptors(config)
     if honcho_tools:
         tools.extend(honcho_tools)
-    log(f"tools/list: returning {len(tools)} tool(s) ({len(honcho_tools)} honcho)")
+    wrap_tools = [_normalize_tool_descriptor(tool) for tool in list_wrap_tools()]
+    if wrap_tools:
+        tools.extend(wrap_tools)
+    log(f"tools/list: returning {len(tools)} tool(s) ({len(honcho_tools)} honcho, {len(wrap_tools)} wrap)")
     # 工具清單不常變、對所有呼叫者相同 → 可快取（2026 快取提示）
     return make_response(req_id, {"tools": tools, "ttlMs": 60000, "cacheScope": "public"})
 
@@ -3498,6 +3398,10 @@ def handle_tools_call(req_id, params: dict, config: HandcraftServerConfig | None
 
     if isinstance(name, str) and name.startswith(HONCHO_TOOL_PREFIX):
         return handle_honcho_integrated_tool_call(req_id, name, arguments, config)
+
+    wrap_result = dispatch_wrap_tool(name, arguments if isinstance(arguments, dict) else {})
+    if wrap_result is not None:
+        return make_response(req_id, wrap_result)
 
     if name == "echo":
         message = arguments.get("message", "")
@@ -3529,29 +3433,6 @@ def handle_tools_call(req_id, params: dict, config: HandcraftServerConfig | None
 
     if name == "smart_agent":
         return handle_smart_agent(req_id, arguments)
-
-    if name == "notion_search":
-        return handle_notion_search(req_id, arguments)
-
-    if name == "notion_get_page":
-        return handle_notion_get_page(req_id, arguments)
-
-    if name == "mmx_image_generate":
-        return handle_mmx_image_generate(req_id, arguments)
-    if name == "mmx_video_generate":
-        return handle_mmx_video_generate(req_id, arguments)
-    if name == "mmx_speech_synthesize":
-        return handle_mmx_speech_synthesize(req_id, arguments)
-    if name == "mmx_music_generate":
-        return handle_mmx_music_generate(req_id, arguments)
-    if name == "mmx_vision_describe":
-        return handle_mmx_vision_describe(req_id, arguments)
-    if name == "mmx_search_query":
-        return handle_mmx_search_query(req_id, arguments)
-    if name == "mmx_text_chat":
-        return handle_mmx_text_chat(req_id, arguments)
-    if name == "mmx_quota_show":
-        return handle_mmx_quota_show(req_id, arguments)
 
     if name == "ollama_agent":
         return handle_ollama_agent(req_id, arguments)
@@ -3814,103 +3695,6 @@ def handle_smart_agent(req_id, arguments: dict) -> dict:
             attempt_lines.append(line)
         text = "\n".join(attempt_lines + ["", output])
     return make_response(req_id, make_tool_text_response(text, is_error=is_error))
-
-
-# ── Notion helpers ────────────────────────────────────────────────────────────
-
-def _notion_request(path: str, method: str = "GET", body: dict | None = None) -> dict:
-    """發送 Notion API 請求，回傳 parsed JSON 或拋出 Exception。"""
-    if not NOTION_API_KEY:
-        raise ValueError("NOTION_API_KEY not set — add it in Doppler and restart server")
-    url = "https://api.notion.com/v1" + path
-    data = json.dumps(body).encode("utf-8") if body else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", f"Bearer {NOTION_API_KEY}")
-    req.add_header("Notion-Version", "2022-06-28")
-    req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def _extract_plain_text(rich_text_list: list) -> str:
-    return "".join(rt.get("plain_text", "") for rt in rich_text_list)
-
-
-def _page_title(page: dict) -> str:
-    props = page.get("properties", {})
-    for prop in props.values():
-        if prop.get("type") == "title":
-            return _extract_plain_text(prop.get("title", []))
-    return "(no title)"
-
-
-def _blocks_to_text(blocks: list) -> str:
-    lines = []
-    for block in blocks:
-        btype = block.get("type", "")
-        content = block.get(btype, {})
-        rich = content.get("rich_text", [])
-        text = _extract_plain_text(rich).strip()
-        if text:
-            if btype.startswith("heading"):
-                lines.append(f"\n## {text}")
-            elif btype == "bulleted_list_item":
-                lines.append(f"- {text}")
-            elif btype == "numbered_list_item":
-                lines.append(f"1. {text}")
-            elif btype == "to_do":
-                checked = "x" if content.get("checked") else " "
-                lines.append(f"[{checked}] {text}")
-            elif btype == "code":
-                lang = content.get("language", "")
-                lines.append(f"```{lang}\n{text}\n```")
-            else:
-                lines.append(text)
-    return "\n".join(lines)
-
-
-def handle_notion_search(req_id, arguments: dict) -> dict:
-    query = arguments.get("query", "").strip()
-    limit = min(int(arguments.get("limit", 10)), 20)
-    if not query:
-        return make_response(req_id, make_tool_text_response("Error: query is required", is_error=True))
-    try:
-        data = _notion_request("/search", "POST", {"query": query, "page_size": limit})
-        results = data.get("results", [])
-        if not results:
-            return make_response(req_id, make_tool_text_response(f"No results found for: {query}"))
-        lines = [f"Found {len(results)} result(s) for \"{query}\":\n"]
-        for item in results:
-            obj_type = item.get("object", "")
-            title = _page_title(item) if obj_type == "page" else item.get("title", "(no title)")
-            url = item.get("url", "")
-            page_id = item.get("id", "")
-            lines.append(f"- [{title}]({url})\n  id: {page_id}  type: {obj_type}")
-        return make_response(req_id, make_tool_text_response("\n".join(lines)))
-    except Exception as exc:
-        return make_response(req_id, make_tool_text_response(f"Notion search error: {exc}", is_error=True))
-
-
-def handle_notion_get_page(req_id, arguments: dict) -> dict:
-    page_id = arguments.get("page_id", "").strip()
-    if not page_id:
-        return make_response(req_id, make_tool_text_response("Error: page_id is required", is_error=True))
-    # 從 URL 取出 ID（最後一段 32 碼 hex，去掉 dash）
-    if page_id.startswith("http"):
-        raw = page_id.rstrip("/").split("/")[-1].split("?")[0]
-        page_id = raw[-32:].replace("-", "")
-        page_id = f"{page_id[:8]}-{page_id[8:12]}-{page_id[12:16]}-{page_id[16:20]}-{page_id[20:]}"
-    try:
-        page = _notion_request(f"/pages/{page_id}")
-        title = _page_title(page)
-        url = page.get("url", "")
-        blocks_data = _notion_request(f"/blocks/{page_id}/children?page_size=100")
-        blocks = blocks_data.get("results", [])
-        body = _blocks_to_text(blocks) or "(no content)"
-        text = f"# {title}\n{url}\n\n{body}"
-        return make_response(req_id, make_tool_text_response(text))
-    except Exception as exc:
-        return make_response(req_id, make_tool_text_response(f"Notion get page error: {exc}", is_error=True))
 
 
 REQUEST_HANDLERS = {
@@ -4245,7 +4029,7 @@ def handle_linear_oauth_bootstrap() -> tuple[int, dict]:
     if not linear_oauth_configured():
         return 503, {
             "error": "not_configured",
-            "message": "LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET must be set in Doppler",
+            "message": "LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET must be set via op run / .env.op",
         }
     if linear_oauth_token_present():
         token = load_linear_oauth_token() or {}
@@ -4525,7 +4309,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         if not linear_oauth_configured():
             self._send_oauth_json({
                 "error": "not_configured",
-                "message": "LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET must be set in Doppler",
+                "message": "LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET must be set via op run / .env.op",
             }, status=503)
             return
         try:
@@ -6219,14 +6003,29 @@ def handle_sys_run(req_id, arguments: dict) -> dict:
 
 
 def _run_qmd(args, timeout=120):
-    # qmd is an npm shim (qmd.cmd) on Windows; invoke via cmd /c so it resolves.
+    qmd = QMD_CMD
+    if qmd.lower().endswith((".cmd", ".ps1", ".bat")) or "qmd" in qmd.lower():
+        cmd = ["cmd", "/c", qmd, *args]
+    else:
+        cmd = [qmd, *args]
     return subprocess.run(
-        ["cmd", "/c", "qmd", *args],
+        cmd,
         capture_output=True, text=True, timeout=timeout, shell=False,
     )
 
+def _qmd_available() -> bool:
+    if QMD_CMD != "qmd" and os.path.exists(QMD_CMD):
+        return True
+    return bool(shutil.which("qmd"))
+
+
 
 def handle_qmd_search(req_id, arguments: dict) -> dict:
+    if not _qmd_available():
+        return make_response(req_id, make_tool_text_response(
+            "Error: QMD_UNAVAILABLE: qmd not resolved (set QMD_CMD env, or ensure npm shim in PATH / known EdgarOS paths). Version 2.5.3 expected.",
+            is_error=True,
+        ))
     query = str(arguments.get("query", "")).strip()
     if not query:
         return make_response(req_id, make_tool_text_response("Error: query is required", is_error=True))
@@ -6263,6 +6062,11 @@ def handle_qmd_search(req_id, arguments: dict) -> dict:
 
 
 def handle_qmd_get(req_id, arguments: dict) -> dict:
+    if not _qmd_available():
+        return make_response(req_id, make_tool_text_response(
+            "Error: QMD_UNAVAILABLE: qmd not resolved (set QMD_CMD env, or ensure npm shim in PATH / known EdgarOS paths). Version 2.5.3 expected.",
+            is_error=True,
+        ))
     uri = str(arguments.get("uri", "")).strip()
     if not uri:
         return make_response(req_id, make_tool_text_response("Error: uri is required", is_error=True))
@@ -7120,7 +6924,7 @@ def _tracktw_key() -> str:
     key = TRACKTW_API_KEY or os.getenv("TRACKTW_API_KEY", "")
     key = key.strip()
     if not key:
-        raise ValueError("TRACKTW_API_KEY not set. Add it to Doppler project handcraft-mcp / prd.")
+        raise ValueError("TRACKTW_API_KEY not set. Add it to 1Password Connect (.env.op) and restart.")
     return key
 
 
@@ -8136,7 +7940,7 @@ def handle_web_search(req_id, arguments: dict) -> dict:
         return make_response(req_id, make_tool_text_response("Error: query is required", is_error=True))
     if not PERPLEXITY_API_KEY:
         return make_response(req_id, make_tool_text_response(
-            "Error: PERPLEXITY_API_KEY not set. Add to Doppler: handcraft-mcp / prd", is_error=True
+            "Error: PERPLEXITY_API_KEY not set. Add to 1Password Connect (.env.op).", is_error=True
         ))
     try:
         payload = json.dumps({
@@ -8167,7 +7971,7 @@ def handle_web_search(req_id, arguments: dict) -> dict:
 
 def _linear_graphql(query: str, variables: dict | None = None) -> dict:
     if not LINEAR_API_KEY:
-        raise LinearMcpError("LINEAR_API_KEY not set in Doppler")
+        raise LinearMcpError("LINEAR_API_KEY not set via op run / .env.op")
     payload = json.dumps({"query": query, "variables": variables or {}}).encode("utf-8")
     req = urllib.request.Request(
         "https://api.linear.app/graphql",
@@ -8276,26 +8080,28 @@ def handle_linear_issues(req_id, arguments: dict) -> dict:
     limit = int(arguments.get("limit", 10))
     assignee_me = bool(arguments.get("assignee_me", False))
     try:
-        filter_parts = []
+        variables: dict = {"limit": limit}
+        filter_obj: dict = {}
         if state:
-            filter_parts.append(f'state: "{{ name: \"{state}\" }}"')
+            filter_obj["state"] = {"name": state}
         if assignee_me:
-            filter_parts.append('assignee: { isMe: true }')
-        filter_clause = f"filter: {{ {', '.join(filter_parts)} }}" if filter_parts else ""
-        gql = f"""
-        query {{
-            issues({filter_clause} first: {limit} orderBy: updatedAt) {{
-                nodes {{
+            filter_obj["assignee"] = {"isMe": True}
+        if filter_obj:
+            variables["filter"] = filter_obj
+        gql = """
+        query ($limit: Int!, $filter: IssueFilter) {
+            issues(filter: $filter, first: $limit, orderBy: updatedAt) {
+                nodes {
                     identifier title
-                    state {{ name }}
+                    state { name }
                     priority
-                    assignee {{ name }}
+                    assignee { name }
                     updatedAt
-                }}
-            }}
-        }}
+                }
+            }
+        }
         """
-        data = _linear_graphql(gql)
+        data = _linear_graphql(gql, variables)
         issues = data["data"]["issues"]["nodes"]
         if not issues:
             return make_response(req_id, make_tool_text_response("No issues found."))
@@ -8476,7 +8282,7 @@ def handle_linear_update_issue(req_id, arguments: dict) -> dict:
 def _warp_key() -> str:
     key = (WARP_API_KEY or os.getenv("WARP_API_KEY", "")).strip()
     if not key:
-        raise WarpMcpError("WARP_API_KEY not set. Add it to Doppler project handcraft-mcp / prd.")
+        raise WarpMcpError("WARP_API_KEY not set. Add it to 1Password Connect (.env.op) and restart.")
     return key
 
 
@@ -8586,7 +8392,7 @@ def _cursor_key() -> str:
     if not key:
         raise CursorMcpError(
             "CURSOR_API_KEY not set. Generate at Cursor Dashboard → API Keys, "
-            "then add to Doppler project handcraft-mcp / prd."
+            "then add to 1Password Connect (.env.op) and restart."
         )
     return key
 
@@ -8739,7 +8545,7 @@ def _factory_key() -> str:
     if not key:
         raise FactoryMcpError(
             "FACTORY_API_KEY not set. Generate at app.factory.ai/settings/api-keys, "
-            "then add to Doppler project handcraft-mcp / prd."
+            "then add to 1Password Connect (.env.op) and restart."
         )
     return key
 

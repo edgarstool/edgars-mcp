@@ -1,4 +1,4 @@
-# Handcraft-McpCommon.psm1
+﻿# Handcraft-McpCommon.psm1
 # Shared helpers for mcp-handcraft ops scripts (start / check / maintain / stop).
 # 共用設定與探測函式，供 start-mcp / check-mcp / maintain-mcp / stop-mcp 使用。
 
@@ -10,8 +10,6 @@ $Script:HandcraftDefaults = [ordered]@{
     LocalBaseUrl      = "http://127.0.0.1:8765"
     PublicMcpUrl      = "https://mcp.edgars.tools/mcp"
     CloudflaredConfig = Join-Path $env:USERPROFILE ".cloudflared\config.yml"
-    DopplerProject    = "edgars-mcp"
-    DopplerConfig     = "prd"
     RuntimeRoot       = "G:\AI_WORK_512\run\mcp-handcraft"
     RepoLogDir        = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")).Path "logs")
     HttpPidFile       = "G:\AI_WORK_512\run\mcp-handcraft\handcraft-http.pid"
@@ -42,8 +40,6 @@ function Get-HandcraftConfig {
         LocalMcpUrl        = "$base/mcp"
         PublicMcpUrl       = if ($PublicMcpUrl) { $PublicMcpUrl } else { $Script:HandcraftDefaults.PublicMcpUrl }
         CloudflaredConfig  = $Script:HandcraftDefaults.CloudflaredConfig
-        DopplerProject     = $Script:HandcraftDefaults.DopplerProject
-        DopplerConfig      = $Script:HandcraftDefaults.DopplerConfig
         RuntimeRoot        = $runtime
         RepoLogDir         = Join-Path $root "logs"
         HttpPidFile        = Join-Path $runtime "handcraft-http.pid"
@@ -186,7 +182,8 @@ function Start-HandcraftHttpServer {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Config,
-        [switch]$Force
+        [switch]$Force,
+        [hashtable]$ExtraEnv
     )
 
     if (-not $Force -and (Test-HandcraftLocalHealth -HealthUrl $Config.LocalHealthUrl)) {
@@ -202,30 +199,65 @@ function Start-HandcraftHttpServer {
         }
     }
 
-    if (-not (Test-CommandAvailable -Name "doppler")) {
-        throw "doppler command not found in PATH."
+    if ($Force) {
+        $ownerPid = Get-PortOwnerPid -Port $Config.Port
+        if ($ownerPid) {
+            Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
+            $deadline = (Get-Date).AddSeconds(12)
+            do {
+                Start-Sleep -Milliseconds 400
+            } while ((Get-PortOwnerPid -Port $Config.Port) -and ((Get-Date) -lt $deadline))
+        }
+        Remove-Item -LiteralPath $Config.HttpPidFile -Force -ErrorAction SilentlyContinue
+    }
+
+    if (-not (Test-CommandAvailable -Name "op")) {
+        throw "op command not found in PATH."
     }
 
     if (-not (Test-Path -LiteralPath $Config.ServerPath)) {
         throw "server_http.py not found: $($Config.ServerPath)"
     }
 
+    $envFile = Join-Path $Config.RepoRoot ".env.op"
+    if (-not (Test-Path -LiteralPath $envFile)) {
+        throw ".env.op not found: $envFile"
+    }
+
     New-Item -ItemType Directory -Force -Path $Config.RepoLogDir | Out-Null
     New-Item -ItemType Directory -Force -Path $Config.RuntimeRoot | Out-Null
 
     $python = Get-PythonLaunchSpec -ServerPath $Config.ServerPath
-    $doppler = Get-Command doppler -ErrorAction Stop
-    $args = @(
-        "run",
-        "--project", $Config.DopplerProject,
-        "--config", $Config.DopplerConfig,
-        "--",
-        $python.Executable
-    ) + $python.Arguments
+    $op = Get-Command op -ErrorAction Stop
+
+    # WinPS 5.1 Start-Process has no -Environment; use a small .cmd launcher.
+    $launcherPath = Join-Path $Config.RuntimeRoot "handcraft-op-launch.cmd"
+    $quoteArg = {
+        param([string]$Value)
+        if ($null -eq $Value) { return '""' }
+        return '"' + ($Value -replace '"', '""') + '"'
+    }
+    $opQuoted = & $quoteArg $op.Source
+    $envQuoted = & $quoteArg $envFile
+    $pyQuoted = & $quoteArg $python.Executable
+    $pyArgsQuoted = (@($python.Arguments) | ForEach-Object { & $quoteArg $_ }) -join " "
+    $cmdLines = @(
+        "@echo off",
+        "set OP_CONNECT_HOST=http://127.0.0.1:8877",
+        "set OP_SERVICE_ACCOUNT_TOKEN="
+    )
+    if ($null -eq $ExtraEnv) { $ExtraEnv = @{} }
+    foreach ($key in @($ExtraEnv.Keys | Sort-Object)) {
+        $safeKey = [string]$key
+        if ($safeKey -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { continue }
+        $safeVal = ([string]$ExtraEnv[$key]) -replace "[\r\n]", ""
+        $cmdLines += "set $safeKey=$safeVal"
+    }
+    $cmdLines += "$opQuoted run --env-file $envQuoted -- $pyQuoted $pyArgsQuoted"
+    Set-Content -LiteralPath $launcherPath -Value ($cmdLines -join "`r`n") -Encoding ASCII
 
     $process = Start-Process `
-        -FilePath $doppler.Source `
-        -ArgumentList $args `
+        -FilePath $launcherPath `
         -WorkingDirectory $Config.RepoRoot `
         -WindowStyle Hidden `
         -PassThru `
@@ -382,23 +414,33 @@ function Invoke-HandcraftLocalMcpHandshake {
     param(
         [Parameter(Mandatory)][string]$McpUrl,
         [int]$TimeoutSec = 15,
-        [string]$DopplerProject = "edgars-mcp",
-        [string]$DopplerConfig = "prd"
+        [string]$RepoRoot = $Script:HandcraftDefaults.RepoRoot
     )
 
-    if (-not (Test-CommandAvailable -Name "doppler")) {
+    if (-not (Test-CommandAvailable -Name "op")) {
         return [ordered]@{
             name  = "local_mcp_handshake"
             scope = "local"
             ok    = $false
-            error = "doppler not available for MCP token injection"
+            error = "op not available for MCP token injection"
         }
     }
 
+    $prevHost = $env:OP_CONNECT_HOST
+    $hadSaToken = Test-Path Env:OP_SERVICE_ACCOUNT_TOKEN
+    $prevSaToken = $env:OP_SERVICE_ACCOUNT_TOKEN
     try {
-        $token = (& doppler secrets get MCP_API_TOKEN --plain --project $DopplerProject --config $DopplerConfig 2>$null)
+        $envFile = Join-Path $RepoRoot ".env.op"
+        if (-not (Test-Path -LiteralPath $envFile)) {
+            throw ".env.op not found: $envFile"
+        }
+
+        $env:OP_CONNECT_HOST = "http://127.0.0.1:8877"
+        Remove-Item Env:OP_SERVICE_ACCOUNT_TOKEN -ErrorAction SilentlyContinue
+
+        $token = (& op run --env-file $envFile -- powershell.exe -NoProfile -Command "[Console]::Out.Write(`$env:MCP_API_TOKEN)" 2>$null)
         if (-not $token) {
-            throw "MCP_API_TOKEN not available via doppler"
+            throw "MCP_API_TOKEN not available via op run --env-file .env.op"
         }
         $token = $token.Trim()
 
@@ -428,6 +470,9 @@ function Invoke-HandcraftLocalMcpHandshake {
             uri   = $McpUrl
             error = $_.Exception.Message
         }
+    } finally {
+        if ($null -ne $prevHost) { $env:OP_CONNECT_HOST = $prevHost } else { Remove-Item Env:OP_CONNECT_HOST -ErrorAction SilentlyContinue }
+        if ($hadSaToken) { $env:OP_SERVICE_ACCOUNT_TOKEN = $prevSaToken } else { Remove-Item Env:OP_SERVICE_ACCOUNT_TOKEN -ErrorAction SilentlyContinue }
     }
 }
 

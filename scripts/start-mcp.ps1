@@ -23,6 +23,7 @@ param(
     [switch]$SkipCloudflared,
     [switch]$LocalOnly,
     [switch]$Force,
+    [switch]$EnableWraps,
     [switch]$Help
 )
 
@@ -42,7 +43,15 @@ $config | Add-Member -NotePropertyName WaitSeconds -NotePropertyValue $WaitSecon
 Write-Host "[start-mcp] repo=$($config.RepoRoot)"
 Write-Host "[start-mcp] health=$($config.LocalHealthUrl)"
 
-$httpResult = Start-HandcraftHttpServer -Config $config -Force:$Force
+$extraEnv = @{}
+if ($EnableWraps) {
+    $extraEnv = @{
+        MCP_WRAP_ALL          = "1"
+        MCP_WRAP_ALLOW_REMOTE = "0"
+    }
+}
+
+$httpResult = Start-HandcraftHttpServer -Config $config -Force:$Force -ExtraEnv $extraEnv
 if ($httpResult.already_running) {
     Write-Host "[start-mcp] HTTP server already healthy (pid=$($httpResult.pid))."
 } else {

@@ -1,0 +1,37 @@
+---
+description: 每項任務結束後必須回報 Linear；完成打勾，阻塞另開 issue 求助
+alwaysApply: true
+---
+
+# Linear 任務收尾（強制）
+
+每完成一輪有意義的工作（功能、修復、清理、調查），**結束前必須先處理 Linear**，再跟使用者說「做完了」。
+
+## 完成時
+
+1. 找到對應 Linear issue；沒有就在 **Edgar's Tool** 開一張，標題寫這次做了什麼。
+2. 用 comment 或更新 description，寫清楚：
+   - 做了什麼
+   - 改了哪些檔 / commit / PR
+   - 怎麼驗證
+   - 已知限制
+3. 把狀態改成 **Done**（或團隊同等的「完成／打勾」狀態）。
+4. 再回報使用者，附上 Linear 連結。
+
+## 未完成或阻塞時
+
+1. 同一個 issue 寫 comment：卡在哪、已試過什麼、還缺什麼。
+2. 狀態改成 **Blocked**（沒有就用 In Progress + `blocked` 標籤）。
+3. **另開一張求助 issue**（或子 issue），內容要夠讓 cloud agent / 其他 agent 接手：
+   - 目標與目前結果
+   - 錯誤訊息或重現步驟
+   - 相關路徑、commit、log
+   - 希望對方回答或排除什麼
+4. 標籤可用 `blocked` / `needs-agent`（有就加）；必要時 `@` 相關人或委派 agent。
+5. 回報使用者時附上兩張 issue 連結。
+
+## 禁止
+
+- 任務結束只口頭說「完成／卡住」，卻不寫 Linear。
+- 阻塞只說「之後再弄」，卻不開求助 issue。
+- 把 secrets（token、密碼、私鑰）寫進 Linear。

@@ -46,6 +46,15 @@
 4. commit / push / 開 PR 前必須再次回報。
 5. 若目標檔案已存在且須覆蓋，先 backup（`<file>.bak.<timestamp>`）或產生 merge proposal。
 
+## Linear 任務收尾（強制）
+
+每項有意義的任務結束後，必須先處理 Linear，再跟使用者說完成／卡住：
+
+1. **完成**：對應 issue 寫清做了什麼、驗證結果；沒有就在 **Edgar's Tool** 開一張；狀態改 **Done**。
+2. **未完成／阻塞**：同一 issue 寫卡點與已試過的事；狀態改 **Blocked**（或 In Progress + `blocked`）；**另開求助 issue**，內容要夠讓 cloud agent／其他 agent 接手。
+3. 回報使用者時附 Linear 連結。不要把 secrets 寫進 Linear。
+4. 細節見 `.cursor/rules/linear-task-closeout.mdc`。
+
 ## 預設輸出格式
 
 ```

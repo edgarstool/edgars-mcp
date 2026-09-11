@@ -212,7 +212,8 @@ class HandcraftServerConfig:
     descope_enabled: bool = False
     descope_project_id: str = ""
     descope_audience: str = ""
-    auth_server_url: str = ""  # override: custom AS (e.g. https://auth.edgars.tools)
+    descope_resource_server_id: str = ""  # agentic RS id (e.g. RS3…)
+    auth_server_url: str = ""  # override AS issuer (prefer Descope agentic)
     package_webhook_token: str = ""
     linear_webhook_token: str = ""
     discord_webhook_token: str = ""
@@ -247,22 +248,62 @@ class HandcraftServerConfig:
         return f"https://api.descope.com/{self.descope_project_id}/.well-known/jwks.json"
 
     @property
+    def descope_agentic_pair(self) -> tuple[str, str]:
+        """Return (project_id, resource_server_id) for Descope agentic AS, if known."""
+        pid = (self.descope_project_id or "").strip()
+        rsid = (self.descope_resource_server_id or "").strip()
+        if pid and rsid:
+            return pid, rsid
+        issuer = (self.auth_server_url or "").rstrip("/")
+        marker = "/v1/apps/agentic/"
+        if marker in issuer:
+            suffix = issuer.split(marker, 1)[1]
+            parts = [p for p in suffix.split("/") if p]
+            if len(parts) >= 2:
+                return parts[0], parts[1]
+        return "", ""
+
+    @property
     def descope_issuer(self) -> str:
+        # Prefer explicit AS override (live PRM uses MCP_AUTH_SERVER → agentic).
+        override = (self.auth_server_url or "").rstrip("/")
+        if override:
+            return override
+        pid, rsid = self.descope_agentic_pair
+        if pid and rsid:
+            return f"https://api.descope.com/v1/apps/agentic/{pid}/{rsid}"
         if not self.descope_project_id:
             return ""
         return f"https://api.descope.com/{self.descope_project_id}"
 
     @property
     def descope_authorization_endpoint(self) -> str:
+        pid, rsid = self.descope_agentic_pair
+        if pid and rsid:
+            return f"https://api.descope.com/oauth2/v1/apps/agentic/{pid}/{rsid}/authorize"
         if not self.descope_project_id:
             return ""
         return f"https://api.descope.com/oauth2/v1/{self.descope_project_id}/authorize"
 
     @property
     def descope_token_endpoint(self) -> str:
+        pid, rsid = self.descope_agentic_pair
+        if pid and rsid:
+            return f"https://api.descope.com/oauth2/v1/apps/agentic/{pid}/{rsid}/token"
         if not self.descope_project_id:
             return ""
         return f"https://api.descope.com/oauth2/v1/{self.descope_project_id}/token"
+
+    @property
+    def descope_registration_endpoint(self) -> str:
+        pid, rsid = self.descope_agentic_pair
+        if pid and rsid:
+            return f"https://api.descope.com/v1/mgmt/mcp/client/{pid}/{rsid}/register"
+        return ""
+
+    @property
+    def is_descope_resource_server(self) -> bool:
+        return bool(self.descope_enabled and self.descope_project_id)
 
     def cloudflare_access_audience_for_path(self, path: str) -> str:
         """Return the Access audience dedicated to this public MCP route."""
@@ -4225,6 +4266,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 "jwks_uri": config.descope_jwks_url,
                 "authorization_endpoint": config.descope_authorization_endpoint,
                 "token_endpoint": config.descope_token_endpoint,
+                "registration_endpoint": config.descope_registration_endpoint or None,
                 "response_types_supported": ["code"],
                 "grant_types_supported": ["authorization_code"],
                 "code_challenge_methods_supported": ["S256"],
@@ -4266,6 +4308,33 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     def _handle_health(self) -> None:
         base_url = self.server.config.base_url.rstrip("/")
+        config = self.server.config
+        if config.is_descope_resource_server:
+            oauth_mode = "descope_resource_server"
+        elif config.cloudflare_access_enabled:
+            oauth_mode = "cloudflare_access_managed"
+        else:
+            oauth_mode = "local_bearer"
+        auth_payload: dict = {
+            "mcp_api_token_configured": bool(config.mcp_api_token),
+            "oauth_mode": oauth_mode,
+            "oauth_as_minting": False if config.is_descope_resource_server else True,
+            "cloudflare_access_enabled": config.cloudflare_access_enabled,
+            "cloudflare_access_aud_configured": bool(config.cloudflare_access_aud),
+            "descope_enabled": config.descope_enabled,
+            "descope_project_configured": bool(config.descope_project_id),
+            "descope_sdk": DescopeClient is not None,
+        }
+        if config.is_descope_resource_server:
+            auth_payload["authorization_server"] = config.descope_issuer
+            auth_payload["authorization_endpoint"] = config.descope_authorization_endpoint
+            auth_payload["token_endpoint"] = config.descope_token_endpoint
+            if config.descope_registration_endpoint:
+                auth_payload["registration_endpoint"] = config.descope_registration_endpoint
+        else:
+            # Legacy local/dev AS ads only when this host still mints codes.
+            auth_payload["oauth_public_client_id"] = OAUTH_STATIC_CLIENT_ID
+            auth_payload["oauth_active_tokens"] = len(OAUTH_ACCESS_TOKENS)
         self._send_oauth_json({
             "ok": True,
             "server": SERVER_INFO,
@@ -4279,23 +4348,9 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             "public": {
                 "base_url": base_url,
                 "mcp_url": f"{base_url}{MCP_PATH}",
-                "webhook_base_url": (self.server.config.webhook_base_url or self.server.config.base_url).rstrip("/"),
+                "webhook_base_url": (config.webhook_base_url or config.base_url).rstrip("/"),
             },
-            "auth": {
-                "mcp_api_token_configured": bool(self.server.config.mcp_api_token),
-                "oauth_public_client_id": OAUTH_STATIC_CLIENT_ID,
-                "oauth_active_tokens": len(OAUTH_ACCESS_TOKENS),
-                "oauth_mode": (
-                    "cloudflare_access_managed"
-                    if self.server.config.cloudflare_access_enabled
-                    else "handcraft_builtin"
-                ),
-                "cloudflare_access_enabled": self.server.config.cloudflare_access_enabled,
-                "cloudflare_access_aud_configured": bool(self.server.config.cloudflare_access_aud),
-                "descope_enabled": self.server.config.descope_enabled,
-                "descope_project_configured": bool(self.server.config.descope_project_id),
-                "descope_sdk": DescopeClient is not None,
-            },
+            "auth": auth_payload,
             "webhooks": [
                 PACKAGE_WEBHOOK_PATH,
                 LINEAR_WEBHOOK_PATH,
@@ -4624,12 +4679,18 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed_path = urllib.parse.urlparse(self.path).path
         if parsed_path == "/token":
+            if self.server.config.is_descope_resource_server:
+                self._send_descope_as_gone()
+                return
             if not self._builtin_oauth_enabled_for_request():
                 self._send_builtin_oauth_disabled()
                 return
             self._handle_token()
             return
         if parsed_path == "/register":
+            if self.server.config.is_descope_resource_server:
+                self._send_descope_as_gone()
+                return
             if not self._builtin_oauth_enabled_for_request():
                 self._send_builtin_oauth_disabled()
                 return
@@ -5358,6 +5419,24 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return False
         return path in {MCP_PATH, CHATGPT_HONCHO_MCP_PATH, HEALTH_PATH}
 
+    def _send_descope_as_gone(self) -> None:
+        """This host is a resource server — do not mint AS tokens here."""
+        config = self.server.config
+        self._send_oauth_json(
+            {
+                "error": "invalid_request",
+                "error_description": (
+                    "mcp.edgars.tools is the MCP resource server, not the authorization server. "
+                    "Use Descope agentic endpoints."
+                ),
+                "authorization_server": config.descope_issuer,
+                "authorization_endpoint": config.descope_authorization_endpoint,
+                "token_endpoint": config.descope_token_endpoint,
+                "registration_endpoint": config.descope_registration_endpoint or None,
+            },
+            status=410,
+        )
+
     def _send_builtin_oauth_disabled(self) -> None:
         self._send_oauth_json(
             oauth_error(
@@ -5629,6 +5708,7 @@ def validate_http_startup_config() -> HandcraftServerConfig:
         descope_enabled=load_bool_env("MCP_DESCOPE_ENABLED", False),
         descope_project_id=os.getenv("MCP_DESCOPE_PROJECT_ID", "").strip(),
         descope_audience=os.getenv("MCP_DESCOPE_AUDIENCE", "").strip(),
+        descope_resource_server_id=os.getenv("MCP_DESCOPE_RESOURCE_SERVER_ID", "").strip(),
         auth_server_url=os.getenv("MCP_AUTH_SERVER", "").strip(),
         package_webhook_token=load_package_webhook_token(),
         linear_webhook_token=load_linear_webhook_token(),

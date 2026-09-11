@@ -265,6 +265,78 @@ class HttpStartupConfigTests(unittest.TestCase):
             self.assertEqual("/health", payload["local"]["health_path"])
             self.assertEqual("https://mcp.example.test/mcp", payload["public"]["mcp_url"])
             self.assertTrue(payload["auth"]["mcp_api_token_configured"])
+            self.assertEqual("local_bearer", payload["auth"]["oauth_mode"])
+            self.assertTrue(payload["auth"]["oauth_as_minting"])
+            self.assertEqual("handcraft-mcp", payload["auth"]["oauth_public_client_id"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_health_reports_descope_resource_server_not_handcraft(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            descope_enabled=True,
+            descope_project_id="P3IHk9JHELKS5KT5EWawFro5aPhY",
+            descope_resource_server_id="RS3IPp7u1MjAlO6wHaafMEw6bgu4C",
+            auth_server_url=(
+                "https://api.descope.com/v1/apps/agentic/"
+                "P3IHk9JHELKS5KT5EWawFro5aPhY/RS3IPp7u1MjAlO6wHaafMEw6bgu4C"
+            ),
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MCPHTTPHandler, config=config)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            auth = payload["auth"]
+            self.assertEqual("descope_resource_server", auth["oauth_mode"])
+            self.assertFalse(auth["oauth_as_minting"])
+            self.assertNotIn("oauth_public_client_id", auth)
+            self.assertNotIn("oauth_active_tokens", auth)
+            self.assertTrue(auth["descope_enabled"])
+            self.assertIn("apps/agentic/", auth["authorization_server"])
+            self.assertIn("/authorize", auth["authorization_endpoint"])
+            self.assertNotIn("handcraft", json.dumps(auth))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_descope_mode_token_and_register_return_gone(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            descope_enabled=True,
+            descope_project_id="P3IHk9JHELKS5KT5EWawFro5aPhY",
+            auth_server_url=(
+                "https://api.descope.com/v1/apps/agentic/"
+                "P3IHk9JHELKS5KT5EWawFro5aPhY/RS3IPp7u1MjAlO6wHaafMEw6bgu4C"
+            ),
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MCPHTTPHandler, config=config)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            base = f"http://127.0.0.1:{port}"
+            for path in ("/token", "/register"):
+                req = urllib.request.Request(
+                    f"{base}{path}",
+                    data=b"{}",
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(req, timeout=5)
+                self.assertEqual(410, ctx.exception.code)
+                body = json.loads(ctx.exception.read().decode("utf-8"))
+                self.assertIn("resource server", body["error_description"].lower())
+                self.assertIn("apps/agentic/", body["authorization_server"])
         finally:
             server.shutdown()
             server.server_close()

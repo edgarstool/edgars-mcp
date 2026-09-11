@@ -3246,7 +3246,6 @@ def run_droid_task(task: str, working_dir: str) -> tuple[str, bool]:
                 task,
                 "--cwd",
                 working_dir,
-                "--skip-permissions-unsafe",
                 "--output-format",
                 "text",
             ],
@@ -3268,7 +3267,7 @@ def run_droid_task(task: str, working_dir: str) -> tuple[str, bool]:
 
 def summarize_error_reason(output: str) -> str:
     lowered = (output or "").lower()
-    if "quota exceeded" in lowered or "terminalquotaerror" in lowered or "retry in" in lowered:
+    if "quota exceeded" in lowered or "exceeded your monthly quota" in lowered or "terminalquotaerror" in lowered or "retry in" in lowered:
         return "quota_exceeded"
     if "timed out" in lowered or "timeout" in lowered:
         return "timeout"

@@ -3668,10 +3668,11 @@ class CopilotDroidAgentTests(unittest.TestCase):
                 "/c",
                 server_http.DROID_CMD,
                 "exec",
+                "--auto",
+                "medium",
                 "say hi",
                 "--cwd",
                 "C:/tmp",
-                "--skip-permissions-unsafe",
                 "--output-format",
                 "text",
             ],
@@ -3692,7 +3693,7 @@ class SmartAgentChainTests(unittest.TestCase):
         }
         try:
             server_http.run_gemini_task = lambda t, w: (call_order.append("gemini_agent"), ("quota exceeded", True))[1]
-            server_http.run_copilot_task = lambda t, w: (call_order.append("copilot_agent"), ("timeout", True))[1]
+            server_http.run_copilot_task = lambda t, w: (call_order.append("copilot_agent"), ("You have exceeded your monthly quota (Request ID: canary)", True))[1]
             server_http.run_droid_task = lambda t, w: (call_order.append("droid_agent"), ("ok from droid", False))[1]
             server_http.run_codex_task = lambda t, w: ("should not run", False)
             server_http.run_claude_code_task = lambda t, w: ("should not run", False)

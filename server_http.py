@@ -154,6 +154,7 @@ def resolve_cli(
     return cmd_name
 
 
+POWERSHELL_KNOWN_PATHS = [r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"]
 QMD_KNOWN_PATHS = [
     r"C:\Users\EdgarsTool\AppData\Roaming\npm\qmd.cmd",
     r"C:\Users\EdgarsTool\AppData\Roaming\npm\qmd.ps1",
@@ -164,6 +165,9 @@ GEMINI_KNOWN_PATHS: list[str] = []
 COPILOT_KNOWN_PATHS = [r"C:\Users\EdgarsTool\AppData\Roaming\npm\copilot.cmd"]
 DROID_KNOWN_PATHS = [r"C:\Users\EdgarsTool\bin\droid.exe"]
 OLLAMA_KNOWN_PATHS = [r"C:\Users\EdgarsTool\AppData\Local\Programs\Ollama\ollama.exe"]
+
+# Resolve PowerShell early to avoid WinError 2 after MCP server restart
+POWERSHELL_CMD = resolve_cli("powershell", "POWERSHELL_CMD", POWERSHELL_KNOWN_PATHS)
 
 
 def probe_runtime_capabilities() -> dict:
@@ -3205,7 +3209,6 @@ def run_droid_task(task: str, working_dir: str) -> tuple[str, bool]:
                 task,
                 "--cwd",
                 working_dir,
-                "--skip-permissions-unsafe",
                 "--output-format",
                 "text",
             ],
@@ -3227,7 +3230,7 @@ def run_droid_task(task: str, working_dir: str) -> tuple[str, bool]:
 
 def summarize_error_reason(output: str) -> str:
     lowered = (output or "").lower()
-    if "quota exceeded" in lowered or "terminalquotaerror" in lowered or "retry in" in lowered:
+    if "quota exceeded" in lowered or "exceeded your monthly quota" in lowered or "terminalquotaerror" in lowered or "retry in" in lowered:
         return "quota_exceeded"
     if "timed out" in lowered or "timeout" in lowered:
         return "timeout"
@@ -5983,7 +5986,7 @@ def handle_sys_run(req_id, arguments: dict) -> dict:
     try:
         cwd = working_dir if os.path.exists(working_dir) else str(Path.home())
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            [POWERSHELL_CMD, "-NoProfile", "-NonInteractive", "-Command", command],
             capture_output=True, text=True, timeout=timeout, cwd=cwd, shell=False,
         )
         parts = [f"Exit code: {result.returncode}"]
@@ -6089,7 +6092,7 @@ def handle_sys_info(req_id, arguments: dict) -> dict:
     try:
         lines = [f"OS: {platform.platform()}", f"Python: {sys.version.split()[0]}"]
         cpu_r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+            [POWERSHELL_CMD, "-NoProfile", "-NonInteractive", "-Command",
              "Get-CimInstance Win32_Processor | Select-Object -First 1 | "
              "ForEach-Object { \"CPU: $($_.Name) | Cores: $($_.NumberOfCores) | Logical: $($_.NumberOfLogicalProcessors)\" }"],
             capture_output=True, text=True, timeout=10, shell=False,
@@ -6097,7 +6100,7 @@ def handle_sys_info(req_id, arguments: dict) -> dict:
         if cpu_r.stdout.strip():
             lines.append(cpu_r.stdout.strip())
         ram_r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+            [POWERSHELL_CMD, "-NoProfile", "-NonInteractive", "-Command",
              "$os = Get-CimInstance Win32_OperatingSystem; "
              "$total = [math]::Round($os.TotalVisibleMemorySize/1MB,1); "
              "$free = [math]::Round($os.FreePhysicalMemory/1MB,1); "
@@ -6124,7 +6127,7 @@ def handle_sys_processes(req_id, arguments: dict) -> dict:
             "Out-String -Width 100"
         )
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            [POWERSHELL_CMD, "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
             capture_output=True, text=True, timeout=20, shell=False,
         )
         return make_response(req_id, make_tool_text_response(

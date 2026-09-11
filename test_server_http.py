@@ -3596,10 +3596,11 @@ class CopilotDroidAgentTests(unittest.TestCase):
                 "/c",
                 server_http.DROID_CMD,
                 "exec",
+                "--auto",
+                "medium",
                 "say hi",
                 "--cwd",
                 "C:/tmp",
-                "--skip-permissions-unsafe",
                 "--output-format",
                 "text",
             ],
@@ -3620,7 +3621,7 @@ class SmartAgentChainTests(unittest.TestCase):
         }
         try:
             server_http.run_gemini_task = lambda t, w: (call_order.append("gemini_agent"), ("quota exceeded", True))[1]
-            server_http.run_copilot_task = lambda t, w: (call_order.append("copilot_agent"), ("timeout", True))[1]
+            server_http.run_copilot_task = lambda t, w: (call_order.append("copilot_agent"), ("You have exceeded your monthly quota (Request ID: canary)", True))[1]
             server_http.run_droid_task = lambda t, w: (call_order.append("droid_agent"), ("ok from droid", False))[1]
             server_http.run_codex_task = lambda t, w: ("should not run", False)
             server_http.run_claude_code_task = lambda t, w: ("should not run", False)
@@ -3907,6 +3908,62 @@ class VisibleBrowserTests(unittest.TestCase):
 
         self.assertFalse(tool_is_error(response))
         self.assertEqual("Visible browser closed.", tool_text(response))
+
+
+class PowerShellCmdTests(unittest.TestCase):
+    """Test that sys_run/sys_info/sys_processes use POWERSHELL_CMD, not bare 'powershell'."""
+
+    def test_powershell_cmd_is_resolved_not_bare(self):
+        """POWERSHELL_CMD should be a full path or env override, never bare 'powershell'."""
+        # The resolver should return full path on Windows, not the bare command
+        self.assertNotEqual(server_http.POWERSHELL_CMD, "powershell")
+        # Should contain 'powershell' somewhere in the path
+        self.assertIn("powershell", server_http.POWERSHELL_CMD.lower())
+
+    def test_powershell_cmd_env_override(self):
+        """POWERSHELL_CMD can be overridden via POWERSHELL_CMD env var."""
+        import tempfile
+        import os as _os
+        with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as f:
+            fake_path = f.name
+        try:
+            with patch.dict(_os.environ, {"POWERSHELL_CMD": fake_path}):
+                result = server_http.resolve_cli("powershell", "POWERSHELL_CMD", server_http.POWERSHELL_KNOWN_PATHS)
+                self.assertEqual(result, fake_path)
+        finally:
+            _os.unlink(fake_path)
+
+    @patch("subprocess.run")
+    def test_sys_run_uses_powershell_cmd(self, mock_run):
+        """handle_sys_run should use POWERSHELL_CMD, not bare 'powershell'."""
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="ok", stderr="")
+        server_http.handle_sys_run(req_id=1, arguments={"command": "echo test"})
+        mock_run.assert_called_once()
+        cmd_list = mock_run.call_args[0][0]
+        self.assertEqual(cmd_list[0], server_http.POWERSHELL_CMD)
+        self.assertNotEqual(cmd_list[0], "powershell")
+
+    @patch("subprocess.run")
+    def test_sys_info_uses_powershell_cmd(self, mock_run):
+        """handle_sys_info should use POWERSHELL_CMD for CPU/RAM queries."""
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="info", stderr="")
+        server_http.handle_sys_info(req_id=1, arguments={})
+        # Called twice: once for CPU, once for RAM
+        self.assertEqual(mock_run.call_count, 2)
+        for call in mock_run.call_args_list:
+            cmd_list = call[0][0]
+            self.assertEqual(cmd_list[0], server_http.POWERSHELL_CMD)
+            self.assertNotEqual(cmd_list[0], "powershell")
+
+    @patch("subprocess.run")
+    def test_sys_processes_uses_powershell_cmd(self, mock_run):
+        """handle_sys_processes should use POWERSHELL_CMD."""
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="procs", stderr="")
+        server_http.handle_sys_processes(req_id=1, arguments={})
+        mock_run.assert_called_once()
+        cmd_list = mock_run.call_args[0][0]
+        self.assertEqual(cmd_list[0], server_http.POWERSHELL_CMD)
+        self.assertNotEqual(cmd_list[0], "powershell")
 
 
 if __name__ == "__main__":

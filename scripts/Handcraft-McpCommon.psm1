@@ -290,19 +290,50 @@ function Start-HandcraftCloudflared {
         [Parameter(Mandatory)]$Config
     )
 
-    $existing = Get-Process cloudflared -ErrorAction SilentlyContinue
-    if ($existing) {
-        $pidValue = @($existing | Select-Object -First 1)[0].Id
-        Write-HandcraftPidFile -Path $Config.CloudflaredPidFile -ProcessId $pidValue -Kind "cloudflared"
+    # Canonical Windows path: the MCP tunnel is owned by the dedicated
+    # `Cloudflared` service. Do not treat unrelated cloudflared processes
+    # (for example cloudflared-openclaw) as evidence that this tunnel is up.
+    $service = Get-Service -Name 'Cloudflared' -ErrorAction SilentlyContinue
+    if ($service) {
+        $wasRunning = ($service.Status -eq 'Running')
+        if (-not $wasRunning) {
+            Start-Service -Name 'Cloudflared' -ErrorAction Stop
+            $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(15))
+        }
+
+        $serviceInfo = Get-CimInstance Win32_Service -Filter "Name='Cloudflared'" -ErrorAction SilentlyContinue
+        $pidValue = if ($serviceInfo -and $serviceInfo.ProcessId) { [int]$serviceInfo.ProcessId } else { $null }
+        if ($pidValue) {
+            Write-HandcraftPidFile -Path $Config.CloudflaredPidFile -ProcessId $pidValue -Kind "cloudflared"
+        }
+
         return [pscustomobject]@{
-            started = $false
-            already_running = $true
+            started = -not $wasRunning
+            already_running = $wasRunning
             pid = $pidValue
+            mode = 'windows_service'
+        }
+    }
+
+    # Legacy fallback for hosts where the dedicated Windows service is absent.
+    # Only trust the PID file if it still points to the config-driven tunnel.
+    $pidValue = Read-HandcraftPidFile -Path $Config.CloudflaredPidFile
+    if ($pidValue -and (Test-ProcessAlive -ProcessId $pidValue)) {
+        $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue" -ErrorAction SilentlyContinue
+        if ($processInfo -and $processInfo.Name -ieq 'cloudflared.exe' -and
+            $processInfo.CommandLine -match '(?i)--config' -and
+            $processInfo.CommandLine -like "*$($Config.CloudflaredConfig)*") {
+            return [pscustomobject]@{
+                started = $false
+                already_running = $true
+                pid = [int]$pidValue
+                mode = 'config_fallback'
+            }
         }
     }
 
     if (-not (Test-Path -LiteralPath $Config.CloudflaredConfig)) {
-        throw "Cloudflared config not found: $($Config.CloudflaredConfig)"
+        throw "Cloudflared service not found and config not found: $($Config.CloudflaredConfig)"
     }
 
     $cloudflared = Get-Command cloudflared -ErrorAction Stop
@@ -321,6 +352,7 @@ function Start-HandcraftCloudflared {
         started = $true
         already_running = $false
         pid = $process.Id
+        mode = 'config_fallback'
     }
 }
 

@@ -31,7 +31,7 @@ applyTo: "**/*.ps1,**/*.psm1,**/*.psd1,**/*.cmd,**/*.bat"
 ## 安全
 
 - 不要在 script 內硬編 secret。
-- secret 來源優先順序：1Password CLI → Doppler → Cloudflare Secrets → env injection。
+- secret 來源優先順序：Windows Machine/User environment → provider-native secret store when explicitly required。
 - 不要 `Invoke-Expression` 不可信輸入。
 - 不要 `-ExecutionPolicy Bypass` 之外的政策變更；必要時 `Bypass` 只給單一 script 範圍。
 

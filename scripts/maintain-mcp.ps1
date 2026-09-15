@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   預設為安全模式（不部署、不改 production DNS）。
-  - 檢查 doppler / python / cloudflared
+  - 檢查 python / cloudflared
   - 輪替 handcraft-http 與 cache-trace 日誌
   - -RestartIfUnhealthy：check 失敗時呼叫 start-mcp.ps1
   - -SmokeTest：執行 test_server_http.py（較慢）
@@ -51,25 +51,12 @@ function Add-Action {
 }
 
 # ── Runtime commands ─────────────────────────────────────────────────────────
-foreach ($cmd in @("doppler", "cloudflared")) {
+foreach ($cmd in @("cloudflared")) {
     Add-Action -Name "command_$cmd" -Ok (Test-CommandAvailable -Name $cmd)
 }
 
 $pythonOk = (Test-CommandAvailable -Name "py") -or (Test-CommandAvailable -Name "python")
 Add-Action -Name "command_python" -Ok $pythonOk
-
-if (Test-CommandAvailable -Name "doppler") {
-    try {
-        if ($PSCmdlet.ShouldProcess("doppler", "verify project/config")) {
-            $null = & doppler configs --project $config.DopplerProject --json 2>$null | Out-Null
-            Add-Action -Name "doppler_project" -Ok $true -Detail $config.DopplerProject
-        } else {
-            Add-Action -Name "doppler_project" -Ok $true -Detail "whatif"
-        }
-    } catch {
-        Add-Action -Name "doppler_project" -Ok $false -Detail $_.Exception.Message
-    }
-}
 
 # ── Log rotation ─────────────────────────────────────────────────────────────
 if (-not $SkipLogRotation) {
@@ -159,7 +146,7 @@ if ($PrepareDeploy) {
     $deployChecklist = [ordered]@{
         note = "PrepareDeploy only prints checklist; no wrangler deploy executed."
         steps = @(
-            "Confirm Doppler secrets for edgars-mcp / prd",
+            "Confirm required Windows Machine/User environment variables are present",
             "Run maintain-mcp.ps1 -SmokeTest",
             "Run check-mcp.ps1 (local + external)",
             "Manual: review Cloudflare tunnel DNS (mcp.edgars.tools) before any deploy",

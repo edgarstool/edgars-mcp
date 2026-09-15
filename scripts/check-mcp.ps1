@@ -6,7 +6,7 @@
 .DESCRIPTION
   檢查項目：
   - 本機：port、/health、可選 MCP tools/list handshake
-  - 基礎設施：doppler、cloudflared 程序
+  - 基礎設施：python、cloudflared 程序
   - 外網：public /mcp GET + OAuth discovery PRM（預設 https://mcp.edgars.tools/mcp）
 
   Exit code: 0 = 全部通過；1 = 有失敗項目
@@ -75,8 +75,8 @@ if (-not $SkipMcpHandshake) {
 }
 
 $infraChecks += [ordered]@{
-    name = "doppler_command"
-    ok   = Test-CommandAvailable -Name "doppler"
+    name = "python_command"
+    ok   = (Test-CommandAvailable -Name "py") -or (Test-CommandAvailable -Name "python")
 }
 $infraChecks += [ordered]@{
     name = "cloudflared_command"

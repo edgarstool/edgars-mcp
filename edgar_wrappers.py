@@ -29,7 +29,6 @@ from mcp_upstreams import (
 
 PROJECTS = Path(r"V:\projects")
 CLOUDFLARED_DIR = PROJECTS / "cloudflared"
-OP_CONNECT_DIR = PROJECTS / "1password-connet"
 OPENMONTAGE_DIR = PROJECTS / "OpenMontage"
 DESCOPE_SRC = PROJECTS / "descope-mcp" / "python" / "src"
 
@@ -181,13 +180,8 @@ def cloudflared_cmd() -> str:
     ])
 
 
-def docker_cmd() -> str:
-    return _resolve_cli("docker", "DOCKER_CMD", [])
-
-
 NATIVE_FLAG = {
     "cloudflared": "MCP_WRAP_CLOUDFLARED",
-    "op_connect": "MCP_WRAP_OP_CONNECT",
     "openmontage": "MCP_WRAP_OPENMONTAGE",
     "hermes": "MCP_WRAP_HERMES",
     "openclaw": "MCP_WRAP_OPENCLAW",
@@ -214,7 +208,7 @@ def wrap_catalog_payload() -> dict:
             "prefix": native_id + "_",
             "title": native_id,
             "enabled": _enabled(flag),
-            "local_only": native_id in {"cloudflared", "op_connect", "openmontage", "hermes", "openclaw"},
+            "local_only": native_id in {"cloudflared", "openmontage", "hermes", "openclaw"},
             "status": "enabled" if _enabled(flag) else "disabled",
             "tool_count": None,
             "enable_env": flag,
@@ -321,20 +315,6 @@ def _cloudflared_tools() -> list[dict]:
         _tool("cloudflared_verify", "[cloudflared] Run scripts/verify-all.cmd when present, else tunnel info + process check.", {}, read_only=True),
         _tool("cloudflared_add_service", "[cloudflared] Run scripts/add-service.cmd with extra args.", args_prop, destructive=True),
         _tool("cloudflared_ddns_update", "[cloudflared] Run scripts/ddns-update.ps1.", args_prop, destructive=True),
-    ]
-
-
-def _op_connect_tools() -> list[dict]:
-    if not _enabled("MCP_WRAP_OP_CONNECT"):
-        return []
-    args_prop = {"args": {"type": "array", "items": {"type": "string"}, "description": "docker compose argv after -f compose.yaml"}}
-    return [
-        _tool("op_connect_cli", "[1Password Connect] Full docker compose passthrough for 1password-connet.", args_prop, ["args"], destructive=True),
-        _tool("op_connect_status", "[1Password Connect] Health + compose ps. Does not read credentials files.", {}, read_only=True),
-        _tool("op_connect_up", "[1Password Connect] docker compose up -d.", {}, destructive=True),
-        _tool("op_connect_down", "[1Password Connect] docker compose down.", {}, destructive=True),
-        _tool("op_connect_restart", "[1Password Connect] docker compose restart.", {}, destructive=True),
-        _tool("op_connect_logs", "[1Password Connect] docker compose logs --tail N.", {"tail": {"type": "integer", "description": "Log lines (default 80)"}}, read_only=True),
     ]
 
 
@@ -491,7 +471,7 @@ def _openmontage_registry_descriptors() -> list[dict]:
 def catalog_tool_descriptor() -> dict:
     return _tool(
         "wrap_catalog",
-        "List every wrapped source (Playwright, Windows-MCP, Desktop Commander, Descope, cloudflared, 1Password Connect, OpenMontage, Hermes, OpenClaw). Default is off; this catalog is always visible.",
+        "List every wrapped source (Playwright, Windows-MCP, Desktop Commander, Descope, cloudflared, OpenMontage, Hermes, OpenClaw). Default is off; this catalog is always visible.",
         {},
         read_only=True,
     )
@@ -504,7 +484,6 @@ def list_wrap_tools() -> list[dict]:
         tools.extend(prefixed)
     tools.extend(_descope_native_tools())
     tools.extend(_cloudflared_tools())
-    tools.extend(_op_connect_tools())
     tools.extend(_openmontage_tools())
     tools.extend(_hermes_tools())
     tools.extend(_openclaw_tools())
@@ -667,39 +646,6 @@ def _handle_cloudflared(name: str, arguments: dict) -> dict:
     return _text(f"Unknown cloudflared tool: {name}", is_error=True)
 
 
-def _compose_base() -> list[str]:
-    compose = OP_CONNECT_DIR / "docker-compose.yaml"
-    return [docker_cmd(), "compose", "-f", str(compose)]
-
-
-def _handle_op_connect(name: str, arguments: dict) -> dict:
-    if name == "op_connect_cli":
-        return _run([*_compose_base(), *_as_argv(arguments)], cwd=str(OP_CONNECT_DIR))
-    if name == "op_connect_status":
-        health = {"connect_health": None}
-        try:
-            import urllib.request
-            with urllib.request.urlopen("http://127.0.0.1:8877/health", timeout=5) as response:
-                health["connect_health"] = response.status
-                body = response.read().decode("utf-8", errors="replace")[:500]
-                health["body"] = body
-        except Exception as exc:
-            health["connect_health_error"] = str(exc)
-        compose = _run([*_compose_base(), "ps"], cwd=str(OP_CONNECT_DIR), timeout=20)
-        payload = {"health": health, "compose": compose.get("structuredContent") or compose}
-        return _json(payload, is_error=health.get("connect_health") != 200)
-    if name == "op_connect_up":
-        return _run([*_compose_base(), "up", "-d"], cwd=str(OP_CONNECT_DIR))
-    if name == "op_connect_down":
-        return _run([*_compose_base(), "down"], cwd=str(OP_CONNECT_DIR))
-    if name == "op_connect_restart":
-        return _run([*_compose_base(), "restart"], cwd=str(OP_CONNECT_DIR))
-    if name == "op_connect_logs":
-        tail = str(int(arguments.get("tail") or 80))
-        return _run([*_compose_base(), "logs", "--tail", tail], cwd=str(OP_CONNECT_DIR))
-    return _text(f"Unknown op_connect tool: {name}", is_error=True)
-
-
 def _handle_openmontage(name: str, arguments: dict) -> dict:
     if name == "om__list_pipelines":
         names = sorted(path.stem for path in (OPENMONTAGE_DIR / "pipeline_defs").glob("*.yaml"))
@@ -853,7 +799,6 @@ def dispatch_wrap_tool(name: str, arguments: dict | None) -> dict | None:
     groups = (
         ("descope__", "descope", _handle_descope),
         ("cloudflared_", "cloudflared", _handle_cloudflared),
-        ("op_connect_", "op_connect", _handle_op_connect),
         ("om__", "openmontage", _handle_openmontage),
         ("hermes_", "hermes", _handle_hermes),
         ("openclaw_", "openclaw", _handle_openclaw),
@@ -864,7 +809,7 @@ def dispatch_wrap_tool(name: str, arguments: dict | None) -> dict | None:
         flag = NATIVE_FLAG[native_id]
         if not _enabled(flag):
             return _text(f"{native_id} wrappers are off. Set {flag}=1 or MCP_WRAP_ALL=1.", is_error=True)
-        local_only = native_id in {"cloudflared", "op_connect", "openmontage", "hermes", "openclaw"}
+        local_only = native_id in {"cloudflared", "openmontage", "hermes", "openclaw"}
         if local_only and not _local_permitted(True):
             return _text(f"{native_id} is local-only unless MCP_WRAP_ALLOW_REMOTE=1", is_error=True)
         return handler(name, arguments)

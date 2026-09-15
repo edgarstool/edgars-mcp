@@ -20,7 +20,7 @@
 
 ## 安全邊界
 
-- 不掃 secrets-like 檔案（`*.env`、`*.pem`、`*.key`、`id_rsa*`、`1password*`、`doppler*`、`.ssh/*`）。
+- 不掃 secrets-like 檔案（`*.env`、`*.pem`、`*.key`、`id_rsa*`、`1password*`、`.ssh/*`）。
 - 改檔前先 `git status`，列清單，等使用者確認。
 - 不要 auto-commit、auto-push、auto-merge、auto-deploy。
 - 不要主動要求使用者貼 API key / token / password。

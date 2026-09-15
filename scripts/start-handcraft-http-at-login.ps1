@@ -1,53 +1,38 @@
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
-$stackScript = Join-Path $repoRoot "scripts\Start-HandcraftStack.ps1"
-$outLogPath = Join-Path $repoRoot "mcp-http-startup-stack.out.log"
-$errLogPath = Join-Path $repoRoot "mcp-http-startup-stack.err.log"
+$startScript = Join-Path $repoRoot "scripts\start-mcp.ps1"
 $bootstrapLog = Join-Path $repoRoot "mcp-http-startup.log"
 
 function Write-BootstrapLog {
-    param([string] $Message)
-
+    param([string]$Message)
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Add-Content -LiteralPath $bootstrapLog -Value "[$timestamp] $Message"
 }
 
-try {
-    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $env:Path = "$machinePath;$userPath"
-
-    if (-not (Test-Path -LiteralPath $stackScript)) {
-        Write-BootstrapLog "Missing stack script: $stackScript."
-        exit 1
-    }
-
-    $missing = @()
-    foreach ($commandName in @("doppler", "python", "cloudflared")) {
-        if (-not (Get-Command $commandName -ErrorAction SilentlyContinue)) {
-            $missing += $commandName
+function Import-WindowsEnvironment {
+    foreach ($target in @('Machine','User')) {
+        $vars = [Environment]::GetEnvironmentVariables($target)
+        foreach ($name in $vars.Keys) {
+            if ([string]$name -eq 'Path') { continue }
+            [Environment]::SetEnvironmentVariable([string]$name, [string]$vars[$name], 'Process')
         }
     }
-    if ($missing.Count -gt 0) {
-        Write-BootstrapLog "Missing runtime command(s): $($missing -join ', ')."
-        exit 1
+    $machinePath = [Environment]::GetEnvironmentVariable('Path','Machine')
+    $userPath = [Environment]::GetEnvironmentVariable('Path','User')
+    $env:Path = "$machinePath;$userPath"
+}
+
+try {
+    Import-WindowsEnvironment
+    if (-not (Test-Path -LiteralPath $startScript)) {
+        throw "Missing canonical starter: $startScript"
     }
-
-    $args = @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $stackScript
-    )
-    Start-Process `
-        -FilePath "powershell.exe" `
-        -ArgumentList $args `
-        -WorkingDirectory $repoRoot `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $outLogPath `
-        -RedirectStandardError $errLogPath
-
-    Write-BootstrapLog "Started handcraft stack via Start-HandcraftStack.ps1."
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $startScript -SkipCloudflared
+    if ($LASTEXITCODE -ne 0) {
+        throw "start-mcp.ps1 exit=$LASTEXITCODE"
+    }
+    Write-BootstrapLog "Canonical Windows-native edgars-mcp startup completed."
 }
 catch {
     Write-BootstrapLog "Startup failed: $($_.Exception.Message)"

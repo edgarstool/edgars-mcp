@@ -94,10 +94,6 @@ $checks += [ordered]@{
     name = "cloudflared_command"
     ok = Test-CommandAvailable -Name "cloudflared"
 }
-$checks += [ordered]@{
-    name = "doppler_command"
-    ok = Test-CommandAvailable -Name "doppler"
-}
 
 if (-not $SkipPublic) {
     $publicBaseUrl = ($PublicMcpUrl -replace "/mcp$", "")

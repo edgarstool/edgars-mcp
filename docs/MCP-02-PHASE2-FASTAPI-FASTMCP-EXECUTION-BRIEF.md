@@ -48,7 +48,7 @@
 |---|---|
 | `server_http.py` 行數 | 8887 行 |
 | HTTP server 實作 | `ThreadingHTTPServer(ThreadingMixIn, HTTPServer)`，單一 `MCPHTTPHandler(BaseHTTPRequestHandler)` |
-| 啟動方式 | `run_http.cmd` → `op.exe run --env-file .env.op -- python server_http.py`，`server.serve_forever()`，單一 port（常數 `PORT`） |
+| 啟動方式 | Windows-native starter → `python server_http.py`，runtime values 由 Machine/User environment 繼承，`server.serve_forever()`，單一 port（常數 `PORT`） |
 | MCP 工具數量 | 84 個（`TOOLS = [...]` 靜態清單 + `mmx_handlers.DISPATCH` 額外掛載） |
 | 已安裝但未使用的套件 | `fastmcp==3.2.0`（環境裡已經有，但 code 完全沒 import） |
 | 尚未安裝 | `fastapi`（import 直接失敗） |

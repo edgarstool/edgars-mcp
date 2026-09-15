@@ -35,12 +35,12 @@ Notion、Linear、Obsidian、Warp、Cursor、Factory.ai、Cloudflare、Google（
 所以「連其他 SaaS」有兩個方向：
 
 1. **AI 透過你的 MCP 去操作 SaaS**（既有）：例如叫 AI「查 Notion 某頁」→ AI 呼叫你 server 的 `notion_search` 工具。
-   要新增一個 SaaS，就在 server 裡加一個工具 + 該 SaaS 的 API 金鑰（放 Doppler，不寫進程式）。
+   要新增一個 SaaS，就在 server 裡加一個工具 + 該 SaaS 的 API 金鑰（放 Windows Machine/User environment，不寫進程式）。
 
 2. **別的自動化平台（n8n / Make / Zapier）呼叫你的 MCP**：
    它們用 HTTP 打 `https://mcp.edgars.tools/mcp`，帶上 Bearer token 即可觸發工具。
 
-> 金鑰規則：一律放 **Doppler / 1Password**，用環境變數注入，不要寫進程式或版控。
+> 金鑰規則：一律放 **Windows Machine/User environment**，由程序直接讀取，不要寫進程式或版控。
 
 ## 四、工具分類（約 70 個）
 | 類別 | 例子 |

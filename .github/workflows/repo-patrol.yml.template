@@ -78,8 +78,7 @@ jobs:
             find . -type f \
               \( -iname "*.env" -o -iname "*.env.*" \
                  -o -iname "*.pem" -o -iname "*.key" -o -iname "*.pfx" \
-                 -o -iname "id_rsa*" -o -iname "*1password*" -o -iname "*doppler*" \
-              \) -not -path "./.git/*" 2>/dev/null || echo "(none)"
+                 -o -iname "id_rsa*" -o -iname "*1password*"              \) -not -path "./.git/*" 2>/dev/null || echo "(none)"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: EDGAR-OS 路徑合規（grep 不該硬編的字串）

@@ -59,7 +59,7 @@ Handcraft-McpCommon
 Start-HandcraftStack
 G:\AI_WORK_512
 V:\projects
-Doppler 作為 ECS 必要依賴
+外部 secret manager 作為 ECS 必要依賴
 ```
 
 歷史文字只存在 Git history。Active tree 內除 migration report 的 before/after 表格外，不保留上述舊名。
@@ -206,7 +206,7 @@ MCP_API_TOKEN=op://Edgar ECS Agents/edgars-mcp/MCP_API_TOKEN
 Linux start：
 
 ```bash
-op run --env-file "$HOME/.config/edgars-mcp/edgars-mcp.op.env" -- python -m edgars_mcp.http_server
+python -m edgars_mcp.http_server  # runtime values inherited from the Windows/service environment
 ```
 
 要求：
@@ -215,8 +215,8 @@ op run --env-file "$HOME/.config/edgars-mcp/edgars-mcp.op.env" -- python -m edga
 - 缺 1Password authentication 時清楚失敗。
 - 不建立 plaintext fallback。
 - 不把 secret 寫進 command line、log、repo。
-- Doppler 不作 ECS 依賴。
-- 若 Windows 仍需要 secret manager，也應優先統一到 1Password；沒有真實阻礙就移除 Doppler 專用啟動流程與文件。
+- 外部 secret manager 不作 ECS 必要依賴。
+- Windows runtime 直接使用 Machine/User environment；不保留額外 secret-runner 專用啟動流程。
 
 ### 6. systemd user service
 
@@ -245,7 +245,7 @@ op run --env-file "$HOME/.config/edgars-mcp/edgars-mcp.op.env" -- python -m edga
 - healthcheck 使用 `/health`。
 - `restart: unless-stopped`。
 - image / compose 不含 secrets。
-- 文件示範 `op run -- docker compose ...`。
+- 舊 secret-runner/container 啟動示例已退役，不作為現行操作方式。
 - systemd native 與 Docker 是二選一部署模式，不同時搶 port。
 
 ### 8. Windows 地基一起整理

@@ -28,10 +28,9 @@ function Invoke-McpTool {
         "X-Handcraft-Client-Mode"   = "stdio-local"
     }
 
-    $token = $env:MCP_API_TOKEN
-    if (-not $token) {
-        $token = doppler secrets get MCP_API_TOKEN --project handcraft-mcp --config prd --plain 2>$null
-    }
+    $token = [Environment]::GetEnvironmentVariable("MCP_API_TOKEN", "Process")
+    if (-not $token) { $token = [Environment]::GetEnvironmentVariable("MCP_API_TOKEN", "User") }
+    if (-not $token) { $token = [Environment]::GetEnvironmentVariable("MCP_API_TOKEN", "Machine") }
     if ($token) {
         $headers["Authorization"] = "Bearer $token"
     }

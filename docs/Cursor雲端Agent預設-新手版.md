@@ -88,7 +88,7 @@ Hermes 跟 Linear 的 OAuth 接線說明在 **[Linear-OAuth設定-新手版](./L
 
 - **不要**在未確認前讓它改 Cloudflare DNS、正式 production、或 force-push
 - 改完到 **GitHub 看 diff** 再決定要不要合併
-- 機密（API key）永遠不要寫進 repo；用 Doppler / Cursor Secrets
+- 機密（API key）永遠不要寫進 repo；用 Windows Machine/User environment / Cursor Secrets
 
 ---
 
@@ -129,4 +129,4 @@ Hermes 跟 Linear 的 OAuth 接線說明在 **[Linear-OAuth設定-新手版](./L
 - [Cursor 雲端 Agent 說明](https://cursor.com/docs/cloud-agent)
 - [Cursor Agents 網頁](https://cursor.com/agents)
 - [Cursor Dashboard（API Key / GitHub）](https://cursor.com/dashboard)
-- 本 repo 的 [DOPPLER 設定指南](./DOPPLER-設定指南-新手版.md)（含 `CURSOR_API_KEY` 怎麼填）
+- 本 repo `README.md` 的 Windows runtime environment 說明

@@ -8,7 +8,6 @@ import sys
 import traceback
 
 os.environ.setdefault("MCP_WRAP_CLOUDFLARED", "1")
-os.environ.setdefault("MCP_WRAP_OP_CONNECT", "1")
 os.environ.setdefault("MCP_WRAP_HERMES", "1")
 os.environ.setdefault("MCP_WRAP_OPENCLAW", "1")
 os.environ.setdefault("MCP_WRAP_DESCOPE", "1")
@@ -45,7 +44,6 @@ def main() -> int:
     safe_calls = [
         ("cloudflared_version", {}),
         ("cloudflared_status", {}),
-        ("op_connect_status", {}),
         ("hermes_version", {}),
         ("openclaw_version", {}),
         ("descope__sdk_status", {}),

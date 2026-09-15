@@ -73,7 +73,7 @@ https://mcp.edgars.tools/chatgpt-honcho
 
 `DCR / Dynamic Client Registration / 動態用戶端註冊：讓 ChatGPT 在受控 OAuth 流程內註冊 client，而不必把長期 client secret 交給 ChatGPT。`
 
-將新 audience 與受控寫入開關注入 runtime 時，只列下列 Doppler 設定**名稱**，不記錄值：
+將新 audience 與受控寫入開關注入 runtime 時，只列下列 Windows environment 設定**名稱**，不記錄值：
 
 ```text
 MCP_CLOUDFLARE_ACCESS_CHATGPT_HONCHO_AUD
@@ -143,4 +143,4 @@ HONCHO_API_KEY、OAuth token 或 Access token
 3. 從 Desktop ChatGPT Web 移除新 app，並以 UI 實際讀回確認 OAuth 連線已移除；URL 開啟或視窗最小化不是成功證據。
 4. 只有新 app 已驗收且進行清理時，才移除舊 `https://api.honcho.dev/mcp` app。此操作是可重建 connector 控制面變更，不是刪除 Honcho 資料。
 
-本章不授權或聲稱實際變更 Dashboard、Doppler、ChatGPT app、peer 或部署；每項操作必須以當下控制面讀回與端到端實測為準。
+本章不授權或聲稱實際變更 Dashboard、ChatGPT app、peer 或部署；每項操作必須以當下控制面讀回與端到端實測為準。

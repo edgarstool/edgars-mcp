@@ -27,6 +27,6 @@ Open Questions:             (需要使用者確認的問題)
 
 ## 禁止
 
-- 不要開啟疑似 secret 檔案（`.env`、`*.pem`、`*.key`、`id_rsa*`、`1password*`、`doppler*`）。
+- 不要開啟疑似 secret 檔案（`.env`、`*.pem`、`*.key`、`id_rsa*`、`1password*`）。
 - 不要假設 repo root 在 `C:\Users\EdgarsTool\Projects\<name>`。
 - 不要假設 `D:\` 為入口。

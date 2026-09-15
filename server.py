@@ -31,7 +31,7 @@ def handle_initialize(msg):
     send_response(msg["id"], {
         "protocolVersion": "2025-11-25",
         "capabilities": {"tools": {}},
-        "serverInfo": {"name": "handcraft-mcp", "version": "0.1.0"}
+        "serverInfo": {"name": "handcraft-mcp", "version": "2.0.0"}
     })
 
 def handle_tools_list(msg):

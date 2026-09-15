@@ -58,7 +58,6 @@ applyTo: "**"
 不要主動要求使用者貼任何 secret。只列出需要的 **secret 名稱** 與建議放置位置：
 
 - 1Password
-- Doppler
 - Cloudflare Secrets
 - Google Secret Manager
 - VPS env injection

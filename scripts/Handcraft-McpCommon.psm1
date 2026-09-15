@@ -1,4 +1,4 @@
-﻿# Handcraft-McpCommon.psm1
+# Handcraft-McpCommon.psm1
 # Shared helpers for mcp-handcraft ops scripts (start / check / maintain / stop).
 # 共用設定與探測函式，供 start-mcp / check-mcp / maintain-mcp / stop-mcp 使用。
 
@@ -211,49 +211,34 @@ function Start-HandcraftHttpServer {
         Remove-Item -LiteralPath $Config.HttpPidFile -Force -ErrorAction SilentlyContinue
     }
 
-    if (-not (Test-CommandAvailable -Name "op")) {
-        throw "op command not found in PATH."
-    }
-
     if (-not (Test-Path -LiteralPath $Config.ServerPath)) {
         throw "server_http.py not found: $($Config.ServerPath)"
-    }
-
-    $envFile = Join-Path $Config.RepoRoot ".env.op"
-    if (-not (Test-Path -LiteralPath $envFile)) {
-        throw ".env.op not found: $envFile"
     }
 
     New-Item -ItemType Directory -Force -Path $Config.RepoLogDir | Out-Null
     New-Item -ItemType Directory -Force -Path $Config.RuntimeRoot | Out-Null
 
     $python = Get-PythonLaunchSpec -ServerPath $Config.ServerPath
-    $op = Get-Command op -ErrorAction Stop
 
-    # WinPS 5.1 Start-Process has no -Environment; use a small .cmd launcher.
-    $launcherPath = Join-Path $Config.RuntimeRoot "handcraft-op-launch.cmd"
+    # Native Windows launcher: inherit Machine/User environment and only write
+    # non-secret canonical wrapper flags. No retired secret-runner/bootstrap dependency.
+    $launcherPath = Join-Path $Config.RuntimeRoot "handcraft-native-launch.cmd"
     $quoteArg = {
         param([string]$Value)
         if ($null -eq $Value) { return '""' }
         return '"' + ($Value -replace '"', '""') + '"'
     }
-    $opQuoted = & $quoteArg $op.Source
-    $envQuoted = & $quoteArg $envFile
     $pyQuoted = & $quoteArg $python.Executable
     $pyArgsQuoted = (@($python.Arguments) | ForEach-Object { & $quoteArg $_ }) -join " "
-    $cmdLines = @(
-        "@echo off",
-        "set OP_CONNECT_HOST=http://127.0.0.1:8877",
-        "set OP_SERVICE_ACCOUNT_TOKEN="
-    )
+    $cmdLines = @("@echo off", "setlocal")
     if ($null -eq $ExtraEnv) { $ExtraEnv = @{} }
     foreach ($key in @($ExtraEnv.Keys | Sort-Object)) {
         $safeKey = [string]$key
         if ($safeKey -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { continue }
         $safeVal = ([string]$ExtraEnv[$key]) -replace "[\r\n]", ""
-        $cmdLines += "set $safeKey=$safeVal"
+        $cmdLines += "set `"$safeKey=$safeVal`""
     }
-    $cmdLines += "$opQuoted run --env-file $envQuoted -- $pyQuoted $pyArgsQuoted"
+    $cmdLines += "$pyQuoted $pyArgsQuoted"
     Set-Content -LiteralPath $launcherPath -Value ($cmdLines -join "`r`n") -Encoding ASCII
 
     $process = Start-Process `
@@ -417,37 +402,22 @@ function Invoke-HandcraftLocalMcpHandshake {
         [string]$RepoRoot = $Script:HandcraftDefaults.RepoRoot
     )
 
-    if (-not (Test-CommandAvailable -Name "op")) {
-        return [ordered]@{
-            name  = "local_mcp_handshake"
-            scope = "local"
-            ok    = $false
-            error = "op not available for MCP token injection"
-        }
-    }
-
-    $prevHost = $env:OP_CONNECT_HOST
-    $hadSaToken = Test-Path Env:OP_SERVICE_ACCOUNT_TOKEN
-    $prevSaToken = $env:OP_SERVICE_ACCOUNT_TOKEN
     try {
-        $envFile = Join-Path $RepoRoot ".env.op"
-        if (-not (Test-Path -LiteralPath $envFile)) {
-            throw ".env.op not found: $envFile"
+        $token = [Environment]::GetEnvironmentVariable("MCP_API_TOKEN", "Process")
+        if ([string]::IsNullOrWhiteSpace($token)) {
+            $token = [Environment]::GetEnvironmentVariable("MCP_API_TOKEN", "User")
         }
-
-        $env:OP_CONNECT_HOST = "http://127.0.0.1:8877"
-        Remove-Item Env:OP_SERVICE_ACCOUNT_TOKEN -ErrorAction SilentlyContinue
-
-        $token = (& op run --env-file $envFile -- powershell.exe -NoProfile -Command "[Console]::Out.Write(`$env:MCP_API_TOKEN)" 2>$null)
-        if (-not $token) {
-            throw "MCP_API_TOKEN not available via op run --env-file .env.op"
+        if ([string]::IsNullOrWhiteSpace($token)) {
+            $token = [Environment]::GetEnvironmentVariable("MCP_API_TOKEN", "Machine")
         }
-        $token = $token.Trim()
+        if ([string]::IsNullOrWhiteSpace($token)) {
+            throw "MCP_API_TOKEN not available in Windows Process/User/Machine environment"
+        }
 
         $headers = @{
             "Content-Type"  = "application/json"
             "Accept"        = "application/json, text/event-stream"
-            "Authorization" = "Bearer $token"
+            "Authorization" = "Bearer $($token.Trim())"
         }
         $body = '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
         $response = Invoke-RestMethod -Uri $McpUrl -Method Post -Headers $headers -Body $body -TimeoutSec $TimeoutSec
@@ -456,23 +426,12 @@ function Invoke-HandcraftLocalMcpHandshake {
             $toolCount = @($response.result.tools).Count
         }
         return [ordered]@{
-            name       = "local_mcp_handshake"
-            scope      = "local"
-            ok         = $true
-            uri        = $McpUrl
-            tool_count = $toolCount
+            name = "local_mcp_handshake"; scope = "local"; ok = $true; uri = $McpUrl; tool_count = $toolCount
         }
     } catch {
         return [ordered]@{
-            name  = "local_mcp_handshake"
-            scope = "local"
-            ok    = $false
-            uri   = $McpUrl
-            error = $_.Exception.Message
+            name = "local_mcp_handshake"; scope = "local"; ok = $false; uri = $McpUrl; error = $_.Exception.Message
         }
-    } finally {
-        if ($null -ne $prevHost) { $env:OP_CONNECT_HOST = $prevHost } else { Remove-Item Env:OP_CONNECT_HOST -ErrorAction SilentlyContinue }
-        if ($hadSaToken) { $env:OP_SERVICE_ACCOUNT_TOKEN = $prevSaToken } else { Remove-Item Env:OP_SERVICE_ACCOUNT_TOKEN -ErrorAction SilentlyContinue }
     }
 }
 

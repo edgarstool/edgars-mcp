@@ -24,7 +24,6 @@ class WrapDefaultOffTests(unittest.TestCase):
         self.assertNotIn("hermes_agent", names)
         self.assertNotIn("openclaw_agent", names)
         self.assertNotIn("cloudflared_cli", names)
-        self.assertNotIn("op_connect_status", names)
         self.assertNotIn("om__status", names)
         self.assertNotIn("descope__sdk_status", names)
         self.assertFalse(any(name.startswith("pw__") for name in names))
@@ -55,7 +54,6 @@ class WrapDefaultOffTests(unittest.TestCase):
             "windows",
             "desktop_commander",
             "cloudflared",
-            "op_connect",
             "openmontage",
             "hermes",
             "openclaw",
@@ -86,6 +84,8 @@ class WrapDefaultOffTests(unittest.TestCase):
             self.assertIn(required, names)
 
     def test_enabled_openmontage_lists_source_tools_without_castrating(self):
+        if not edgar_wrappers.OPENMONTAGE_DIR.is_dir():
+            self.skipTest("OpenMontage Windows checkout is not present on this host")
         with patch.dict(os.environ, {"MCP_WRAP_OPENMONTAGE": "1"}, clear=False):
             names = [tool["name"] for tool in edgar_wrappers.list_wrap_tools()]
         om_tools = [name for name in names if name.startswith("om__") and name not in {"om__status", "om__list_pipelines", "om__read_pipeline", "om__execute", "om__dry_run", "om__registry_error"}]

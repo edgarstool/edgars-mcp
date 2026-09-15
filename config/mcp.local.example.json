@@ -1,16 +1,8 @@
 {
   "mcpServers": {
-    "handcraft-mcp": {
-      "command": "doppler",
+    "edgars-mcp": {
+      "command": "C:\\Users\\EdgarsTool\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe",
       "args": [
-        "run",
-        "--project",
-        "handcraft-mcp",
-        "--config",
-        "prd",
-        "--",
-        "py",
-        "-3",
         "V:\\projects\\edgars-mcp\\stdio_proxy.py"
       ]
     }

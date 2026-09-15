@@ -13,7 +13,7 @@ Perform a **read-only** repository health check.
 - dependency files (lockfile / version drift)
 - GitHub Actions workflows
 - EDGAR-OS path compliance (no hard-coded `C:\Users\EdgarsTool\Projects\`, no `D:\` as entry)
-- possible secret-like filenames **only** (`*.env`、`*.pem`、`*.key`、`id_rsa*`、`1password*`、`doppler*`)
+- possible secret-like filenames **only** (`*.env`、`*.pem`、`*.key`、`id_rsa*`、`1password*`)
   — **do not open secrets**
 
 ## Rules

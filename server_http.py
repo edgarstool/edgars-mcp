@@ -57,7 +57,7 @@ try:
 except ImportError:  # pragma: no cover - optional until MCP_DESCOPE_ENABLED
     DescopeClient = None
 
-# ── Secrets（由 op run + .env.op / Connect 注入）─────────────────────────────────
+# ── Runtime configuration（Windows Machine/User environment）──────────────────────
 def load_mcp_api_token() -> str:
     return os.getenv("MCP_API_TOKEN", "").strip()
 
@@ -429,11 +429,11 @@ CONNECTOR_DISPLAY_NAME = "edgars mcp"
 
 SERVER_INFO = {
     "name": CONNECTOR_DISPLAY_NAME,
-    "version": "0.1.0",
+    "version": "2.0.0",
 }
 CHATGPT_HONCHO_SERVER_INFO = {
     "name": "edgars-honcho-memory-gateway",
-    "version": "0.1.0",
+    "version": "2.0.0",
 }
 
 JOBS_LOCK = threading.Lock()
@@ -3133,7 +3133,7 @@ def run_claude_code_task(task: str, working_dir: str) -> tuple[str, bool]:
             ["cmd.exe", "/c", CLAUDE_CMD, "--print", task, "--output-format", "text"],
             cwd=working_dir,
             # Force Claude Code to use the locally logged-in first-party account.
-            # Doppler or shell-level Anthropic API settings can otherwise override
+            # Shell-level Anthropic API settings can otherwise override
             # OAuth and make claude_code_agent fail with "Invalid API key".
             env_overrides={
                 "ANTHROPIC_AUTH_TOKEN": None,
@@ -4029,7 +4029,7 @@ def handle_linear_oauth_bootstrap() -> tuple[int, dict]:
     if not linear_oauth_configured():
         return 503, {
             "error": "not_configured",
-            "message": "LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET must be set via op run / .env.op",
+            "message": "LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET must be set in the Windows runtime environment",
         }
     if linear_oauth_token_present():
         token = load_linear_oauth_token() or {}
@@ -4309,7 +4309,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         if not linear_oauth_configured():
             self._send_oauth_json({
                 "error": "not_configured",
-                "message": "LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET must be set via op run / .env.op",
+                "message": "LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET must be set in the Windows runtime environment",
             }, status=503)
             return
         try:
@@ -6924,7 +6924,7 @@ def _tracktw_key() -> str:
     key = TRACKTW_API_KEY or os.getenv("TRACKTW_API_KEY", "")
     key = key.strip()
     if not key:
-        raise ValueError("TRACKTW_API_KEY not set. Add it to 1Password Connect (.env.op) and restart.")
+        raise ValueError("TRACKTW_API_KEY not set in the Windows runtime environment. Set it and restart.")
     return key
 
 
@@ -7940,7 +7940,7 @@ def handle_web_search(req_id, arguments: dict) -> dict:
         return make_response(req_id, make_tool_text_response("Error: query is required", is_error=True))
     if not PERPLEXITY_API_KEY:
         return make_response(req_id, make_tool_text_response(
-            "Error: PERPLEXITY_API_KEY not set. Add to 1Password Connect (.env.op).", is_error=True
+            "Error: PERPLEXITY_API_KEY not set in the Windows runtime environment.", is_error=True
         ))
     try:
         payload = json.dumps({
@@ -7971,7 +7971,7 @@ def handle_web_search(req_id, arguments: dict) -> dict:
 
 def _linear_graphql(query: str, variables: dict | None = None) -> dict:
     if not LINEAR_API_KEY:
-        raise LinearMcpError("LINEAR_API_KEY not set via op run / .env.op")
+        raise LinearMcpError("LINEAR_API_KEY not set in the Windows runtime environment")
     payload = json.dumps({"query": query, "variables": variables or {}}).encode("utf-8")
     req = urllib.request.Request(
         "https://api.linear.app/graphql",
@@ -8282,7 +8282,7 @@ def handle_linear_update_issue(req_id, arguments: dict) -> dict:
 def _warp_key() -> str:
     key = (WARP_API_KEY or os.getenv("WARP_API_KEY", "")).strip()
     if not key:
-        raise WarpMcpError("WARP_API_KEY not set. Add it to 1Password Connect (.env.op) and restart.")
+        raise WarpMcpError("WARP_API_KEY not set in the Windows runtime environment. Set it and restart.")
     return key
 
 
@@ -8392,7 +8392,7 @@ def _cursor_key() -> str:
     if not key:
         raise CursorMcpError(
             "CURSOR_API_KEY not set. Generate at Cursor Dashboard → API Keys, "
-            "then add to 1Password Connect (.env.op) and restart."
+            "then set it in the Windows runtime environment and restart."
         )
     return key
 
@@ -8545,7 +8545,7 @@ def _factory_key() -> str:
     if not key:
         raise FactoryMcpError(
             "FACTORY_API_KEY not set. Generate at app.factory.ai/settings/api-keys, "
-            "then add to 1Password Connect (.env.op) and restart."
+            "then set it in the Windows runtime environment and restart."
         )
     return key
 

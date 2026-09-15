@@ -81,7 +81,7 @@ HONCHO_FACADE_BEARER_VALUE
 https://entry.edgars.tools/mcp
 ```
 
-本機 origin 可以從 Doppler、Windows env、1Password 或其他 secret manager 注入：
+本機 origin 直接從 Windows Machine/User environment 注入：
 
 ```text
 HONCHO_API_KEY
@@ -90,7 +90,7 @@ HONCHO_WORKSPACE_ID=edgar-team
 HONCHO_ASSISTANT_NAME=codex
 ```
 
-Doppler 是 runtime secret source 之一，不是外部 agent 的連線目標。
+Windows Machine/User environment 是 canonical runtime configuration source；外部 agent 只連服務，不連 secret store。
 
 ## Legacy 驗收（非 ChatGPT）
 
@@ -198,7 +198,7 @@ HONCHO_API_KEY、OAuth token 或 Access token
 
 安全診斷可保留 route、工具名稱、結果狀態、category 與長度／筆數，但不應原樣記錄上游錯誤本文。
 
-新的 route 由既有 runtime configuration source 注入；建議透過 Doppler 設定下列**名稱**，不得把值寫進 repo、聊天或 log：
+新的 route 由 Windows Machine/User environment 注入下列**名稱**；不得把值寫進 repo、聊天或 log：
 
 ```text
 MCP_CLOUDFLARE_ACCESS_CHATGPT_HONCHO_AUD

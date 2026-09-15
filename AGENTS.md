@@ -32,7 +32,7 @@
 
 ## 禁止事項
 
-- 不要掃描 secrets-like path（`*.env`、`*.pem`、`*.pfx`、`*.key`、`id_rsa*`、`1password*`、`doppler*`、`.ssh/*` 等）。
+- 不要掃描 secrets-like path（`*.env`、`*.pem`、`*.pfx`、`*.key`、`id_rsa*`、`1password*`、`.ssh/*` 等）。
 - 不要主動要求使用者貼 API key / token / password / private key / OAuth secret。
 - 不要修改 production 設定（Cloudflare / Google Workspace / Notion 正式設定 / 任何 DNS）未經確認。
 - 不要 force-push、reset、rebase 主幹未經確認。

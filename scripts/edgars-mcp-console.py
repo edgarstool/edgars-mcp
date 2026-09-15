@@ -44,7 +44,6 @@ FLAG_KEYS = [
     "MCP_WRAP_DESKTOP_COMMANDER",
     "MCP_WRAP_DESCOPE",
     "MCP_WRAP_CLOUDFLARED",
-    "MCP_WRAP_OP_CONNECT",
     "MCP_WRAP_OPENMONTAGE",
     "MCP_WRAP_HERMES",
     "MCP_WRAP_OPENCLAW",
@@ -56,7 +55,6 @@ SKILLS = [
     ("MCP_WRAP_DESKTOP_COMMANDER", "Desktop Commander", "stdio", "本機檔案與終端"),
     ("MCP_WRAP_DESCOPE", "Descope 驗證", "native", "SDK / 管理 MCP"),
     ("MCP_WRAP_CLOUDFLARED", "cloudflared CLI", "native", "不管正式 tunnel 開關"),
-    ("MCP_WRAP_OP_CONNECT", "1Password Connect", "native", "健康檢查與 compose"),
     ("MCP_WRAP_OPENMONTAGE", "OpenMontage", "native", "pipeline 與 BaseTools"),
     ("MCP_WRAP_HERMES", "Hermes", "native", "hermes CLI"),
     ("MCP_WRAP_OPENCLAW", "OpenClaw", "native", "openclaw agent"),
@@ -65,7 +63,6 @@ SKILLS = [
 NATIVE_FLAGS = {
     "MCP_WRAP_DESCOPE",
     "MCP_WRAP_CLOUDFLARED",
-    "MCP_WRAP_OP_CONNECT",
     "MCP_WRAP_OPENMONTAGE",
     "MCP_WRAP_HERMES",
     "MCP_WRAP_OPENCLAW",

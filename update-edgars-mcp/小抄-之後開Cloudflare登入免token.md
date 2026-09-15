@@ -28,7 +28,7 @@ tags: [mcp, cloudflare, 授權, 小抄]
 5. 按「儲存」。
 
 ### B. Server 這邊（讓 server 信任 Cloudflare 的登入）
-在 Doppler（或 server 的環境變數）設：
+在 Windows Machine/User environment 設：
 ```
 CF_ACCESS_TEAM_DOMAIN = edgarstools.cloudflareaccess.com
 CF_ACCESS_AUD = <從 edgar-mcp-local 的 AUD 標籤複製；要時叫我幫你抓>

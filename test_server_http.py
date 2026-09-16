@@ -1,4 +1,4 @@
-﻿"""Unit tests and smoke checks for server_http helpers."""
+"""Unit tests and smoke checks for server_http helpers."""
 
 import json
 import io
@@ -19,15 +19,12 @@ import server_http
 from server_http import (
     JOBS,
     JOBS_LOCK,
-    DISCORD_WEBHOOK_EVENTS,
-    DISCORD_WEBHOOK_EVENTS_LOCK,
     HandcraftServerConfig,
     MCPHTTPHandler,
     ThreadingHTTPServer,
     TOOLS,
     cleanup_expired_jobs,
     create_job,
-    handle_discord_webhook_payload,
     handle_agent_job_cleanup,
     handle_agent_job_list,
     handle_claude_code_agent,
@@ -205,7 +202,6 @@ class HttpStartupConfigTests(unittest.TestCase):
             HandcraftServerConfig(
                 mcp_api_token="secret-token",
                 base_url="https://mcp.example.test",
-                webhook_base_url="https://mcp.example.test",
             ),
             config,
         )
@@ -1562,40 +1558,30 @@ class CloudflareAccessModeTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-    def test_package_webhook_can_require_shared_secret(self):
+    def test_mcp_http_port_rejects_webhook_receiver_paths(self):
         config = HandcraftServerConfig(
             mcp_api_token="secret-token",
             base_url="https://mcp.example.test",
-            package_webhook_token="pkg-secret",
         )
         server, thread, base = self._start_server(config=config)
         try:
-            body = json.dumps({"tracking_number": "TEST123"}).encode("utf-8")
-            req = urllib.request.Request(
-                f"{base}/webhook/package",
-                data=body,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with self.assertRaises(urllib.error.HTTPError) as raised:
-                urllib.request.urlopen(req, timeout=5)
-
-            self.assertEqual(401, raised.exception.code)
-
-            authed_req = urllib.request.Request(
-                f"{base}/webhook/package",
-                data=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "X-Handcraft-Webhook-Token": "pkg-secret",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(authed_req, timeout=5) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-
-            self.assertEqual(200, response.status)
-            self.assertTrue(payload["ok"])
+            body = b"{}"
+            for path in (
+                "/webhook/package",
+                "/webhook/linear",
+                "/webhooks/linear",
+                "/webhook/discord",
+            ):
+                with self.subTest(path=path):
+                    req = urllib.request.Request(
+                        f"{base}{path}",
+                        data=body,
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as raised:
+                        urllib.request.urlopen(req, timeout=5)
+                    self.assertEqual(404, raised.exception.code)
         finally:
             server.shutdown()
             server.server_close()
@@ -2982,72 +2968,6 @@ class LinearOAuthTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-    def test_linear_webhook_rejects_bad_signature_when_secret_configured(self):
-        config = HandcraftServerConfig(
-            mcp_api_token="secret-token",
-            base_url="https://mcp.example.test",
-        )
-        server = ThreadingHTTPServer(("127.0.0.1", 0), MCPHTTPHandler, config=config)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            port = server.server_address[1]
-            body = json.dumps({"type": "Issue"}).encode("utf-8")
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/webhooks/linear",
-                data=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "Linear-Signature": "bad-signature",
-                },
-                method="POST",
-            )
-            with patch.object(server_http, "LINEAR_WEBHOOK_SECRET", "whsec-test"):
-                with self.assertRaises(urllib.error.HTTPError) as raised:
-                    urllib.request.urlopen(req, timeout=5)
-
-            self.assertEqual(401, raised.exception.code)
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=5)
-
-
-class DiscordWebhookTests(unittest.TestCase):
-    def setUp(self):
-        with DISCORD_WEBHOOK_EVENTS_LOCK:
-            DISCORD_WEBHOOK_EVENTS.clear()
-
-    def test_discord_ping_returns_pong(self):
-        status, response = handle_discord_webhook_payload({"type": 1})
-
-        self.assertEqual(200, status)
-        self.assertEqual({"type": 1}, response)
-
-    def test_discord_message_payload_is_stored(self):
-        status, response = handle_discord_webhook_payload({
-            "id": "msg-1",
-            "channel_id": "channel-1",
-            "guild_id": "guild-1",
-            "author": {"username": "edgar"},
-            "content": "hello webhook",
-        })
-
-        self.assertEqual(200, status)
-        self.assertTrue(response["ok"])
-        self.assertEqual("discord", response["source"])
-        self.assertEqual("msg-1", response["event_id"])
-
-        with DISCORD_WEBHOOK_EVENTS_LOCK:
-            self.assertEqual(1, len(DISCORD_WEBHOOK_EVENTS))
-            self.assertEqual("hello webhook", DISCORD_WEBHOOK_EVENTS[0]["content"])
-
-    def test_discord_payload_must_be_object(self):
-        status, response = handle_discord_webhook_payload(["not", "an", "object"])
-
-        self.assertEqual(400, status)
-        self.assertFalse(response["ok"])
-
 
 class TrackTWTests(unittest.TestCase):
     def test_tracktw_schema_is_registered(self):
@@ -3840,16 +3760,6 @@ class ExternalApiIntegrationTests(unittest.TestCase):
                     token_file.unlink()
             else:
                 token_file.write_text(backup, encoding="utf-8")
-
-    def test_verify_linear_webhook_signature(self):
-        secret = "test-secret"
-        body = b'{"type":"Issue"}'
-        sig = server_http.hmac.new(
-            secret.encode("utf-8"), body, server_http.hashlib.sha256
-        ).hexdigest()
-        with patch.object(server_http, "LINEAR_WEBHOOK_SECRET", secret):
-            self.assertTrue(server_http.verify_linear_webhook_signature(body, sig))
-            self.assertFalse(server_http.verify_linear_webhook_signature(body, "bad"))
 
 
 class VisibleBrowserTests(unittest.TestCase):

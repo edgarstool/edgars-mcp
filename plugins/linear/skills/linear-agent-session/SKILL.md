@@ -41,13 +41,13 @@ Linear docs: https://linear.app/developers/agent-interaction
 ## Our Stack
 
 ```
-Linear → webhooks.edgars.tools/webhooks/linear
+Linear → hooks.edgars.tools/webhooks/linear
       → linear-orchestrator (:8645)
       → hermes -z --cli --continue <session> --skills linear
       → agentActivityCreate (thought + response)
 ```
 
-**mcp-handcraft** `/webhook/linear` only logs — it does **not** complete agent sessions.
+**edgars-mcp** no longer hosts `/webhook/linear`; the MCP runtime is intentionally webhook-free and legacy webhook paths return 404.
 
 Infrastructure repo: `linear-orchestrator` (Edgar-s-Tool/linear-orchestrator).
 
@@ -62,7 +62,7 @@ When processing an `AgentSessionEvent`:
 
 ## Debugging Checklist
 
-1. Webhook URL live? (`webhooks.edgars.tools/webhooks/linear`, not `mcp.edgars.tools/webhook/linear`)
+1. Webhook URL live? (`hooks.edgars.tools/webhooks/linear`; `mcp.edgars.tools/webhook/linear` is retired and must return 404)
 2. `linear-orchestrator` running? (`systemctl status`, `:8645/healthz`)
 3. `LINEAR_OAUTH_CLIENT_ID/SECRET` set for writeback?
 4. `LINEAR_WEBHOOK_SECRET` matches Linear app signing secret?

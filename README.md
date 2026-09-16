@@ -7,6 +7,8 @@ Windows-native MCP aggregation server for EDGAR-OS.
 - Repo: `V:\projects\edgars-mcp`
 - HTTP: `http://127.0.0.1:8765/mcp`
 - Health: `http://127.0.0.1:8765/health`
+
+Port `8765` is MCP-only. Webhook/event ingress does **not** run in `server_http.py`; use the dedicated `hooks.edgars.tools` / Hermes event path instead.
 - Public edge: `https://mcp.edgars.tools/mcp`
 - Startup task: `edgars-mcp-http` -> `scripts\Start_Handcraft_MCP_HTTP.vbs`
 - Runtime config/secrets: Windows Machine/User environment variables read directly by Python

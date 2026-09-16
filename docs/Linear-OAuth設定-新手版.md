@@ -17,7 +17,7 @@ Linear 的 OAuth App `Hermes Agent` 讓 Hermes / edgars-mcp 以 App 身分讀寫
 | `https://mcp.edgars.tools/linear/oauth/callback` | OAuth callback |
 | `https://mcp.edgars.tools/linear/oauth/status` | 檢查設定與 token 狀態 |
 
-Webhook manifest 預設仍為 `enabled: false`；正式 Hermes webhook 依目前部署走 `webhooks.edgars.tools`。
+Webhook manifest 預設仍為 `enabled: false`；正式事件入口依目前 canonical deployment 走 `hooks.edgars.tools`。
 
 ## 1. Linear OAuth App
 
@@ -80,9 +80,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-mcp.ps1 -For
 
 授權連結已過期，重新從 `/linear/oauth/authorize` 開始。
 
-**webhooks.edgars.tools 跟 mcp.edgars.tools/webhook/linear？**
+**hooks.edgars.tools 跟 mcp.edgars.tools/webhook/linear？**
 
-前者是 Hermes Agent 正式 webhook；後者是 edgars-mcp 的 Linear webhook endpoint。實際 production route 以 live deployment 為準。
+`hooks.edgars.tools` 是 canonical webhook/event ingress。`mcp.edgars.tools/webhook/linear` 已於 2026-09-16 從 edgars-mcp runtime 移除；8765 上的 legacy webhook paths 必須回 404。
 
 ## 相關檔案
 

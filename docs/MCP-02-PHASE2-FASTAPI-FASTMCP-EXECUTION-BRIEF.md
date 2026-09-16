@@ -22,7 +22,7 @@
 
 ## 0. 給執行代理（Codex / Claude Code）的一句話原則
 
-> **外層 HTTP/ASGI/路由/headers/CORS 交給 FastAPI；OAuth discovery（`/.well-known/*`、PRM、WWW-Authenticate 挑戰）這一小層局部交給 FastMCP 的 `RemoteAuthProvider`；token 驗證、84 個工具的業務邏輯、webhook、Linear OAuth、Honcho proxy 全部保留手刻，原封不動搬過去掛成路由。授權模式只剩「手刻 bearer/OAuth」與「Descope JWT」兩種，Cloudflare Access 相關程式碼視為棄用，不用保留其行為。**
+> **2026-09-16 superseding decision:** edgars-mcp HTTP runtime is MCP-only. Webhook/event receivers are out of scope for port 8765 and belong to the dedicated event ingress (`hooks.edgars.tools`) / downstream Hermes path. Any earlier requirement in this brief to preserve Discord/Package/Linear webhook routes inside `server_http.py` is retired. OAuth discovery、token 驗證、工具業務邏輯、Linear OAuth、Honcho proxy 可繼續獨立演進。
 
 不是重寫，是「換外殼、留內臟」。任何一步如果變成「順手把 XX 也改用官方 SDK / FastMCP 寫」，就是範圍蔓延（scope creep），要停下來回報，不要自己延伸。
 
@@ -71,9 +71,9 @@
 **POST**
 - `/token`（內建 OAuth token 端點）
 - `/register`（RFC 7591 動態客戶端註冊 DCR）
-- `/webhook/discord`
-- `/webhook/package`（`PACKAGE_WEBHOOK_PATH`）
-- `/webhook/linear`、`/webhooks/linear`（兩個路徑都要接受，Linear 官方用複數形）
+- ~~`/webhook/discord`~~ — retired from MCP runtime
+- ~~`/webhook/package`~~ — retired from MCP runtime
+- ~~`/webhook/linear`、`/webhooks/linear`~~ — retired from MCP runtime; 8765 must return 404
 - `/honcho-mcp`（`HONCHO_MCP_PATH`）
 - `/mcp`（當 request hostname 等於 `honcho_mcp_hostname` 時，走 Honcho proxy 分支，**不是走一般 MCP 邏輯**——這是一個依賴 Host header 判斷行為的隱藏分支，遷移時最容易漏）
 - `/chatgpt-honcho`
@@ -116,7 +116,7 @@
 │     - 84 個工具 + mmx_handlers.DISPATCH                │
 │     - Linear OAuth 全流程                              │
 │     - Honcho proxy、ChatGPT-Honcho gateway（認證方式待決，見決策更新第1點）│
-│     - 所有 webhook（Discord/Package/Linear）            │
+│     - webhook receivers 不屬於此 runtime               │
 │     - /token、/register（DCR）——是否交給 FastMCP 待評估   │
 └─────────────────────────────────────────────────────┘
 ```
@@ -127,7 +127,7 @@
 - `mmx_handlers.DISPATCH`
 - Descope 的 JWT 驗證細節
 - Linear OAuth 全流程（authorize/callback/status/bootstrap + token 儲存）
-- 所有 webhook handler 的簽章驗證邏輯
+- webhook handler / signature validation 已移出 MCP runtime；由 event ingress 負責
 
 ---
 
@@ -189,7 +189,7 @@
 - [ ] 兩種授權模式（Descope / built-in bearer）各自的 401/200 行為與 Phase 2 之前逐條比對一致
 - [ ] Cloudflare Access 分支確認移除，且原本依賴它的端點（如 `/health`）存取控制邏輯有明確替代方案，不是意外變公開
 - [ ] `chatgpt-honcho` gateway 的認證方式已依王世鈞決策更新（改用 Descope/bearer，或整條路徑棄用）
-- [ ] 所有 webhook（Discord / Package / Linear 兩種路徑）功能等價
+- [x] MCP runtime 不再承載 webhook；legacy webhook paths on 8765 return 404
 - [ ] Linear OAuth 全流程（authorize/callback/status/bootstrap）功能等價
 - [ ] Honcho proxy（含 Host header 判斷分支）功能等價
 - [ ] 84 個工具全部可呼叫，抽測至少 10 個（含最常用與最少用各半）

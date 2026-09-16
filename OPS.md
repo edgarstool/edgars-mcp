@@ -24,7 +24,7 @@ Expected MCP surface: **269 tools**. `MCP_WRAP_ALL` is off. Product/agent wrappe
 powershell -NoProfile -ExecutionPolicy Bypass -File V:\projects\edgars-mcp\scripts\check-mcp.ps1
 ```
 
-Local acceptance: TCP 8765 listening, `/health` HTTP 200, MCP handshake succeeds, Python available, and the public edge is reachable when Cloudflare is expected online.
+Local acceptance: TCP 8765 listening, `/health` HTTP 200, MCP handshake succeeds, Python available, and the public edge is reachable when Cloudflare is expected online. Port 8765 is MCP-only; legacy `/webhook/*` and `/webhooks/*` receiver paths must return 404.
 
 ## Maintenance
 

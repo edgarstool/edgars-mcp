@@ -1,12 +1,10 @@
-﻿"""
+"""
 手刻 MCP Server - Streamable HTTP 版本
 協議版本: 2025-11-25
 依賴: Python 標準庫；啟用 Cloudflare Access 模式時額外使用 PyJWT
 
 端點:
 - POST /mcp
-- POST /webhook/package
-- POST /webhook/linear
 - GET  /linear/oauth/authorize
 - GET  /linear/oauth/callback
 - GET  /linear/oauth/status
@@ -78,9 +76,6 @@ def load_http_bind_host() -> str:
     return os.getenv("MCP_BIND_HOST", "127.0.0.1").strip()
 
 
-def load_webhook_base_url() -> str:
-    return os.getenv("MCP_WEBHOOK_BASE_URL", "").strip()
-
 
 def load_cloudflare_access_team_domain() -> str:
     return os.getenv("MCP_CLOUDFLARE_ACCESS_TEAM_DOMAIN", "").strip()
@@ -98,17 +93,6 @@ def load_cloudflare_access_chatgpt_honcho_aud() -> str:
 def load_cloudflare_access_jwks_url() -> str:
     return os.getenv("MCP_CLOUDFLARE_ACCESS_JWKS_URL", "").strip()
 
-
-def load_package_webhook_token() -> str:
-    return os.getenv("MCP_PACKAGE_WEBHOOK_TOKEN", "").strip()
-
-
-def load_linear_webhook_token() -> str:
-    return os.getenv("MCP_LINEAR_WEBHOOK_TOKEN", "").strip()
-
-
-def load_discord_webhook_token() -> str:
-    return os.getenv("MCP_DISCORD_WEBHOOK_TOKEN", "").strip()
 
 
 def load_honcho_mcp_facade_token() -> str:
@@ -201,7 +185,6 @@ def probe_runtime_capabilities() -> dict:
 class HandcraftServerConfig:
     mcp_api_token: str
     base_url: str
-    webhook_base_url: str = ""
     cloudflare_access_enabled: bool = False
     cloudflare_access_team_domain: str = ""
     cloudflare_access_aud: str = ""
@@ -213,9 +196,6 @@ class HandcraftServerConfig:
     descope_project_id: str = ""
     descope_audience: str = ""
     auth_server_url: str = ""  # override: custom AS (e.g. https://auth.edgars.tools)
-    package_webhook_token: str = ""
-    linear_webhook_token: str = ""
-    discord_webhook_token: str = ""
     honcho_mcp_facade_token: str = ""
     honcho_api_key: str = ""
     honcho_user_name: str = "Edgar"
@@ -229,10 +209,6 @@ class HandcraftServerConfig:
     def public_hostname(self) -> str:
         return (urllib.parse.urlparse(self.base_url).hostname or "").lower()
 
-    @property
-    def webhook_hostname(self) -> str:
-        candidate = self.webhook_base_url or self.base_url
-        return (urllib.parse.urlparse(candidate).hostname or "").lower()
 
     @property
     def cloudflare_access_issuer(self) -> str:
@@ -284,7 +260,6 @@ OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
 LINEAR_API_KEY      = os.getenv("LINEAR_API_KEY", "")
 LINEAR_CLIENT_ID    = os.getenv("LINEAR_CLIENT_ID", "").strip()
 LINEAR_CLIENT_SECRET = os.getenv("LINEAR_CLIENT_SECRET", "").strip()
-LINEAR_WEBHOOK_SECRET = os.getenv("LINEAR_WEBHOOK_SECRET", "").strip()
 LINEAR_OAUTH_SCOPES = os.getenv(
     "LINEAR_OAUTH_SCOPES",
     "read,write,app:assignable,app:mentionable",
@@ -420,9 +395,6 @@ CHATGPT_HONCHO_RECALL_REDACTION_PATTERNS = (
     re.compile(r"\b(?:hch|sk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{16,}\b", re.IGNORECASE),
 )
 HEALTH_PATH = "/health"
-PACKAGE_WEBHOOK_PATH = "/webhook/package"
-LINEAR_WEBHOOK_PATH = "/webhook/linear"
-LINEAR_WEBHOOK_PATH_ALIAS = "/webhooks/linear"  # accept Linear's plural-form URL
 DEFAULT_JOB_RETENTION_SECONDS = int(os.getenv("MCP_JOB_RETENTION_SECONDS", "3600"))
 
 CONNECTOR_DISPLAY_NAME = "edgars mcp"
@@ -444,9 +416,6 @@ HONCHO_TOOLS_CACHE: dict[str, object] = {
     "identity": "",
     "tools": [],
 }
-DISCORD_WEBHOOK_EVENTS_LOCK = threading.Lock()
-DISCORD_WEBHOOK_EVENTS: list[dict] = []
-MAX_DISCORD_WEBHOOK_EVENTS = int(os.getenv("MCP_DISCORD_WEBHOOK_EVENT_LIMIT", "100"))
 TRACKTW_BASE_URL = os.getenv("TRACKTW_BASE_URL", "https://track.tw/api/v1").rstrip("/")
 WARP_BASE_URL = os.getenv("WARP_BASE_URL", "https://app.warp.dev/api/v1").rstrip("/")
 CURSOR_BASE_URL = os.getenv("CURSOR_BASE_URL", "https://api.cursor.com").rstrip("/")
@@ -2417,13 +2386,6 @@ def make_www_authenticate_header(
     return "Bearer " + ", ".join(parts)
 
 
-def make_webhook_response(event_type: str, accepted: bool = True) -> dict:
-    return {
-        "ok": accepted,
-        "type": event_type,
-        "service": f"handcraft-{event_type}-webhook",
-    }
-
 
 def parse_request_params(raw: bytes, content_type: str) -> dict:
     if "application/json" in content_type:
@@ -3812,42 +3774,6 @@ def dispatch_chatgpt_honcho(msg: dict, config: HandcraftServerConfig | None = No
         return make_error(req_id, -32603, "ChatGPT Honcho gateway internal error")
 
 
-def handle_discord_webhook_payload(payload: dict) -> tuple[int, dict]:
-    if not isinstance(payload, dict):
-        return 400, {"ok": False, "error": "Discord webhook payload must be a JSON object"}
-
-    if payload.get("type") == 1:
-        return 200, {"type": 1}
-
-    event = {
-        "event_id": str(payload.get("id") or uuid.uuid4()),
-        "received_at": datetime.datetime.now(datetime.UTC).isoformat(),
-        "type": payload.get("type"),
-        "guild_id": payload.get("guild_id"),
-        "channel_id": payload.get("channel_id"),
-        "author": (
-            (payload.get("author") or {}).get("username")
-            or (payload.get("member") or {}).get("user", {}).get("username")
-        ),
-        "content": payload.get("content"),
-        "raw": payload,
-    }
-    with DISCORD_WEBHOOK_EVENTS_LOCK:
-        DISCORD_WEBHOOK_EVENTS.append(event)
-        if len(DISCORD_WEBHOOK_EVENTS) > MAX_DISCORD_WEBHOOK_EVENTS:
-            del DISCORD_WEBHOOK_EVENTS[:-MAX_DISCORD_WEBHOOK_EVENTS]
-
-    log(
-        "Discord webhook received: "
-        f"event_id={event['event_id']} type={event['type']} channel_id={event['channel_id']}"
-    )
-    return 200, {
-        "ok": True,
-        "source": "discord",
-        "event_id": event["event_id"],
-        "stored_events": len(DISCORD_WEBHOOK_EVENTS),
-    }
-
 
 # ─── Linear OAuth (Hermes Agent app) ─────────────────────────────────────────
 
@@ -3981,18 +3907,6 @@ def exchange_linear_oauth_code(code: str) -> dict:
     })
 
 
-def verify_linear_webhook_signature(raw_body: bytes, signature: str) -> bool:
-    if not LINEAR_WEBHOOK_SECRET:
-        return True
-    if not signature:
-        return False
-    expected = hmac.new(
-        LINEAR_WEBHOOK_SECRET.encode("utf-8"),
-        raw_body,
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(expected, signature)
-
 
 def linear_oauth_reauth_hint() -> str:
     return (
@@ -4014,7 +3928,6 @@ def linear_oauth_status_payload() -> dict:
         "bootstrap_path": LINEAR_OAUTH_BOOTSTRAP_PATH,
         "scopes": LINEAR_OAUTH_SCOPES,
         "force_consent": LINEAR_OAUTH_FORCE_CONSENT,
-        "webhook_secret_configured": bool(LINEAR_WEBHOOK_SECRET),
         "saved_at": token.get("saved_at"),
         "expires_in": token.get("expires_in"),
         "scope": token.get("scope"),
@@ -4279,7 +4192,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             "public": {
                 "base_url": base_url,
                 "mcp_url": f"{base_url}{MCP_PATH}",
-                "webhook_base_url": (self.server.config.webhook_base_url or self.server.config.base_url).rstrip("/"),
             },
             "auth": {
                 "mcp_api_token_configured": bool(self.server.config.mcp_api_token),
@@ -4296,12 +4208,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 "descope_project_configured": bool(self.server.config.descope_project_id),
                 "descope_sdk": DescopeClient is not None,
             },
-            "webhooks": [
-                PACKAGE_WEBHOOK_PATH,
-                LINEAR_WEBHOOK_PATH,
-                LINEAR_WEBHOOK_PATH_ALIAS,
-                "/webhook/discord",
-            ],
             "linear_oauth": linear_oauth_status_payload(),
         })
 
@@ -4635,15 +4541,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 return
             self._handle_register()
             return
-        if parsed_path == "/webhook/discord":
-            self._handle_discord_webhook()
-            return
-        if parsed_path == PACKAGE_WEBHOOK_PATH:
-            self._handle_package_webhook()
-            return
-        if parsed_path == LINEAR_WEBHOOK_PATH or parsed_path == LINEAR_WEBHOOK_PATH_ALIAS:
-            self._handle_linear_webhook()
-            return
         if parsed_path == HONCHO_MCP_PATH:
             self._handle_honcho_mcp_proxy()
             return
@@ -4806,93 +4703,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return
         self._send_json(response, log_body=False)
 
-    def _handle_package_webhook(self) -> None:
-        if not self._ensure_webhook_token(self.server.config.package_webhook_token, "package"):
-            return
-        content_length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(content_length)
-        raw_text = raw.decode("utf-8", errors="replace")
-        log(f"PACKAGE WEBHOOK RECV ← {raw_text}")
-
-        if raw:
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                self._send_json(
-                    {
-                        **make_webhook_response("package", accepted=False),
-                        "error": f"Invalid JSON: {exc}",
-                    },
-                    status=400,
-                )
-                return
-        else:
-            payload = {}
-
-        if not isinstance(payload, dict):
-            self._send_json(
-                {
-                    **make_webhook_response("package", accepted=False),
-                    "error": "Invalid payload: expected JSON object",
-                },
-                status=400,
-            )
-            return
-
-        self._send_json({
-            **make_webhook_response("package"),
-            "received": True,
-        })
-
-    def _handle_linear_webhook(self) -> None:
-        if not self._ensure_webhook_token(self.server.config.linear_webhook_token, "linear"):
-            return
-        content_length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(content_length)
-        raw_text = raw.decode("utf-8", errors="replace")
-        signature = self.headers.get("Linear-Signature", "")
-        linear_event = self.headers.get("Linear-Event", "")
-        log(f"LINEAR WEBHOOK RECV ← event={linear_event!r} body={raw_text}")
-
-        if LINEAR_WEBHOOK_SECRET and not verify_linear_webhook_signature(raw, signature):
-            self._send_json(
-                {
-                    **make_webhook_response("linear", accepted=False),
-                    "error": "Invalid Linear-Signature",
-                },
-                status=401,
-            )
-            return
-
-        if raw:
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                self._send_json(
-                    {
-                        **make_webhook_response("linear", accepted=False),
-                        "error": f"Invalid JSON: {exc}",
-                    },
-                    status=400,
-                )
-                return
-        else:
-            payload = {}
-
-        if not isinstance(payload, dict):
-            self._send_json(
-                {
-                    **make_webhook_response("linear", accepted=False),
-                    "error": "Invalid payload: expected JSON object",
-                },
-                status=400,
-            )
-            return
-
-        self._send_json({
-            **make_webhook_response("linear"),
-            "received": True,
-        })
 
     def _handle_honcho_mcp_proxy(self) -> None:
         if not self._ensure_honcho_mcp_proxy_authorized():
@@ -4956,19 +4766,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     # ── 回應輔助 ──────────────────────────────────────────────────────────────
-    def _handle_discord_webhook(self) -> None:
-        if not self._ensure_webhook_token(self.server.config.discord_webhook_token, "discord"):
-            return
-        content_length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            self._send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, status=400)
-            return
-
-        status, response = handle_discord_webhook_payload(payload)
-        self._send_json(response, status=status)
 
     def _send_json(
         self,
@@ -4995,7 +4792,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         self.send_header(
             "Access-Control-Allow-Headers",
             "Content-Type, Authorization, Accept, MCP-Protocol-Version, Mcp-Method, Mcp-Name, "
-            "Mcp-Session-Id, Cf-Access-Jwt-Assertion, X-Handcraft-Webhook-Token, X-Webhook-Token",
+            "Mcp-Session-Id, Cf-Access-Jwt-Assertion",
         )
 
     def _validate_streamable_http_content_headers(self) -> bool:
@@ -5481,36 +5278,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         return False
 
-    def _webhook_token_from_request(self) -> str:
-        auth = self.headers.get("Authorization", "").strip()
-        if auth.lower().startswith("bearer "):
-            return auth[7:].strip()
-        for name in (
-            "X-Handcraft-Webhook-Token",
-            "X-Webhook-Token",
-            "X-Linear-Webhook-Token",
-            "X-TrackTW-Webhook-Token",
-            "X-Discord-Webhook-Token",
-        ):
-            value = self.headers.get(name, "").strip()
-            if value:
-                return value
-        return ""
-
-    def _ensure_webhook_token(self, expected_token: str, webhook_name: str) -> bool:
-        if not expected_token:
-            return True
-        supplied = self._webhook_token_from_request()
-        if supplied and hmac.compare_digest(supplied, expected_token):
-            return True
-        self._send_json(
-            {
-                **make_webhook_response(webhook_name, accepted=False),
-                "error": "Missing or invalid webhook secret.",
-            },
-            status=401,
-        )
-        return False
 
     # ── 把 http.server 的 access log 導到 stderr ──────────────────────────────
     def log_message(self, fmt, *args):
@@ -5612,7 +5379,6 @@ def validate_http_startup_config() -> HandcraftServerConfig:
     return HandcraftServerConfig(
         mcp_api_token=validate_mcp_api_token(load_mcp_api_token()),
         base_url=base_url,
-        webhook_base_url=validate_optional_base_url(load_webhook_base_url(), base_url),
         cloudflare_access_enabled=cloudflare_access_enabled,
         cloudflare_access_team_domain=cloudflare_access_team_domain,
         cloudflare_access_aud=cloudflare_access_aud,
@@ -5630,9 +5396,6 @@ def validate_http_startup_config() -> HandcraftServerConfig:
         descope_project_id=os.getenv("MCP_DESCOPE_PROJECT_ID", "").strip(),
         descope_audience=os.getenv("MCP_DESCOPE_AUDIENCE", "").strip(),
         auth_server_url=os.getenv("MCP_AUTH_SERVER", "").strip(),
-        package_webhook_token=load_package_webhook_token(),
-        linear_webhook_token=load_linear_webhook_token(),
-        discord_webhook_token=load_discord_webhook_token(),
         honcho_mcp_facade_token=load_honcho_mcp_facade_token(),
         honcho_api_key=load_honcho_api_key(),
         honcho_user_name=os.getenv("HONCHO_USER_NAME", "Edgar").strip() or "Edgar",
@@ -5658,8 +5421,6 @@ def main() -> None:
     log(f"Bind host: {bind_host}")
     log(f"Health  : GET  http://localhost:{PORT}{HEALTH_PATH}")
     log(f"Endpoint : POST http://localhost:{PORT}{MCP_PATH}")
-    log(f"Webhook : POST http://localhost:{PORT}{PACKAGE_WEBHOOK_PATH}")
-    log(f"Webhook : POST http://localhost:{PORT}{LINEAR_WEBHOOK_PATH}")
     log(
         "Auth mode: "
         + (

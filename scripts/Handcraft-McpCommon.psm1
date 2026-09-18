@@ -163,6 +163,14 @@ function Wait-HandcraftHealth {
 function Get-PythonLaunchSpec {
     param([Parameter(Mandatory)][string]$ServerPath)
 
+    $preferred = "C:\Users\EdgarsTool\AppData\Local\Python\pythoncore-3.14-64\python.exe"
+    if (Test-Path -LiteralPath $preferred) {
+        return @{
+            Executable = $preferred
+            Arguments  = @($ServerPath)
+        }
+    }
+
     $pythonCommand = Get-Command py -ErrorAction SilentlyContinue
     if ($pythonCommand) {
         return @{
@@ -176,6 +184,92 @@ function Get-PythonLaunchSpec {
         Executable = $pythonCommand.Source
         Arguments  = @($ServerPath)
     }
+}
+
+function Get-HandcraftScopedEnvValue {
+    param([Parameter(Mandatory)][string]$Name)
+
+    foreach ($scope in @("Process", "User", "Machine")) {
+        $value = [Environment]::GetEnvironmentVariable($Name, $scope)
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            return $value.Trim()
+        }
+    }
+    return $null
+}
+
+function Get-HandcraftNativeLaunchEnv {
+    param(
+        [hashtable]$ExtraEnv,
+        [switch]$IncludeSecrets
+    )
+
+    $defaults = [ordered]@{
+        MCP_DESCOPE_ENABLED            = "true"
+        MCP_DESCOPE_PROJECT_ID         = "P3IHk9JHELKS5KT5EWawFro5aPhY"
+        MCP_DESCOPE_RESOURCE_SERVER_ID = "RS3IPp7u1MjAlO6wHaafMEw6bgu4C"
+        MCP_DESCOPE_AUDIENCE           = "https://mcp.edgars.tools/mcp"
+        MCP_AUTH_SERVER                = "https://auth.edgars.tools"
+        MCP_BASE_URL                   = "https://mcp.edgars.tools"
+        MCP_BIND_HOST                  = "0.0.0.0"
+        MCP_WRAP_OP_CONNECT            = "0"
+    }
+
+    $secretKeys = @(
+        "MCP_API_TOKEN",
+        "DESCOPE_MANAGEMENT_KEY",
+        "OPENAI_API_KEY",
+        "CURSOR_API_KEY",
+        "HONCHO_API_KEY",
+        "LINEAR_API_KEY",
+        "PERPLEXITY_API_KEY",
+        "WARP_API_KEY",
+        "FACTORY_API_KEY",
+        "TRACKTW_API_KEY",
+        "EDGARS_HONCHO_MCP_FACADE_TOKEN",
+        "MCP_PACKAGE_WEBHOOK_TOKEN",
+        "MCP_LINEAR_WEBHOOK_TOKEN",
+        "MCP_DISCORD_WEBHOOK_TOKEN"
+    )
+
+    $publicKeys = @(
+        "DESCOPE_PROJECT_ID",
+        "DESCOPE_MCP_WELL_KNOWN_URL"
+    ) + @($defaults.Keys)
+
+    $keys = @($publicKeys)
+    if ($IncludeSecrets) {
+        $keys = $keys + $secretKeys
+    }
+
+    $merged = [ordered]@{}
+    foreach ($key in ($keys | Select-Object -Unique)) {
+        $value = Get-HandcraftScopedEnvValue -Name $key
+        if ([string]::IsNullOrWhiteSpace($value) -and $defaults.Contains($key)) {
+            $value = [string]$defaults[$key]
+        }
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            $merged[$key] = $value
+        }
+    }
+
+    if ($null -eq $ExtraEnv) { $ExtraEnv = @{} }
+    foreach ($key in @($ExtraEnv.Keys | Sort-Object)) {
+        $safeKey = [string]$key
+        if ($safeKey -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { continue }
+        # Never persist secret-looking wrap values either; ExtraEnv is usually MCP_WRAP_*.
+        $merged[$safeKey] = ([string]$ExtraEnv[$key]) -replace "[\r\n]", ""
+    }
+
+    return $merged
+}
+
+function Assert-HandcraftMcpTokenPresent {
+    $token = Get-HandcraftScopedEnvValue -Name "MCP_API_TOKEN"
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        throw "MCP_API_TOKEN is missing (Machine or User scope). Native startup no longer uses op run / 1Password Connect."
+    }
+    return $token
 }
 
 function Start-HandcraftHttpServer {
@@ -211,53 +305,54 @@ function Start-HandcraftHttpServer {
         Remove-Item -LiteralPath $Config.HttpPidFile -Force -ErrorAction SilentlyContinue
     }
 
-    if (-not (Test-CommandAvailable -Name "op")) {
-        throw "op command not found in PATH."
-    }
-
     if (-not (Test-Path -LiteralPath $Config.ServerPath)) {
         throw "server_http.py not found: $($Config.ServerPath)"
-    }
-
-    $envFile = Join-Path $Config.RepoRoot ".env.op"
-    if (-not (Test-Path -LiteralPath $envFile)) {
-        throw ".env.op not found: $envFile"
     }
 
     New-Item -ItemType Directory -Force -Path $Config.RepoLogDir | Out-Null
     New-Item -ItemType Directory -Force -Path $Config.RuntimeRoot | Out-Null
 
     $python = Get-PythonLaunchSpec -ServerPath $Config.ServerPath
-    $op = Get-Command op -ErrorAction Stop
+    Assert-HandcraftMcpTokenPresent | Out-Null
 
-    # WinPS 5.1 Start-Process has no -Environment; use a small .cmd launcher.
-    $launcherPath = Join-Path $Config.RuntimeRoot "handcraft-op-launch.cmd"
+    # Load public + secret env into THIS process so the child inherits them.
+    # Secrets must never be written into the on-disk launcher .cmd.
+    $processEnv = Get-HandcraftNativeLaunchEnv -ExtraEnv $ExtraEnv -IncludeSecrets
+    foreach ($key in @($processEnv.Keys)) {
+        Set-Item -Path "Env:$key" -Value ([string]$processEnv[$key])
+    }
+
+    $publicEnv = Get-HandcraftNativeLaunchEnv -ExtraEnv $ExtraEnv
+    $launcherPath = Join-Path $Config.RuntimeRoot "handcraft-native-launch.cmd"
+    $legacyLauncherPath = Join-Path $Config.RuntimeRoot "handcraft-op-launch.cmd"
     $quoteArg = {
         param([string]$Value)
         if ($null -eq $Value) { return '""' }
         return '"' + ($Value -replace '"', '""') + '"'
     }
-    $opQuoted = & $quoteArg $op.Source
-    $envQuoted = & $quoteArg $envFile
     $pyQuoted = & $quoteArg $python.Executable
     $pyArgsQuoted = (@($python.Arguments) | ForEach-Object { & $quoteArg $_ }) -join " "
     $cmdLines = @(
         "@echo off",
-        "set OP_CONNECT_HOST=http://127.0.0.1:8877",
-        "set OP_SERVICE_ACCOUNT_TOKEN="
+        "rem Native Windows launch: no Docker / 1Password / op run.",
+        "rem Secrets come from User/Machine env inheritance — never written here."
     )
-    if ($null -eq $ExtraEnv) { $ExtraEnv = @{} }
-    foreach ($key in @($ExtraEnv.Keys | Sort-Object)) {
+    foreach ($key in @($publicEnv.Keys | Sort-Object)) {
         $safeKey = [string]$key
         if ($safeKey -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { continue }
-        $safeVal = ([string]$ExtraEnv[$key]) -replace "[\r\n]", ""
+        if ($safeKey -match '(TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)') { continue }
+        $safeVal = ([string]$publicEnv[$key]) -replace "[\r\n]", ""
         $cmdLines += "set $safeKey=$safeVal"
     }
-    $cmdLines += "$opQuoted run --env-file $envQuoted -- $pyQuoted $pyArgsQuoted"
-    Set-Content -LiteralPath $launcherPath -Value ($cmdLines -join "`r`n") -Encoding ASCII
+    $cmdLines += "$pyQuoted $pyArgsQuoted"
+    $launcherText = $cmdLines -join "`r`n"
+    Set-Content -LiteralPath $launcherPath -Value $launcherText -Encoding ASCII
+    Set-Content -LiteralPath $legacyLauncherPath -Value $launcherText -Encoding ASCII
 
+    # Start python directly so inherited process env (including secrets) is used.
     $process = Start-Process `
-        -FilePath $launcherPath `
+        -FilePath $python.Executable `
+        -ArgumentList $python.Arguments `
         -WorkingDirectory $Config.RepoRoot `
         -WindowStyle Hidden `
         -PassThru `
@@ -281,6 +376,8 @@ function Start-HandcraftHttpServer {
         pid             = $ownerPid
         launcher_pid    = $process.Id
         health_url      = $Config.LocalHealthUrl
+        launcher        = $launcherPath
+        mode            = "native"
     }
 }
 
@@ -449,32 +546,11 @@ function Invoke-HandcraftLocalMcpHandshake {
         [string]$RepoRoot = $Script:HandcraftDefaults.RepoRoot
     )
 
-    if (-not (Test-CommandAvailable -Name "op")) {
-        return [ordered]@{
-            name  = "local_mcp_handshake"
-            scope = "local"
-            ok    = $false
-            error = "op not available for MCP token injection"
-        }
-    }
-
-    $prevHost = $env:OP_CONNECT_HOST
-    $hadSaToken = Test-Path Env:OP_SERVICE_ACCOUNT_TOKEN
-    $prevSaToken = $env:OP_SERVICE_ACCOUNT_TOKEN
     try {
-        $envFile = Join-Path $RepoRoot ".env.op"
-        if (-not (Test-Path -LiteralPath $envFile)) {
-            throw ".env.op not found: $envFile"
-        }
-
-        $env:OP_CONNECT_HOST = "http://127.0.0.1:8877"
-        Remove-Item Env:OP_SERVICE_ACCOUNT_TOKEN -ErrorAction SilentlyContinue
-
-        $token = (& op run --env-file $envFile -- powershell.exe -NoProfile -Command "[Console]::Out.Write(`$env:MCP_API_TOKEN)" 2>$null)
+        $token = Get-HandcraftScopedEnvValue -Name "MCP_API_TOKEN"
         if (-not $token) {
-            throw "MCP_API_TOKEN not available via op run --env-file .env.op"
+            throw "MCP_API_TOKEN not available in Process/User/Machine environment"
         }
-        $token = $token.Trim()
 
         $headers = @{
             "Content-Type"  = "application/json"
@@ -493,6 +569,7 @@ function Invoke-HandcraftLocalMcpHandshake {
             ok         = $true
             uri        = $McpUrl
             tool_count = $toolCount
+            auth       = "machine_or_user_token"
         }
     } catch {
         return [ordered]@{
@@ -502,9 +579,6 @@ function Invoke-HandcraftLocalMcpHandshake {
             uri   = $McpUrl
             error = $_.Exception.Message
         }
-    } finally {
-        if ($null -ne $prevHost) { $env:OP_CONNECT_HOST = $prevHost } else { Remove-Item Env:OP_CONNECT_HOST -ErrorAction SilentlyContinue }
-        if ($hadSaToken) { $env:OP_SERVICE_ACCOUNT_TOKEN = $prevSaToken } else { Remove-Item Env:OP_SERVICE_ACCOUNT_TOKEN -ErrorAction SilentlyContinue }
     }
 }
 
@@ -568,6 +642,9 @@ Export-ModuleMember -Function @(
     'Test-HandcraftLocalHealth',
     'Wait-HandcraftHealth',
     'Get-PythonLaunchSpec',
+    'Get-HandcraftScopedEnvValue',
+    'Get-HandcraftNativeLaunchEnv',
+    'Assert-HandcraftMcpTokenPresent',
     'Start-HandcraftHttpServer',
     'Start-HandcraftCloudflared',
     'Stop-HandcraftByPidFile',

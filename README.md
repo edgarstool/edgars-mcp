@@ -6,7 +6,8 @@ Edgar 的本地 MCP（Model Context Protocol）Server。
 
 **目前內建工具數量：70 個**（另加 `wrap_catalog`；最後校對：2026-09-08）
 
-> Secrets 走 **1Password Connect**（.env.op + OP_CONNECT_HOST=http://127.0.0.1:8877 + op run）。  
+> 啟動改走 **Windows native**：直接跑 `server_http.py`，**不依賴 Docker / 1Password Connect / op run**。
+> 對外授權預設 **Descope JWT**（`MCP_DESCOPE_*` + `MCP_AUTH_SERVER`）；本機仍可用 `MCP_API_TOKEN` bearer。
 > 搞不清 mcp / webhooks / hooks 哪個是哪個？請看 **[網域分工（新手版）](docs/網域分工-新手版.md)**。
 > 想把 Honcho / 其他 MCP 統一放到 Cloudflare Portal？請看 **[Honcho MCP 上 Cloudflare 方案](docs/HONCHO-MCP-CLOUDFLARE-方案.md)**。
 > 要交給瀏覽器代理修 Cloudflare Dashboard credential？請看 **[Honcho MCP Dashboard Handoff](docs/CLOUDFLARE-HONCHO-MCP-DASHBOARD-HANDOFF.md)**。
@@ -20,7 +21,7 @@ mcp-handcraft/
 ├── server_http.py      ← 主 HTTP MCP Server（port 8765，所有工具都在這）
 ├── server.py           ← stdio 入口（供本地 stdio client 使用）
 ├── run.cmd             ← 啟動 stdio server
-├── run_http.cmd        ← 啟動 HTTP server（透過 op run + .env.op 注入 secrets）
+├── run_http.cmd        ← 啟動 HTTP server（native：User/Machine 環境變數 + Descope）
 ├── run_stdio.cmd       ← 啟動 stdio proxy（Cursor / Hermes → 本機 HTTP MCP）
 ├── cloudflare/
 │   └── workers/        ← hooks/status Worker 的 source-of-truth
@@ -44,18 +45,19 @@ mcp-handcraft/
 
 ## 啟動方式
 
-> **⚠️ 啟動前必填:`MCP_API_TOKEN`**
+> **⚠️ 啟動前必填:`MCP_API_TOKEN`（Machine 或 User 環境變數）**
 >
-> HTTP server 啟動時會讀 `MCP_API_TOKEN`,**沒設會直接中止**(fail-fast,不做 fallback)。
-> Token 由 1Password Connect 集中管理，啟動腳本以 `op run --env-file .env.op` 自動注入，不要寫進命令列或 shell history。
+> HTTP server 啟動時會讀 `MCP_API_TOKEN`，**沒設會直接中止**（fail-fast）。
+> 登入自動啟動：工作排程 `edgars-mcp-http` → `scripts\Start_Handcraft_MCP_HTTP.vbs` → `scripts\start-handcraft-http-at-login.ps1`。
+> 授權：對外走 Descope（`MCP_DESCOPE_ENABLED=true`）；本機仍可用 Bearer `MCP_API_TOKEN`。不要把 token 寫進命令列或 shell history。
 >
-> 最小啟動範例(`run_http.cmd` 自動走這條):
+> 最小啟動範例：
 >
 > ```powershell
-> # 確認 Connect :8877 + .env.op 後啟動（自動 op run 注入）
 > .\run_http.cmd
 > # 或：powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-mcp.ps1
-> # → 監聽 http://127.0.0.1:8765/mcp,POST 要求 Authorization: Bearer <token>
+> # 或：登入任務 / VBS 開啟（同上）
+> # → 監聽 http://127.0.0.1:8765/mcp
 > ```
 >
 > 缺 token 時 server 會印 `MCP_API_TOKEN is required and must be a non-empty string. Refusing to start.` 後以失敗狀態退出。
@@ -86,7 +88,7 @@ cd V:\projects\edgars-mcp
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-HandcraftStack.ps1
 ```
 
-這會先確認 `http://127.0.0.1:8765/health`，必要時用 `start-mcp.ps1` / `run_http.cmd`（op run）啟動 `server_http.py`；再確認 `cloudflared` 程序；最後檢查 `https://mcp.edgars.tools/mcp` 是否回 200。
+這會先確認 `http://127.0.0.1:8765/health`，必要時用 `start-mcp.ps1`（native）啟動 `server_http.py`；再確認 `cloudflared` 程序；最後檢查 `https://mcp.edgars.tools/mcp`。
 
 ### 啟動 OpenAI Secure MCP Tunnel（私有 MCP，不開公開入口）
 
@@ -107,9 +109,9 @@ OpenAI Secure MCP Tunnel 會讓本機 `tunnel-client` 對 OpenAI 建立 outbound
 # 目前僅保留概念說明；腳本檔未納入此 repo snapshot
 ```
 
-這個腳本會確認本機 `:8765` 健康，必要時透過 `start-mcp.ps1` / `run_http.cmd`（op run）啟動 `server_http.py`，再用 `sample_mcp_remote_no_auth` profile 執行 `tunnel-client init`、`doctor` 和 `run`。本機 MCP bearer 會透過 `Authorization: env:MCP_API_TOKEN` 這類 env reference 傳給 `tunnel-client`，不寫入 profile。保持該 process 運作時，ChatGPT / Codex / API 端才可透過 tunnel 呼叫本機 MCP。
+這個腳本會確認本機 `:8765` 健康，必要時透過 Windows-native `start-mcp.ps1` / `run_http.cmd` 啟動 `server_http.py`。本機 MCP bearer 只從 User/Machine 環境讀取，不寫入 profile、launcher 或 shell history。
 
-### 只啟動 HTTP server（透過 op run + .env.op 注入 secrets）
+### 只啟動 HTTP server（native，不經 Docker / 1Password）
 
 ```powershell
 cd V:\projects\edgars-mcp
@@ -124,7 +126,7 @@ Invoke-RestMethod http://127.0.0.1:8765/health
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftHealth.ps1
 ```
 
-需要驗證帶 Bearer token 的 `/mcp` 路徑時，不要把 token 寫進命令列。先讓 `MCP_API_TOKEN` 由 op run 或目前 shell 的環境變數提供，再用 wrapper 送 header：
+需要驗證帶 Bearer token 的 `/mcp` 路徑時，不要把 token 寫進命令列。讓 `MCP_API_TOKEN` 由 User/Machine 環境提供，再用 wrapper 送 header：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-HandcraftMcp.ps1
@@ -144,7 +146,7 @@ Stop-Process -Id <OwningProcessId> -Force
 | 項目 | 說明 |
 |------|------|
 | Python | 3.11+ |
-| 1Password Connect | secrets：`.env.op` + `OP_CONNECT_HOST=http://127.0.0.1:8877` + `op run` |
+| Descope | public MCP OAuth / JWT resource-server authorization |
 | Playwright | `powershell -File .\scripts\setup-playwright.ps1`（browser 工具需要；含 pip + Chromium） |
 | Claude Code | `winget install Anthropic.ClaudeCode` + `claude auth login` |
 | Ollama | 本地模型執行環境 |
@@ -154,71 +156,41 @@ Stop-Process -Id <OwningProcessId> -Force
 
 ## 認證
 
-目前建議把認證分成兩層看：
+目前 canonical auth 分兩層：
 
-1. **外網公開入口** `https://mcp.edgars.tools/mcp`
-   - 建議交給 **Cloudflare Access + Managed OAuth**
-   - 外部 MCP client 應走 Cloudflare Access 的 discovery / authorize / token 流程
-   - `server_http.py` 只把 Cloudflare Access 視為上游身分來源，不再以 repo 內建 OAuth 當外網主流程
+1. **Public MCP** `https://mcp.edgars.tools/mcp`
+   - 授權由 **Descope Agentic OAuth / JWT** 負責。
+   - `server_http.py` 以 `descope_resource_server` 模式驗證外部 access token。
+   - `MCP_AUTH_SERVER=https://auth.edgars.tools`；對外 discovery 以 Descope Agentic authorization server 為準。
+   - Cloudflare Tunnel 只負責 hostname → origin transport，不是 MCP 的 OAuth issuer。
 
-2. **本機 / localhost**
+2. **Localhost / local tools**
    - `http://127.0.0.1:8765/mcp`
-   - 仍可使用 `MCP_API_TOKEN`
-   - 供 `stdio_proxy.py`、維運腳本、smoke test、migration 使用
+   - 可使用 `MCP_API_TOKEN` bearer。
+   - token 只從 Process / User / Machine environment 讀取，不寫入 launcher、repo 或命令列。
 
-### 外網 `/mcp`
-
-若已啟用 Cloudflare Access，外網 `POST /mcp` 會由 Access 先做登入與 OAuth，origin 端再驗證 `Cf-Access-Jwt-Assertion`。
-
-外網 client 需要：
-
-```
-Authorization: Bearer <access_token>
-```
-
-### ChatGPT 自訂連接器填寫
+### ChatGPT / remote MCP client
 
 | 欄位 | 值 |
 |------|----|
 | 連接器名稱 | `edgars mcp` |
 | MCP 伺服器 URL | `https://mcp.edgars.tools/mcp` |
 | 驗證 | `OAuth` |
-| OAuth 提供者 | Cloudflare Access Managed OAuth |
-| Client ID / Secret | 以 Cloudflare Access application 或 portal 顯示值為準 |
-| 傳輸 | 可串流 HTTP |
+| OAuth provider | Descope |
+| Transport | Streamable HTTP |
 
-Cloudflare Access 啟用後，OAuth discovery / redirect / token 以 Cloudflare Access 為準。  
-repo 內建這組端點：
+Public OAuth acceptance：
 
-```text
-https://mcp.edgars.tools/.well-known/oauth-authorization-server
-https://mcp.edgars.tools/.well-known/oauth-protected-resource
-```
+- `/.well-known/oauth-protected-resource` / `/mcp` discovery 指向 Descope authorization server。
+- 未授權呼叫 `/mcp` 回 `401` 並帶正確 `WWW-Authenticate`。
+- 完成 OAuth 後能 `initialize -> tools/list -> tools/call`。
+- `/health` 顯示 `oauth_mode=descope_resource_server`、`descope_enabled=true`。
 
-只有在 **localhost / migration 模式** 下才建議直接用。當 `MCP_CLOUDFLARE_ACCESS_ENABLED=true` 且 public hostname 走 Access 時，repo 內建 `/authorize`、`/token`、`/register` 不再是外網主流程。
+### Local agent / stdio
 
-### Codex / Claude / Hermes 的最小正式 auth 方案
+`stdio_proxy.py` 預設轉送 `http://127.0.0.1:8765/mcp`，使用本機 `MCP_API_TOKEN`。遠端 agent 若走公開 URL，應使用 Descope OAuth access token。
 
-建議直接分三條路：
-
-1. **Edgar 本機**
-   - `stdio_proxy.py` -> `http://127.0.0.1:8765/mcp`
-   - 用 `MCP_API_TOKEN`
-2. **遠端 / 雲端 agent**
-   - `stdio_proxy.py` -> `https://mcp.edgars.tools/mcp`
-   - 用 Cloudflare Access service token
-   - headers:
-     - `CF-Access-Client-Id`
-     - `CF-Access-Client-Secret`
-3. **人類互動式 public client**
-   - 走 Cloudflare Access Managed OAuth
-
-詳細版請看：
-
-- [docs/MCP-CLIENT-AUTH-最小正式方案.md](docs/MCP-CLIENT-AUTH-最小正式方案.md)
-- [docs/CHATGPT-OAUTH-INCIDENT-2026-07-06.md](docs/CHATGPT-OAUTH-INCIDENT-2026-07-06.md)
-- [config/mcp.local.example.json](config/mcp.local.example.json)
-- [config/mcp.remote.stdio.example.json](config/mcp.remote.stdio.example.json)
+歷史 incident / migration 文件仍保留供追查，但不代表目前 production auth contract。
 
 ---
 
@@ -369,7 +341,7 @@ V:\projects\edgars-mcp\reports
 | `warp_agent_run_status` | 查單一 run 狀態（JSON 詳情） |
 | `warp_agent_run_create` | 用 prompt + `environment_id` 啟動新 run |
 
-需要（`.env.op`）：`WARP_API_KEY`（在 [oz.warp.dev/settings](https://oz.warp.dev/settings) 產生，前綴 `wk-`）。
+需要環境變數：`WARP_API_KEY`（在 [oz.warp.dev/settings](https://oz.warp.dev/settings) 產生，前綴 `wk-`）。
 
 ---
 
@@ -382,7 +354,7 @@ V:\projects\edgars-mcp\reports
 | `cursor_agent_create` | 建立 agent 並送出第一個 prompt（可選 repo URL） |
 | `cursor_agent_run_status` | 查 agent 某次 run 狀態 |
 
-需要（`.env.op`）：`CURSOR_API_KEY`（Cursor Dashboard → API Keys）。
+需要環境變數：`CURSOR_API_KEY`（Cursor Dashboard → API Keys）。
 
 ---
 
@@ -395,7 +367,7 @@ V:\projects\edgars-mcp\reports
 | `factory_computers_list` | 列出 Droid Computers（持久開發環境） |
 | `factory_readiness_reports` | 列出 repo agent readiness 報告 |
 
-需要（`.env.op`）：`FACTORY_API_KEY`（[app.factory.ai/settings/api-keys](https://app.factory.ai/settings/api-keys)）。
+需要環境變數：`FACTORY_API_KEY`（[app.factory.ai/settings/api-keys](https://app.factory.ai/settings/api-keys)）。
 
 ---
 
@@ -463,44 +435,41 @@ Templates/         ← 筆記模板
 
 ```powershell
 cd V:\projects\edgars-mcp
-op run --env-file .env.op -- python -m unittest test_server_http.py -v
+python -m unittest test_server_http.py -v
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftSecureStartup.ps1
 ```
 
 ---
 
-## 環境變數（由 1Password Connect / `.env.op` 管理）
+## 環境變數（Windows User / Machine scope）
 
 | 變數 | 說明 |
 |------|------|
-| `MCP_API_TOKEN` | localhost / smoke test / stdio proxy 的 bearer token |
-| `MCP_CLOUDFLARE_ACCESS_ENABLED` | `true` 時 public `/mcp` 走 Cloudflare Access JWT 驗證 |
-| `MCP_CLOUDFLARE_ACCESS_TEAM_DOMAIN` | 例如 `team-name.cloudflareaccess.com` |
-| `MCP_CLOUDFLARE_ACCESS_AUD` | Cloudflare Access application 的 AUD |
-| `MCP_CLOUDFLARE_ACCESS_JWKS_URL` | 可選；預設 `https://<team-domain>/cdn-cgi/access/certs` |
-| `MCP_CLOUDFLARE_ACCESS_DISABLE_BUILTIN_OAUTH` | 預設 `true`；public hostname 停用 repo 內建 OAuth 端點 |
-| `MCP_CLOUDFLARE_ACCESS_ALLOW_PUBLIC_TOKEN_FALLBACK` | 過渡期才用；允許 public `/mcp` 回退到舊 bearer 模式 |
-| `MCP_OAUTH_CLIENT_ID` | repo 內建 OAuth 的 localhost / migration client id（預設 `handcraft-mcp`） |
-| `MCP_OAUTH_CLIENT_SECRET` | repo 內建 OAuth 的 localhost / migration client secret |
-| `MCP_OAUTH_AUTH_CODE_TTL_SECONDS` | repo 內建 OAuth 授權碼有效秒數（預設 600） |
-| `MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS` | repo 內建 OAuth access token 有效秒數（預設 7776000） |
-| `PERPLEXITY_API_KEY` | web_search 用 |
-| `OPENAI_API_KEY` | 備用 |
-| `LINEAR_API_KEY` | Linear issue 管理 |
-| `TRACKTW_API_KEY` | TrackTW 物流查詢 |
-| `WARP_API_KEY` | Warp Oz 雲端 agent API |
-| `CURSOR_API_KEY` | Cursor Cloud Agents API |
-| `FACTORY_API_KEY` | Factory.ai / Droid API |
-| `MCP_AGENT_TIMEOUT_SECONDS` | Agent 等待上限（預設 300 秒） |
-| `MCP_BASE_URL` | 公開 URL（預設 https://mcp.edgars.tools） |
-| `MCP_WEBHOOK_BASE_URL` | webhook 對外 URL；若要分流到 `hooks.*`，在這裡設定 |
-| `MCP_PACKAGE_WEBHOOK_TOKEN` | package webhook 共用 secret（可用 `Authorization: Bearer` 或 `X-Handcraft-Webhook-Token`） |
-| `MCP_LINEAR_WEBHOOK_TOKEN` | Linear webhook 共用 secret |
-| `MCP_DISCORD_WEBHOOK_TOKEN` | Discord webhook 共用 secret |
-| `MCP_PORT` | 本機 HTTP port（預設 8765；測試可覆蓋） |
-| `MCP_WRAP_ALL` | `1` 時開啟全部包裝來源的完整工具面（預設關） |
-| `MCP_WRAP_PLAYWRIGHT` / `MCP_WRAP_WINDOWS` / `MCP_WRAP_DESKTOP_COMMANDER` / `MCP_WRAP_DESCOPE` / `MCP_WRAP_CLOUDFLARED` / `MCP_WRAP_OP_CONNECT` / `MCP_WRAP_OPENMONTAGE` / `MCP_WRAP_HERMES` / `MCP_WRAP_OPENCLAW` | 單開某一個完整工具面 |
-| `MCP_WRAP_ALLOW_REMOTE` | `1` 時允許遠端客戶端呼叫桌面類包裝工具（預設本機） |
+| `MCP_API_TOKEN` | localhost / local tools / stdio proxy bearer；native startup 仍要求非空 |
+| `MCP_DESCOPE_ENABLED` | public MCP 使用 Descope resource-server auth；目前預設 `true` |
+| `MCP_DESCOPE_PROJECT_ID` | Descope project id |
+| `MCP_DESCOPE_RESOURCE_SERVER_ID` | Descope Agentic resource server id |
+| `MCP_DESCOPE_AUDIENCE` | 預設 `https://mcp.edgars.tools/mcp` |
+| `MCP_AUTH_SERVER` | canonical auth vanity URL：`https://auth.edgars.tools` |
+| `MCP_BASE_URL` | public base URL：`https://mcp.edgars.tools` |
+| `MCP_BIND_HOST` | Windows origin bind host；目前 8765 由 cloudflared 轉發 |
+| `PERPLEXITY_API_KEY` | web_search |
+| `OPENAI_API_KEY` | OpenAI tools |
+| `LINEAR_API_KEY` | Linear issue management |
+| `TRACKTW_API_KEY` | TrackTW |
+| `WARP_API_KEY` | Warp Oz |
+| `CURSOR_API_KEY` | Cursor Cloud Agents |
+| `FACTORY_API_KEY` | Factory.ai / Droid |
+| `HONCHO_API_KEY` | Honcho |
+| `EDGARS_HONCHO_MCP_FACADE_TOKEN` | Honcho MCP facade |
+| `MCP_AGENT_TIMEOUT_SECONDS` | Agent timeout |
+| `MCP_PORT` | local HTTP port；預設 8765 |
+| `MCP_WRAP_ALL` | wrapper 總開關 |
+| `MCP_WRAP_PLAYWRIGHT` / `MCP_WRAP_WINDOWS` / `MCP_WRAP_DESKTOP_COMMANDER` / `MCP_WRAP_DESCOPE` / `MCP_WRAP_CLOUDFLARED` / `MCP_WRAP_OPENMONTAGE` / `MCP_WRAP_HERMES` / `MCP_WRAP_OPENCLAW` | Windows-native wrapper switches |
+| `MCP_WRAP_OP_CONNECT` | legacy 1Password Connect wrapper；canonical startup 固定為 `0` |
+| `MCP_WRAP_ALLOW_REMOTE` | 是否允許遠端 client 呼叫桌面類 wrapper |
+
+啟動路徑不使用 Docker、1Password Connect、`op run` 或 Doppler。Secrets 不寫入 launcher；由 Windows Process/User/Machine environment 繼承。
 
 ---
 
@@ -510,13 +479,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-HandcraftSecu
 https://mcp.edgars.tools/mcp
 ```
 
-透過 Cloudflare Tunnel 對外。建議搭配 **Cloudflare Access Managed OAuth**，不要再把 repo 內建 OAuth 當外網主流程。
+透過 Cloudflare Tunnel 對外；**Tunnel 只做 transport，MCP authorization 由 Descope 負責**。
 
-注意：
+Acceptance：
 
-- public `/mcp` 在 Access 開啟後，探測可能會看到 **401 / 302 / Cloudflare Access login**，這代表 edge 可達，但**不等於 ChatGPT OAuth 已可用**。
-- 若目標是 ChatGPT Connector / OAuth 全綠，還必須另外確認 `/.well-known/oauth-protected-resource` 可匿名讀取並回 `200`。
-- 若要強制保護 direct URL，請直接在 `mcp.edgars.tools` 掛 Access，不要只靠 portal 隱藏。
+- public `/health` 與本機 origin 必須一致，並顯示 `oauth_mode=descope_resource_server`、`descope_enabled=true`。
+- `/.well-known/oauth-protected-resource` 必須指向 Descope authorization server。
+- 未授權 `/mcp` 應回 `401`；完成 Descope OAuth 後必須可 `initialize -> tools/list -> tools/call`。
 
 OpenAI Secure MCP Tunnel 是另一條私有路徑：`tunnel-client` 從本機 outbound 連到 OpenAI，OpenAI 產品透過 OpenAI-hosted tunnel endpoint 呼叫本機 MCP。它不需要 `mcp.edgars.tools`，也不需要開 inbound firewall port。
 
@@ -576,7 +545,7 @@ webhook 不會走 Cloudflare Access 的瀏覽器登入流程。若要保留公�
 
 並讓呼叫方用 `Authorization: Bearer <secret>` 或 `X-Handcraft-Webhook-Token` 送進來。本檔不保存 token，也不要把 runtime log、`.screenshots/`、`__pycache__/` 或圖片檔 commit 進 repo。
 
-本 repo 內未保留 `gateway.cmd`；目前 HTTP / gateway 相關啟動路徑是 `run_http.cmd` 與 `scripts\Start-HandcraftStack.ps1`，兩者都走 op run / env 注入，不需要把 token 當參數傳入。手動探測 `/mcp` 時請使用 `scripts\Invoke-HandcraftMcp.ps1`，避免 `Authorization: Bearer ...` 出現在 shell history 或程序命令列。
+本 repo 內未保留 `gateway.cmd`；目前 HTTP 啟動路徑是 `edgars-mcp-http` → `Start_Handcraft_MCP_HTTP.vbs` → `start-handcraft-http-at-login.ps1`，或 `run_http.cmd` / `scripts\Start-HandcraftStack.ps1`。全部走 Windows native，不經 Docker、1Password、`op run` 或 Doppler。手動探測 `/mcp` 時請使用 `scripts\Invoke-HandcraftMcp.ps1`，避免 bearer 出現在 shell history 或程序命令列。
 
 ---
 

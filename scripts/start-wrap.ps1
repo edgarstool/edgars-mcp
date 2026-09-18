@@ -1,13 +1,13 @@
 <#
 .SYNOPSIS
-  啟動 edgars-mcp HTTP，並打開全功能 wrap 層（預設遠端仍關）。
+  啟動 edgars-mcp HTTP，並打開 wrap 層（預設遠端仍關）。
   Start edgars-mcp HTTP with wrap tools enabled (remote wrap stays off).
 
 .DESCRIPTION
-  - 先確認 1Password Connect :8877；必要時 docker compose up -d。
-  - 預設 Force 重啟 HTTP，讓 MCP_WRAP_ALL=1 寫進 launcher。
+  - Windows native 啟動：不依賴 Docker / 1Password Connect / op run。
+  - 授權預設走 Descope（MCP_DESCOPE_* 由 User/Machine 環境或腳本預設值注入）。
+  - 預設 Force 重啟 HTTP，讓 wrap 旗標寫進 native launcher。
   - 預設不碰 cloudflared（正式 tunnel 可能已在跑）。
-  - 不把 token 寫進桌面腳本。
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-wrap.ps1
@@ -18,9 +18,7 @@ param(
     [string]$PublicMcpUrl = "https://mcp.edgars.tools/mcp",
     [int]$Port = 8765,
     [int]$WaitSeconds = 30,
-    [string]$ConnectDir = "V:\projects\1password-connet",
     [switch]$NoForce,
-    [switch]$SkipConnect,
     [switch]$StartCloudflared,
     [string]$ProfileJson = "G:\AI_WORK_512\run\mcp-handcraft\wrap-profile.json",
     [switch]$Help
@@ -38,79 +36,6 @@ Import-Module $modulePath -Force
 
 $config = Get-HandcraftConfig -Port $Port -LocalBaseUrl $LocalBaseUrl -PublicMcpUrl $PublicMcpUrl
 $config | Add-Member -NotePropertyName WaitSeconds -NotePropertyValue $WaitSeconds -Force
-
-function Test-ConnectHealth {
-    try {
-        $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:8877/health" -TimeoutSec 3
-        return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300)
-    } catch {
-        return $false
-    }
-}
-
-function Ensure-OpConnect {
-    param([string]$Dir)
-
-    if (Test-ConnectHealth) {
-        return [pscustomobject]@{ ok = $true; already_running = $true; action = "skip" }
-    }
-
-    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-        throw "docker 不在 PATH。請先開 Docker Desktop 再重跑啟動。"
-    }
-
-    docker info 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        $dd = Join-Path $env:ProgramFiles "Docker\Docker\Docker Desktop.exe"
-        if (Test-Path -LiteralPath $dd) {
-            Write-Host "[start-wrap] Docker engine 未就緒，嘗試啟動 Docker Desktop..."
-            Start-Process -FilePath $dd
-            $deadline = (Get-Date).AddMinutes(4)
-            do {
-                Start-Sleep -Seconds 5
-                docker info 2>$null | Out-Null
-                if ($LASTEXITCODE -eq 0) { break }
-            } while ((Get-Date) -lt $deadline)
-        }
-        docker info 2>$null | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Docker engine 仍未就緒，無法啟動 1Password Connect。"
-        }
-    }
-
-    $compose = $null
-    foreach ($name in @("docker-compose.yaml", "docker-compose.yml")) {
-        $candidate = Join-Path $Dir $name
-        if (Test-Path -LiteralPath $candidate) {
-            $compose = $candidate
-            break
-        }
-    }
-    if (-not $compose) {
-        throw "找不到 Connect compose：$Dir"
-    }
-
-    Write-Host "[start-wrap] Connect 未健康，執行 docker compose up -d"
-    Push-Location $Dir
-    try {
-        docker compose -f (Split-Path -Leaf $compose) up -d
-        if ($LASTEXITCODE -ne 0) {
-            throw "docker compose up -d 失敗（exit $LASTEXITCODE）"
-        }
-    } finally {
-        Pop-Location
-    }
-
-    $readyDeadline = (Get-Date).AddSeconds(40)
-    do {
-        if (Test-ConnectHealth) {
-            return [pscustomobject]@{ ok = $true; already_running = $false; action = "compose_up" }
-        }
-        Start-Sleep -Seconds 2
-    } while ((Get-Date) -lt $readyDeadline)
-
-    throw "Connect compose 已啟動，但 http://127.0.0.1:8877/health 仍未通過。"
-}
 
 function Read-WrapProfileEnv {
     param([string]$Path)
@@ -132,9 +57,18 @@ function Read-WrapProfileEnv {
     foreach ($key in $keys) { $extra[$key] = "0" }
 
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
-        $extra["MCP_WRAP_ALL"] = "1"
+        $extra["MCP_WRAP_ALL"] = "0"
         $extra["MCP_WRAP_ALLOW_REMOTE"] = "0"
-        return @{ env = $extra; source = "default-all"; mode = "full" }
+        $extra["MCP_WRAP_PLAYWRIGHT"] = "1"
+        $extra["MCP_WRAP_WINDOWS"] = "1"
+        $extra["MCP_WRAP_DESKTOP_COMMANDER"] = "1"
+        $extra["MCP_WRAP_DESCOPE"] = "1"
+        $extra["MCP_WRAP_CLOUDFLARED"] = "1"
+        $extra["MCP_WRAP_OP_CONNECT"] = "0"
+        $extra["MCP_WRAP_OPENMONTAGE"] = "1"
+        $extra["MCP_WRAP_HERMES"] = "1"
+        $extra["MCP_WRAP_OPENCLAW"] = "1"
+        return @{ env = $extra; source = "default-native-no-op"; mode = "custom" }
     }
 
     $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -151,6 +85,8 @@ function Read-WrapProfileEnv {
             $extra[$key] = "0"
         }
     }
+    # Hard policy: startup path does not depend on Docker / 1Password Connect.
+    $extra["MCP_WRAP_OP_CONNECT"] = "0"
     $mode = "custom"
     if ($raw.mode) { $mode = [string]$raw.mode }
     return @{ env = $extra; source = $Path; mode = $mode }
@@ -158,6 +94,7 @@ function Read-WrapProfileEnv {
 
 Write-Host "[start-wrap] repo=$($config.RepoRoot)"
 Write-Host "[start-wrap] health=$($config.LocalHealthUrl)"
+Write-Host "[start-wrap] mode=native (no Docker / no 1Password Connect)"
 
 $profileInfo = Read-WrapProfileEnv -Path $ProfileJson
 $extraEnv = @{}
@@ -167,22 +104,12 @@ foreach ($key in $profileInfo.env.Keys) {
 Write-Host "[start-wrap] profile=$($profileInfo.source) mode=$($profileInfo.mode)"
 Write-Host ("[start-wrap] wraps=" + (($extraEnv.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join " "))
 
-$connectResult = $null
-if (-not $SkipConnect) {
-    $connectResult = Ensure-OpConnect -Dir $ConnectDir
-    if ($connectResult.already_running) {
-        Write-Host "[start-wrap] 1Password Connect already healthy (:8877)."
-    } else {
-        Write-Host "[start-wrap] 1Password Connect started."
-    }
-}
-
 $forceRestart = -not $NoForce
 $httpResult = Start-HandcraftHttpServer -Config $config -Force:$forceRestart -ExtraEnv $extraEnv
 if ($httpResult.already_running) {
     Write-Host "[start-wrap] HTTP already healthy (pid=$($httpResult.pid)). wrap 環境可能仍是舊的；要套用 wrap 請不要加 -NoForce。"
 } else {
-    Write-Host "[start-wrap] HTTP started (pid=$($httpResult.pid))."
+    Write-Host "[start-wrap] HTTP started (pid=$($httpResult.pid)) launcher=$($httpResult.launcher)."
 }
 
 $tunnelResult = $null
@@ -200,11 +127,12 @@ if ($StartCloudflared) {
 $result = [ordered]@{
     ok          = $true
     action      = "start-wrap"
+    mode        = "native"
     wraps       = $extraEnv
     profile     = $profileInfo.source
-    mode        = $profileInfo.mode
+    profile_mode = $profileInfo.mode
     force       = $forceRestart
-    connect     = $connectResult
+    connect     = @{ skipped = $true; reason = "no Docker / 1Password Connect on startup path" }
     http        = $httpResult
     cloudflared = $tunnelResult
     pid_file    = $config.HttpPidFile

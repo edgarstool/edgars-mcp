@@ -10,12 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
-$ServerPath = Join-Path $RepoRoot "server_http.py"
-$LogDir = Join-Path $RepoRoot "logs"
-$HttpOutLogPath = Join-Path $LogDir "handcraft-http.out.log"
-$HttpErrLogPath = Join-Path $LogDir "handcraft-http.err.log"
-$CloudflaredOutLogPath = Join-Path $LogDir "cloudflared.out.log"
-$CloudflaredErrLogPath = Join-Path $LogDir "cloudflared.err.log"
+$StartMcp = Join-Path $RepoRoot "scripts\start-mcp.ps1"
 $HealthScript = Join-Path $RepoRoot "scripts\Test-HandcraftHealth.ps1"
 $LocalHealthUrl = "$($LocalBaseUrl.TrimEnd('/'))/health"
 
@@ -28,51 +23,23 @@ function Test-LocalHealth {
     }
 }
 
-function Wait-Until {
-    param(
-        [scriptblock]$Probe,
-        [string]$Name
-    )
-
-    $deadline = (Get-Date).AddSeconds($WaitSeconds)
-    while ((Get-Date) -lt $deadline) {
-        if (& $Probe) {
-            return
-        }
-        Start-Sleep -Seconds 1
-    }
-
-    throw "Timed out waiting for $Name after $WaitSeconds seconds."
-}
-
-New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-
 if (-not (Test-LocalHealth)) {
-    $doppler = Get-Command doppler -ErrorAction Stop
-    $pythonCommand = Get-Command py -ErrorAction SilentlyContinue
-    $pythonArgs = @("-3", $ServerPath)
-    if (-not $pythonCommand) {
-        $pythonCommand = Get-Command python -ErrorAction Stop
-        $pythonArgs = @($ServerPath)
+    if (-not (Test-Path -LiteralPath $StartMcp)) {
+        throw "Missing start script: $StartMcp"
     }
-
     $args = @(
-        "run",
-        "--project", "edgars-mcp",
-        "--config", "prd",
-        "--",
-        $pythonCommand.Source
-    ) + $pythonArgs
-
-    Start-Process `
-        -FilePath $doppler.Source `
-        -ArgumentList $args `
-        -WorkingDirectory $RepoRoot `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $HttpOutLogPath `
-        -RedirectStandardError $HttpErrLogPath
-
-    Wait-Until -Name "local handcraft health at $LocalHealthUrl" -Probe { Test-LocalHealth }
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $StartMcp,
+        "-LocalBaseUrl", $LocalBaseUrl,
+        "-PublicMcpUrl", $PublicMcpUrl,
+        "-WaitSeconds", "$WaitSeconds",
+        "-SkipCloudflared"
+    )
+    & powershell.exe @args
+    if (-not (Test-LocalHealth)) {
+        throw "Timed out waiting for local handcraft health at $LocalHealthUrl"
+    }
 }
 
 if (-not $SkipCloudflared) {
@@ -82,13 +49,15 @@ if (-not $SkipCloudflared) {
         Write-Verbose "Cloudflared Windows service is already running; skipping manual tunnel start."
     } elseif (-not $cloudflaredProcess) {
         $cloudflared = Get-Command cloudflared -ErrorAction Stop
+        $LogDir = Join-Path $RepoRoot "logs"
+        New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
         Start-Process `
             -FilePath $cloudflared.Source `
             -ArgumentList @("tunnel", "run", $TunnelName) `
             -WorkingDirectory $RepoRoot `
             -WindowStyle Hidden `
-            -RedirectStandardOutput $CloudflaredOutLogPath `
-            -RedirectStandardError $CloudflaredErrLogPath
+            -RedirectStandardOutput (Join-Path $LogDir "cloudflared.out.log") `
+            -RedirectStandardError (Join-Path $LogDir "cloudflared.err.log")
     }
 }
 

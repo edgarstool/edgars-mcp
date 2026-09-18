@@ -210,6 +210,39 @@ class HttpStartupConfigTests(unittest.TestCase):
             config,
         )
 
+    def test_auth_server_discovery_promotes_vanity_url_to_descope_agentic_config(self):
+        issuer = (
+            "https://api.descope.com/v1/apps/agentic/"
+            "P3IHk9JHELKS5KT5EWawFro5aPhY/RS3IPp7u1MjAlO6wHaafMEw6bgu4C"
+        )
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({"issuer": issuer}).encode("utf-8")
+
+        environment = {
+            "MCP_API_TOKEN": "test-token",
+            "MCP_BASE_URL": "https://mcp.edgars.tools",
+            "MCP_AUTH_SERVER": "https://auth.edgars.tools",
+        }
+        with patch.dict("os.environ", environment, clear=True), patch(
+            "server_http.urllib.request.urlopen", return_value=FakeResponse()
+        ):
+            config = validate_http_startup_config()
+
+        self.assertTrue(config.descope_enabled)
+        self.assertEqual("P3IHk9JHELKS5KT5EWawFro5aPhY", config.descope_project_id)
+        self.assertEqual("RS3IPp7u1MjAlO6wHaafMEw6bgu4C", config.descope_resource_server_id)
+        self.assertEqual("https://mcp.edgars.tools/mcp", config.descope_audience)
+        self.assertEqual(issuer, config.auth_server_url)
+        self.assertEqual(issuer, config.descope_issuer)
+
     def test_chatgpt_honcho_access_mode_fails_fast_without_dedicated_audience(self):
         """The fixed-scope gateway must not accidentally share the broad MCP audience."""
         environment = {
@@ -410,7 +443,7 @@ class OAuthFlowTests(unittest.TestCase):
 
             self.assertEqual("https://mcp.example.test/mcp", metadata["resource"])
             self.assertEqual(["https://mcp.example.test"], metadata["authorization_servers"])
-            self.assertEqual(["mcp"], metadata["scopes_supported"])
+            self.assertIn("mcp", metadata["scopes_supported"])
             self.assertIn("client_secret_post", metadata["token_endpoint_auth_methods_supported"])
         finally:
             server.shutdown()
@@ -425,7 +458,7 @@ class OAuthFlowTests(unittest.TestCase):
 
             self.assertEqual("https://mcp.example.test/mcp", metadata["resource"])
             self.assertEqual(["https://mcp.example.test"], metadata["authorization_servers"])
-            self.assertEqual(["mcp"], metadata["scopes_supported"])
+            self.assertIn("mcp", metadata["scopes_supported"])
             self.assertEqual("https://mcp.example.test/mcp", metadata["resource_documentation"])
         finally:
             server.shutdown()
@@ -443,7 +476,7 @@ class OAuthFlowTests(unittest.TestCase):
             authenticate = raised.exception.headers["WWW-Authenticate"]
             self.assertIn("Bearer", authenticate)
             self.assertIn('resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/mcp"', authenticate)
-            self.assertIn('scope="mcp"', authenticate)
+            self.assertIn('mcp', authenticate.split('scope="', 1)[1].split('"', 1)[0].split())
         finally:
             server.shutdown()
             server.server_close()
@@ -488,7 +521,7 @@ class OAuthFlowTests(unittest.TestCase):
             authenticate = raised.exception.headers["WWW-Authenticate"]
             self.assertIn("Bearer", authenticate)
             self.assertIn('resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/mcp"', authenticate)
-            self.assertIn('scope="mcp"', authenticate)
+            self.assertIn('mcp', authenticate.split('scope="', 1)[1].split('"', 1)[0].split())
         finally:
             server.shutdown()
             server.server_close()

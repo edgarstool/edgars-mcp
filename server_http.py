@@ -5389,6 +5389,53 @@ def validate_optional_base_url(raw_url: str | None, default_url: str) -> str:
     return base_url or default_url
 
 
+def parse_descope_agentic_issuer(raw_url: str | None) -> tuple[str, str]:
+    issuer = (raw_url or "").strip().rstrip("/")
+    marker = "/v1/apps/agentic/"
+    if marker not in issuer:
+        return "", ""
+    parsed = urllib.parse.urlparse(issuer)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return "", ""
+    suffix = issuer.split(marker, 1)[1]
+    parts = [part for part in suffix.split("/") if part]
+    if len(parts) < 2:
+        return "", ""
+    return parts[0], parts[1]
+
+
+def resolve_authorization_server(raw_url: str | None) -> tuple[str, str, str]:
+    """Resolve a vanity AS URL to its canonical Descope Agentic issuer."""
+    auth_server = (raw_url or "").strip().rstrip("/")
+    if not auth_server:
+        return "", "", ""
+
+    project_id, resource_server_id = parse_descope_agentic_issuer(auth_server)
+    if project_id and resource_server_id:
+        return auth_server, project_id, resource_server_id
+
+    discovery_url = f"{auth_server}/.well-known/oauth-authorization-server"
+    try:
+        req = urllib.request.Request(
+            discovery_url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "edgars-mcp/2.0 (+https://mcp.edgars.tools)",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        issuer = str(payload.get("issuer") or "").strip().rstrip("/")
+    except Exception as exc:
+        log(f"Authorization server discovery failed for {auth_server}: {exc}")
+        return auth_server, "", ""
+
+    project_id, resource_server_id = parse_descope_agentic_issuer(issuer)
+    if project_id and resource_server_id:
+        return issuer, project_id, resource_server_id
+    return auth_server, "", ""
+
+
 def validate_cloudflare_access_team_domain(raw_domain: str | None) -> str:
     candidate = (raw_domain or "").strip()
     if not candidate:
@@ -5419,6 +5466,44 @@ def validate_http_bind_host(raw_host: str | None) -> str:
 
 def validate_http_startup_config() -> HandcraftServerConfig:
     base_url = validate_base_url(load_base_url())
+
+    descope_enabled = load_bool_env("MCP_DESCOPE_ENABLED", False)
+    descope_project_id = os.getenv("MCP_DESCOPE_PROJECT_ID", "").strip()
+    descope_audience = os.getenv("MCP_DESCOPE_AUDIENCE", "").strip()
+    descope_resource_server_id = os.getenv("MCP_DESCOPE_RESOURCE_SERVER_ID", "").strip()
+    auth_server_url = os.getenv("MCP_AUTH_SERVER", "").strip()
+
+    resolved_auth_server, discovered_project_id, discovered_resource_server_id = (
+        resolve_authorization_server(auth_server_url)
+    )
+    if discovered_project_id and discovered_resource_server_id:
+        if descope_project_id and descope_project_id != discovered_project_id:
+            raise RuntimeError(
+                "MCP_DESCOPE_PROJECT_ID conflicts with MCP_AUTH_SERVER discovery."
+            )
+        if (
+            descope_resource_server_id
+            and descope_resource_server_id != discovered_resource_server_id
+        ):
+            raise RuntimeError(
+                "MCP_DESCOPE_RESOURCE_SERVER_ID conflicts with MCP_AUTH_SERVER discovery."
+            )
+        descope_enabled = True
+        descope_project_id = discovered_project_id
+        descope_resource_server_id = discovered_resource_server_id
+        descope_audience = descope_audience or f"{base_url.rstrip('/')}{MCP_PATH}"
+        auth_server_url = resolved_auth_server
+
+    if descope_enabled:
+        if DescopeClient is None:
+            raise RuntimeError(
+                "descope SDK is required when Descope MCP authorization is enabled."
+            )
+        if not descope_project_id:
+            raise RuntimeError(
+                "MCP_DESCOPE_PROJECT_ID is required when Descope MCP authorization is enabled."
+            )
+
     cloudflare_access_enabled = load_bool_env("MCP_CLOUDFLARE_ACCESS_ENABLED", False)
     cloudflare_access_team_domain = validate_cloudflare_access_team_domain(
         load_cloudflare_access_team_domain()
@@ -5471,11 +5556,11 @@ def validate_http_startup_config() -> HandcraftServerConfig:
             "MCP_CLOUDFLARE_ACCESS_ALLOW_PUBLIC_TOKEN_FALLBACK",
             False,
         ),
-        descope_enabled=load_bool_env("MCP_DESCOPE_ENABLED", False),
-        descope_project_id=os.getenv("MCP_DESCOPE_PROJECT_ID", "").strip(),
-        descope_audience=os.getenv("MCP_DESCOPE_AUDIENCE", "").strip(),
-        descope_resource_server_id=os.getenv("MCP_DESCOPE_RESOURCE_SERVER_ID", "").strip(),
-        auth_server_url=os.getenv("MCP_AUTH_SERVER", "").strip(),
+        descope_enabled=descope_enabled,
+        descope_project_id=descope_project_id,
+        descope_audience=descope_audience,
+        descope_resource_server_id=descope_resource_server_id,
+        auth_server_url=auth_server_url,
         honcho_mcp_facade_token=load_honcho_mcp_facade_token(),
         honcho_api_key=load_honcho_api_key(),
         honcho_user_name=os.getenv("HONCHO_USER_NAME", "Edgar").strip() or "Edgar",

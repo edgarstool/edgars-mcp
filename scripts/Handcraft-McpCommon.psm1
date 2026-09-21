@@ -17,6 +17,19 @@ $Script:HandcraftDefaults = [ordered]@{
     WaitSeconds       = 30
 }
 
+function Import-HandcraftWindowsEnvironment {
+    foreach ($target in @('Machine', 'User')) {
+        $vars = [Environment]::GetEnvironmentVariables($target)
+        foreach ($name in $vars.Keys) {
+            if ([string]$name -eq 'Path') { continue }
+            [Environment]::SetEnvironmentVariable([string]$name, [string]$vars[$name], 'Process')
+        }
+    }
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $env:Path = "$machinePath;$userPath"
+}
+
 function Get-HandcraftConfig {
     [CmdletBinding()]
     param(
@@ -215,13 +228,34 @@ function Start-HandcraftHttpServer {
         throw "server_http.py not found: $($Config.ServerPath)"
     }
 
+    Import-HandcraftWindowsEnvironment
+
+    # Ensure Descope auth defaults if User/Machine unset (public ids only).
+    $descopeDefaults = @{
+        MCP_DESCOPE_ENABLED            = "true"
+        MCP_DESCOPE_PROJECT_ID         = "P3IHk9JHELKS5KT5EWawFro5aPhY"
+        MCP_DESCOPE_RESOURCE_SERVER_ID = "RS3IPp7u1MjAlO6wHaafMEw6bgu4C"
+        MCP_DESCOPE_AUDIENCE           = "https://mcp.edgars.tools/mcp"
+        MCP_AUTH_SERVER                = "https://auth.edgars.tools"
+        MCP_BASE_URL                   = "https://mcp.edgars.tools"
+        MCP_BIND_HOST                  = "0.0.0.0"
+    }
+    foreach ($key in $descopeDefaults.Keys) {
+        if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($key, 'Process'))) {
+            Set-Item -Path "Env:$key" -Value $descopeDefaults[$key]
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($env:MCP_API_TOKEN)) {
+        throw "MCP_API_TOKEN is missing after loading Machine/User environment."
+    }
+
     New-Item -ItemType Directory -Force -Path $Config.RepoLogDir | Out-Null
     New-Item -ItemType Directory -Force -Path $Config.RuntimeRoot | Out-Null
 
     $python = Get-PythonLaunchSpec -ServerPath $Config.ServerPath
 
     # Native Windows launcher: inherit Machine/User environment and only write
-    # non-secret canonical wrapper flags. No retired secret-runner/bootstrap dependency.
+    # non-secret wrap flags into the .cmd. No Docker / 1Password / op run.
     $launcherPath = Join-Path $Config.RuntimeRoot "handcraft-native-launch.cmd"
     $quoteArg = {
         param([string]$Value)
@@ -230,19 +264,35 @@ function Start-HandcraftHttpServer {
     }
     $pyQuoted = & $quoteArg $python.Executable
     $pyArgsQuoted = (@($python.Arguments) | ForEach-Object { & $quoteArg $_ }) -join " "
-    $cmdLines = @("@echo off", "setlocal")
+    $cmdLines = @(
+        "@echo off",
+        "rem Native launch: secrets inherit from parent process env; wrap flags below."
+    )
     if ($null -eq $ExtraEnv) { $ExtraEnv = @{} }
+    # Never persist OP Connect wrap on this path.
+    $ExtraEnv["MCP_WRAP_OP_CONNECT"] = "0"
     foreach ($key in @($ExtraEnv.Keys | Sort-Object)) {
         $safeKey = [string]$key
         if ($safeKey -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { continue }
         $safeVal = ([string]$ExtraEnv[$key]) -replace "[\r\n]", ""
-        $cmdLines += "set `"$safeKey=$safeVal`""
+        Set-Item -Path "Env:$safeKey" -Value $safeVal
+        if ($safeKey -match '(TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)') { continue }
+        $cmdLines += "set $safeKey=$safeVal"
+    }
+    # Also stamp non-secret Descope flags into launcher for visibility.
+    foreach ($key in @($descopeDefaults.Keys | Sort-Object)) {
+        $val = [Environment]::GetEnvironmentVariable($key, 'Process')
+        if (-not [string]::IsNullOrWhiteSpace($val)) {
+            $cmdLines += ("set {0}={1}" -f $key, ($val -replace "[\r\n]", ""))
+        }
     }
     $cmdLines += "$pyQuoted $pyArgsQuoted"
     Set-Content -LiteralPath $launcherPath -Value ($cmdLines -join "`r`n") -Encoding ASCII
 
+    # Start python directly so Machine/User secrets in this process are inherited.
     $process = Start-Process `
-        -FilePath $launcherPath `
+        -FilePath $python.Executable `
+        -ArgumentList $python.Arguments `
         -WorkingDirectory $Config.RepoRoot `
         -WindowStyle Hidden `
         -PassThru `
@@ -266,6 +316,8 @@ function Start-HandcraftHttpServer {
         pid             = $ownerPid
         launcher_pid    = $process.Id
         health_url      = $Config.LocalHealthUrl
+        launcher        = $launcherPath
+        mode            = "native"
     }
 }
 
@@ -485,6 +537,7 @@ function Rotate-HandcraftLogFile {
 }
 
 Export-ModuleMember -Function @(
+    'Import-HandcraftWindowsEnvironment',
     'Get-HandcraftConfig',
     'Write-HandcraftPidFile',
     'Read-HandcraftPidFile',

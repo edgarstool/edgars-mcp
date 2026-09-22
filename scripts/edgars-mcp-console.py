@@ -1,4 +1,4 @@
-"""edgars-mcp desktop control app: power, status, logs, wrap modes/skills."""
+"""edgars-mcp 人類控制台：開關機、狀態、log、wrap 技能（Windows native + Descope）。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import os
 import queue
 import re
 import subprocess
-import sys
 import threading
 import time
 import tkinter as tk
@@ -26,15 +25,20 @@ except Exception:
 REPO = Path(r"V:\projects\edgars-mcp")
 RUNTIME = Path(r"G:\AI_WORK_512\run\mcp-handcraft")
 PROFILE_PATH = RUNTIME / "wrap-profile.json"
-LAUNCHER_PATH = RUNTIME / "handcraft-op-launch.cmd"
+LAUNCHER_PATHS = (
+    RUNTIME / "handcraft-native-launch.cmd",
+    RUNTIME / "handcraft-op-launch.cmd",
+)
 PID_FILE = RUNTIME / "handcraft-http.pid"
 LOG_DIR = REPO / "logs"
 OUT_LOG = LOG_DIR / "handcraft-http.out.log"
 ERR_LOG = LOG_DIR / "handcraft-http.err.log"
 START_PS1 = REPO / "scripts" / "start-wrap.ps1"
 STOP_PS1 = REPO / "scripts" / "stop-wrap.ps1"
+START_MCP_PS1 = REPO / "scripts" / "start-mcp.ps1"
 HEALTH_URL = "http://127.0.0.1:8765/health"
-CONNECT_URL = "http://127.0.0.1:8877/health"
+PUBLIC_HEALTH_URL = "https://mcp.edgars.tools/health"
+LOGIN_TASK = "edgars-mcp-http"
 
 FLAG_KEYS = [
     "MCP_WRAP_ALL",
@@ -53,7 +57,7 @@ SKILLS = [
     ("MCP_WRAP_PLAYWRIGHT", "Playwright 瀏覽器", "stdio", "會開瀏覽器子程序"),
     ("MCP_WRAP_WINDOWS", "Windows 桌面控制", "stdio", "滑鼠鍵盤與截圖"),
     ("MCP_WRAP_DESKTOP_COMMANDER", "Desktop Commander", "stdio", "本機檔案與終端"),
-    ("MCP_WRAP_DESCOPE", "Descope 驗證", "native", "SDK / 管理 MCP"),
+    ("MCP_WRAP_DESCOPE", "Descope 工具面", "native", "SDK / 管理 MCP（授權另看狀態）"),
     ("MCP_WRAP_CLOUDFLARED", "cloudflared CLI", "native", "不管正式 tunnel 開關"),
     ("MCP_WRAP_OPENMONTAGE", "OpenMontage", "native", "pipeline 與 BaseTools"),
     ("MCP_WRAP_HERMES", "Hermes", "native", "hermes CLI"),
@@ -66,11 +70,6 @@ NATIVE_FLAGS = {
     "MCP_WRAP_OPENMONTAGE",
     "MCP_WRAP_HERMES",
     "MCP_WRAP_OPENCLAW",
-}
-STDIO_FLAGS = {
-    "MCP_WRAP_PLAYWRIGHT",
-    "MCP_WRAP_WINDOWS",
-    "MCP_WRAP_DESKTOP_COMMANDER",
 }
 
 BG = "#16181d"
@@ -95,7 +94,7 @@ def default_flags(mode: str = "local") -> dict[str, str]:
         return flags
     if mode == "full":
         flags["MCP_WRAP_ALL"] = "1"
-        for key, _, group, _ in SKILLS:
+        for key, _, _, _ in SKILLS:
             flags[key] = "1"
         return flags
     if mode == "local":
@@ -115,6 +114,8 @@ def load_profile() -> tuple[str, dict[str, str]]:
             for key in FLAG_KEYS:
                 if key in raw:
                     flags[key] = "1" if _on(raw[key]) else "0"
+            # Hard policy: no 1Password Connect on startup path.
+            flags.pop("MCP_WRAP_OP_CONNECT", None)
             return mode, flags
         except Exception:
             pass
@@ -126,19 +127,22 @@ def load_profile() -> tuple[str, dict[str, str]]:
 
 def save_profile(mode: str, flags: dict[str, str]) -> None:
     RUNTIME.mkdir(parents=True, exist_ok=True)
+    clean = {key: flags.get(key, "0") for key in FLAG_KEYS}
     payload = {
         "mode": mode,
-        "flags": {key: flags.get(key, "0") for key in FLAG_KEYS},
+        "flags": clean,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "notes": "native startup; no Docker / 1Password Connect",
     }
     PROFILE_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def parse_launcher_flags() -> dict[str, str]:
     flags = {key: "0" for key in FLAG_KEYS}
-    if not LAUNCHER_PATH.is_file():
+    path = next((p for p in LAUNCHER_PATHS if p.is_file()), None)
+    if path is None:
         return {}
-    text = LAUNCHER_PATH.read_text(encoding="utf-8", errors="replace")
+    text = path.read_text(encoding="utf-8", errors="replace")
     found = False
     for line in text.splitlines():
         line = line.strip()
@@ -160,8 +164,7 @@ def infer_mode(flags: dict[str, str]) -> str:
         return "full"
     if all(not _on(flags.get(key)) for key in FLAG_KEYS):
         return "core"
-    local = default_flags("local")
-    if flags == local:
+    if flags == default_flags("local"):
         return "local"
     return "custom"
 
@@ -204,10 +207,11 @@ def grouped_builtin_tools() -> list[tuple[str, list[str]]]:
     return groups
 
 
-def http_ok(url: str, timeout: float = 1.2) -> tuple[bool, str]:
+def fetch_json(url: str, timeout: float = 2.0) -> tuple[bool, dict | str]:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
-            return 200 <= int(resp.status) < 300, str(resp.status)
+            raw = resp.read().decode("utf-8", errors="replace")
+            return True, json.loads(raw)
     except urllib.error.HTTPError as exc:
         return False, str(exc.code)
     except Exception as exc:
@@ -235,10 +239,31 @@ def cloudflared_count() -> int:
             timeout=4,
             creationflags=CREATE_NO_WINDOW,
         )
-        lines = [line for line in result.stdout.splitlines() if "cloudflared.exe" in line.lower()]
-        return len(lines)
+        return len([line for line in result.stdout.splitlines() if "cloudflared.exe" in line.lower()])
     except Exception:
         return 0
+
+
+def login_task_state() -> str:
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-Command",
+                f"(Get-ScheduledTask -TaskName '{LOGIN_TASK}' -ErrorAction Stop).State",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        text = (result.stdout or "").strip()
+        return text or f"查詢失敗 exit={result.returncode}"
+    except Exception as exc:
+        return str(exc)
 
 
 def tail_file(path: Path, max_bytes: int = 180_000) -> str:
@@ -326,8 +351,7 @@ class App(tk.Tk):
         style.map("TButton", background=[("active", "#4b5362")])
 
     def _card(self, parent: tk.Widget) -> ttk.Frame:
-        frame = ttk.Frame(parent, style="Card.TFrame", padding=14)
-        return frame
+        return ttk.Frame(parent, style="Card.TFrame", padding=14)
 
     def _build(self) -> None:
         outer = ttk.Frame(self, padding=16)
@@ -336,6 +360,13 @@ class App(tk.Tk):
         head = ttk.Frame(outer)
         head.pack(fill="x")
         ttk.Label(head, text="edgars-mcp 控制台", style="Head.TLabel").pack(side="left")
+        sub = ttk.Label(
+            head,
+            text="Windows native · Descope 授權 · 不用 Docker / 1Password",
+            style="Muted.TLabel",
+        )
+        sub.configure(background=BG)
+        sub.pack(side="left", padx=12)
         ttk.Button(head, text="重新整理", command=self.refresh_all).pack(side="right", padx=4)
         ttk.Button(head, text="開 log 資料夾", command=self.open_logs).pack(side="right", padx=4)
 
@@ -361,17 +392,20 @@ class App(tk.Tk):
         row.pack(fill="x", pady=(10, 0))
         ttk.Button(row, text="啟動", style="Power.TButton", command=lambda: self.run_action("start")).pack(side="left")
         ttk.Button(row, text="關閉", command=lambda: self.run_action("stop")).pack(side="left", padx=8)
+        ttk.Button(row, text="只開核心", command=lambda: self.run_action("start_core")).pack(side="left")
         ttk.Button(power, text="套用技能並重啟", command=lambda: self.run_action("apply")).pack(fill="x", pady=(10, 0))
 
         mode_card = self._card(left)
         mode_card.pack(fill="x", pady=(12, 0))
         ttk.Label(mode_card, text="模式", font=("Microsoft JhengHei UI", 12, "bold")).pack(anchor="w")
-        ttk.Label(mode_card, text="模式會改技能開關；要生效請按「套用技能並重啟」。", style="Muted.TLabel").pack(anchor="w", pady=(4, 8))
+        ttk.Label(mode_card, text="模式會改技能開關；要生效請按「套用技能並重啟」。", style="Muted.TLabel").pack(
+            anchor="w", pady=(4, 8)
+        )
         for value, label in (
-            ("core", "核心 — 原本技能常開，新包 wrap 全關"),
-            ("local", "本機常用 — 原本技能 + Hermes / OpenClaw / Connect"),
-            ("full", "全開 — 原本技能 + 全部新包，遠端桌面仍關"),
-            ("custom", "自訂 — 原本技能常開，下面新包逐項開"),
+            ("core", "核心 — 原本技能常開，wrap 全關"),
+            ("local", "本機常用 — Descope / Hermes / OpenClaw / cloudflared"),
+            ("full", "全開 — 全部 wrap，遠端桌面仍關"),
+            ("custom", "自訂 — 下面逐項勾選"),
         ):
             ttk.Radiobutton(
                 mode_card,
@@ -386,7 +420,7 @@ class App(tk.Tk):
         ttk.Label(skills, text="技能", font=("Microsoft JhengHei UI", 12, "bold")).pack(anchor="w")
         ttk.Label(
             skills,
-            text="原本技能沒刪、也不能從這裡關。第二頁才是新包進去、可開關的 wrap。",
+            text="原本技能常開。第二頁是可開關的 wrap（不含 1Password Connect）。",
             style="Muted.TLabel",
         ).pack(anchor="w", pady=(4, 8))
         skill_tabs = ttk.Notebook(skills)
@@ -402,11 +436,13 @@ class App(tk.Tk):
         self.builtin_count = sum(len(items) for _, items in groups)
         ttk.Label(
             builtin_inner,
-            text=f"共 {self.builtin_count} 個，服務在跑就全部可用。Honcho 連上時另加 honcho__*。",
+            text=f"共 {self.builtin_count} 個，服務在跑就可用。Honcho 連上時另加 honcho__*。",
             style="Muted.TLabel",
         ).pack(anchor="w", pady=(0, 8))
         for title, items in groups:
-            ttk.Label(builtin_inner, text=f"{title}  ({len(items)})", font=("Microsoft JhengHei UI", 10, "bold")).pack(anchor="w", pady=(8, 2))
+            ttk.Label(builtin_inner, text=f"{title}  ({len(items)})", font=("Microsoft JhengHei UI", 10, "bold")).pack(
+                anchor="w", pady=(8, 2)
+            )
             ttk.Label(builtin_inner, text="、".join(items), style="Muted.TLabel", wraplength=340).pack(anchor="w")
 
         ttk.Checkbutton(
@@ -443,7 +479,7 @@ class App(tk.Tk):
         ttk.Label(status, text="狀態", font=("Microsoft JhengHei UI", 12, "bold")).pack(anchor="w")
         self.status_text = tk.Text(
             status,
-            height=8,
+            height=11,
             bg=PANEL2,
             fg=FG,
             insertbackground=FG,
@@ -497,7 +533,12 @@ class App(tk.Tk):
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
-        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")))
+        canvas.bind(
+            "<Enter>",
+            lambda _e: canvas.bind_all(
+                "<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            ),
+        )
         canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
         return inner
 
@@ -526,14 +567,14 @@ class App(tk.Tk):
         self._loading = False
 
     def current_flags(self) -> dict[str, str]:
-        flags = {key: ("1" if var.get() else "0") for key, var in self.flag_vars.items()}
-        if self.mode_var.get() == "full":
-            flags = default_flags("full")
-        elif self.mode_var.get() == "core":
-            flags = default_flags("core")
-        elif self.mode_var.get() == "local":
-            flags = default_flags("local")
-        return flags
+        mode = self.mode_var.get()
+        if mode == "full":
+            return default_flags("full")
+        if mode == "core":
+            return default_flags("core")
+        if mode == "local":
+            return default_flags("local")
+        return {key: ("1" if var.get() else "0") for key, var in self.flag_vars.items()}
 
     def set_busy(self, busy: bool, text: str = "") -> None:
         self.busy = busy
@@ -544,7 +585,6 @@ class App(tk.Tk):
         self.log_act.configure(state="normal")
         self.log_act.insert("end", f"[{stamp}] {text}\n")
         self.log_act.see("end")
-        self.log_act.configure(state="normal")
 
     def _drain_messages(self) -> None:
         while True:
@@ -560,33 +600,48 @@ class App(tk.Tk):
         self.refresh_logs()
 
     def refresh_status(self) -> None:
-        http_ok_flag, http_detail = http_ok(HEALTH_URL)
-        connect_ok, connect_detail = http_ok(CONNECT_URL)
+        ok, payload = fetch_json(HEALTH_URL)
         pid = read_pid()
         cf_count = cloudflared_count()
+        task_state = login_task_state()
         live = parse_launcher_flags()
         wanted = self.current_flags()
         pending = live != wanted and bool(live)
-        wrap_all = _on(live.get("MCP_WRAP_ALL")) if live else False
-        enabled = []
-        if live:
-            if wrap_all:
-                enabled = ["全部新包"]
-            else:
-                enabled = [title for key, title, _, _ in SKILLS if _on(live.get(key))]
-        if live and _on(live.get("MCP_WRAP_ALLOW_REMOTE")):
-            enabled.append("允許遠端桌面")
 
-        if http_ok_flag:
-            self.power_label.configure(text=f"運轉中    PID {pid or '—'}", foreground=ACCENT)
+        auth_line = "Descope  （health 讀不到）"
+        mode_line = "—"
+        if ok and isinstance(payload, dict):
+            auth = payload.get("auth") or {}
+            descope = bool(auth.get("descope_enabled"))
+            oauth_mode = str(auth.get("oauth_mode") or "—")
+            as_url = str(auth.get("authorization_server") or "")
+            auth_line = f"Descope  {'ON' if descope else 'OFF'}   mode={oauth_mode}"
+            if as_url:
+                auth_line += f"   AS={as_url}"
+            mode_line = oauth_mode
+            color = ACCENT if descope else WARN
+        else:
+            color = DANGER
+
+        if ok:
+            self.power_label.configure(text=f"運轉中    PID {pid or '—'}    授權 {mode_line}", foreground=color)
         else:
             self.power_label.configure(text="已關機", foreground=DANGER)
 
+        wrap_all = _on(live.get("MCP_WRAP_ALL")) if live else False
+        enabled: list[str] = []
+        if live:
+            enabled = ["全部新包"] if wrap_all else [title for key, title, _, _ in SKILLS if _on(live.get(key))]
+            if _on(live.get("MCP_WRAP_ALLOW_REMOTE")):
+                enabled.append("允許遠端桌面")
+
         lines = [
-            f"HTTP     {'OK' if http_ok_flag else 'DOWN'}   {HEALTH_URL}   {http_detail}",
-            f"Connect  {'OK' if connect_ok else 'DOWN'}   {CONNECT_URL}   {connect_detail}",
+            f"HTTP      {'OK' if ok else 'DOWN'}   {HEALTH_URL}   {payload if not ok else 200}",
+            f"授權      {auth_line}",
+            f"啟動路徑  native（start-wrap / start-mcp；無 Docker / 1Password）",
+            f"登入排程  {LOGIN_TASK} = {task_state}",
             f"cloudflared  {cf_count} 個程序（正式 tunnel 不由這裡關）",
-            f"原本技能  {getattr(self, 'builtin_count', 80)} 個常開（沒刪）",
+            f"原本技能  {getattr(self, 'builtin_count', 80)} 個常開",
             f"目前模式  {infer_mode(live) if live else '（尚未寫入 launcher）'}",
             f"新包已開  {('、'.join(enabled) if enabled else '無')}",
             f"技能套用  {'要重啟才會跟上畫面勾選' if pending else '與畫面一致'}",
@@ -614,7 +669,6 @@ class App(tk.Tk):
         widget.insert("1.0", text)
         if at_end:
             widget.see("end")
-        widget.configure(state="normal")
 
     def open_logs(self) -> None:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -624,17 +678,27 @@ class App(tk.Tk):
         if self.busy:
             messagebox.showinfo("請稍候", "上一個動作還在跑。")
             return
-        if action in {"start", "apply"}:
+        if action in {"start", "apply", "start_core"}:
+            if action == "start_core":
+                self.mode_var.set("core")
+                self._apply_flags_to_ui("core", default_flags("core"), keep_mode=True)
             save_profile(self.mode_var.get(), self.current_flags())
-        self.set_busy(True, "啟動中…" if action != "stop" else "關閉中…")
-        self.log_action({"start": "開始啟動", "stop": "開始關閉", "apply": "套用技能並重啟"}[action])
-        thread = threading.Thread(target=self._worker, args=(action,), daemon=True)
-        thread.start()
+        labels = {
+            "start": "開始啟動（含 wrap）",
+            "start_core": "開始啟動（只開核心）",
+            "stop": "開始關閉",
+            "apply": "套用技能並重啟",
+        }
+        self.set_busy(True, "關閉中…" if action == "stop" else "啟動中…")
+        self.log_action(labels[action])
+        threading.Thread(target=self._worker, args=(action,), daemon=True).start()
 
     def _worker(self, action: str) -> None:
         try:
             if action == "stop":
                 code, output = run_ps1(STOP_PS1, ["-Force"])
+            elif action == "start_core":
+                code, output = run_ps1(START_MCP_PS1, ["-SkipCloudflared", "-Force"])
             else:
                 code, output = run_ps1(START_PS1, ["-ProfileJson", str(PROFILE_PATH)])
             snippet = output[-2500:] if output else "(no output)"

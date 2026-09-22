@@ -19,7 +19,7 @@
   },
   "webhook": {
     "url": "https://hooks.edgars.tools/webhooks/linear",
-    "enabled": true,
+    "enabled": false,
     "resourceTypes": [
       "Issue",
       "Comment",
@@ -39,6 +39,8 @@
     "oauth_status_check": "https://mcp.edgars.tools/linear/oauth/status",
     "webhook_authority": "Canonical event ingress is hooks.edgars.tools. Hermes and linear-orchestrator are downstream executors/subscribers, not alternate public webhook authorities.",
     "webhook_requirements": "Agent session events MUST be enabled. Backend must emit agentActivityCreate thought within 10s — see docs/Linear-Agent人類委派-新手版.md",
-    "runtime_secrets": "Windows Machine/User environment; no external secret-runner/bootstrap dependency."
-  }
+    "runtime_secrets": "Windows Machine/User environment; no external secret-runner/bootstrap dependency.",
+    "retirement": "Retired after Linear -> YouTrack migration; provenance only, not an active runtime manifest."
+  },
+  "retired_at": "2026-09-22"
 }

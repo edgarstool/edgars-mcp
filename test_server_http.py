@@ -195,6 +195,7 @@ class HttpStartupConfigTests(unittest.TestCase):
                 "MCP_API_TOKEN": "  secret-token  ",
                 "MCP_BASE_URL": "  https://mcp.example.test  ",
             },
+            clear=True,
         ):
             config = validate_http_startup_config()
 
@@ -3450,7 +3451,7 @@ class ClaudeCodeAgentSmokeTests(unittest.TestCase):
         self.assertEqual(1, len(calls))
         args, kwargs = calls[0]
         command = args[0]
-        self.assertEqual(["cmd.exe", "/c", server_http.CLAUDE_CMD, "-p", "say hi", "--output-format", "text"], command)
+        self.assertEqual(["cmd.exe", "/c", server_http.CLAUDE_CMD, "--print", "say hi", "--output-format", "text"], command)
         self.assertEqual("C:/tmp", kwargs["cwd"])
         self.assertIsNone(kwargs["env_overrides"]["ANTHROPIC_AUTH_TOKEN"])
         self.assertIsNone(kwargs["env_overrides"]["ANTHROPIC_API_KEY"])
@@ -3546,6 +3547,8 @@ class CopilotDroidAgentTests(unittest.TestCase):
                 "/c",
                 server_http.DROID_CMD,
                 "exec",
+                "--auto",
+                "medium",
                 "say hi",
                 "--cwd",
                 "C:/tmp",

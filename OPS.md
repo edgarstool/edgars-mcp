@@ -16,7 +16,7 @@ The login starter hydrates Process environment from Windows Machine/User scope b
 
 ## Canonical profile
 
-Expected MCP surface: **269 tools**. `MCP_WRAP_ALL` is off. Product/agent wrappers are individually enabled; Descope/cloudflared/1Password-Connect wrappers are individually disabled.
+Expected generic MCP surface: **253 tools**. `MCP_WRAP_ALL` is off. Product/agent wrappers are individually enabled; Descope/cloudflared/1Password-Connect wrappers are individually disabled. Self-hosted Honcho is an identity-gated REST/memory plane and is not counted as a generic MCP upstream.
 
 ## Health
 
@@ -48,4 +48,4 @@ Maintenance checks Python/cloudflared, rotates logs, validates health, and can r
 1. Python syntax compile passes.
 2. Focused tests pass; Windows-only live assertions may be skipped on non-Windows CI.
 3. Active runtime/docs scan finds zero retired launch references.
-4. Windows live verification returns health 200 and 269 tools.
+4. Windows live verification returns health 200 and 253 tools.

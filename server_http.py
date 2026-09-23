@@ -396,8 +396,11 @@ CHATGPT_HONCHO_SERVER_INSTRUCTIONS = (
 MCP_PATH = "/mcp"
 HONCHO_MCP_PATH = "/honcho-mcp"
 CHATGPT_HONCHO_MCP_PATH = "/chatgpt-honcho"
-HONCHO_MCP_UPSTREAM_URL = "https://mcp.honcho.dev"
-HONCHO_API_BASE_URL = "https://api.honcho.dev/v3"
+# Generic Honcho MCP integration is opt-in only. The canonical self-hosted
+# honcho.edgars.tools endpoint is an identity-gated REST plane, not a generic
+# MCP upstream; do not silently fall back to the retired managed/SaaS surface.
+HONCHO_MCP_UPSTREAM_URL = os.getenv("HONCHO_MCP_UPSTREAM_URL", "").strip().rstrip("/")
+HONCHO_API_BASE_URL = os.getenv("HONCHO_API_BASE_URL", "https://honcho.edgars.tools/v3").rstrip("/")
 HONCHO_TOOL_PREFIX = "honcho__"
 HONCHO_TOOLS_CACHE_TTL_SECONDS = int(os.getenv("HONCHO_TOOLS_CACHE_TTL_SECONDS", "60"))
 CHATGPT_HONCHO_WORKSPACE_ID = "edgar-team"
@@ -1941,6 +1944,10 @@ def call_honcho_mcp_json_rpc(
 ) -> dict:
     if not config.honcho_api_key:
         raise HonchoMcpError("HONCHO_API_KEY is not configured")
+    if not HONCHO_MCP_UPSTREAM_URL:
+        raise HonchoMcpError(
+            "HONCHO_MCP_UPSTREAM_URL is not configured; self-hosted Honcho identity-gate is not a generic MCP upstream"
+        )
 
     body = json.dumps({
         "jsonrpc": "2.0",
@@ -2004,7 +2011,7 @@ def build_honcho_tool_descriptor(upstream_tool: dict) -> dict | None:
 
 
 def fetch_honcho_tool_descriptors(config: HandcraftServerConfig | None) -> list[dict]:
-    if not config or not config.honcho_api_key:
+    if not config or not config.honcho_api_key or not HONCHO_MCP_UPSTREAM_URL:
         return []
 
     identity = honcho_config_identity(config)

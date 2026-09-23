@@ -12,7 +12,7 @@ Port `8765` is MCP-only. Webhook/event ingress does **not** run in `server_http.
 - Public edge: `https://mcp.edgars.tools/mcp`
 - Startup task: `edgars-mcp-http` -> `scripts\Start_Handcraft_MCP_HTTP.vbs`
 - Runtime config/secrets: Windows Machine/User environment variables read directly by Python
-- Canonical verified tool surface: **269 tools**
+- Canonical verified generic MCP surface: **253 tools**
 
 Supported startup chain:
 
@@ -27,9 +27,11 @@ Windows Scheduled Task
 
 The legacy secret-runner/bootstrap launchers, container bootstrap, and retired batch launchers are removed and are not fallbacks.
 
-## Canonical 269-tool profile
+## Canonical 253-tool profile
 
 `start-mcp.ps1` explicitly enables Playwright, Windows-MCP, Desktop Commander, OpenMontage, Hermes, and OpenClaw wrappers. It explicitly disables Descope, cloudflared, and 1Password Connect wrappers inside edgars-mcp. `MCP_WRAP_ALL` stays off.
+
+Honcho is no longer counted as a generic 16-tool upstream. The current self-hosted `honcho.edgars.tools` service is an identity-gated REST/memory plane, not a generic MCP server. ChatGPT/Honcho access uses the dedicated `/chatgpt-honcho` contract; generic Honcho MCP proxying is opt-in only through an explicit `HONCHO_MCP_UPSTREAM_URL`.
 
 ## Start / check / stop
 
@@ -53,4 +55,4 @@ Invoke-WebRequest http://127.0.0.1:8765/health -UseBasicParsing
 mcporter list
 ```
 
-Accepted state: local health `200`, `edgars-mcp` reports **269 tools**, and no active startup/docs path uses the retired secret-runner/bootstrap architecture.
+Accepted state: local health `200`, `edgars-mcp` reports **253 tools**, and no active startup/docs path uses the retired secret-runner/bootstrap architecture.

@@ -95,14 +95,18 @@ def _playwright_spec() -> UpstreamSpec:
 
 def _windows_spec() -> UpstreamSpec:
     uv = _windows_cmd("uv")
+    root = os.getenv(
+        "WINDOWS_MCP_ROOT",
+        r"C:\Users\EdgarsTool\AppData\Roaming\Claude\Claude Extensions\ant.dir.cursortouch.windows-mcp",
+    ).strip()
     return UpstreamSpec(
         id="windows",
         prefix="win__",
         title="Windows-MCP",
         env_flag="MCP_WRAP_WINDOWS",
         command=uv,
-        args=("--directory", r"V:\projects\Windows-MCP", "run", "windows-mcp", "serve"),
-        cwd=r"V:\projects\Windows-MCP",
+        args=("--directory", root, "run", "windows-mcp", "--transport", "stdio"),
+        cwd=root,
         local_only=True,
     )
 

@@ -18,7 +18,7 @@ Invoke-WebRequest http://127.0.0.1:8765/health -UseBasicParsing
 mcporter list
 ```
 
-預期：health 200，`edgars-mcp` 為 269 tools。
+預期：health 200，`edgars-mcp` 為 253 tools。
 
 ## Secret / API key
 
@@ -28,7 +28,7 @@ Server 與 stdio proxy 直接讀 Windows Machine/User environment。舊的 secre
 
 Canonical profile 啟用：Playwright、Windows-MCP、Desktop Commander、OpenMontage、Hermes、OpenClaw。
 
-明確不併入 edgars-mcp：Descope、cloudflared、1Password Connect wrapper。它們是獨立服務/工具，不是 269-tool profile 的一部分。
+明確不併入 edgars-mcp：Descope、cloudflared、1Password Connect wrapper，以及 self-hosted Honcho 的 REST/identity-gate plane。它們是獨立服務/工具，不是 253-tool generic MCP profile 的一部分。
 
 ## Cursor
 

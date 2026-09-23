@@ -37,7 +37,7 @@ $result = [ordered]@{
     pid = $ownerPid
     cloudflared = @{ count = $cfProcs.Count; pids = @($cfProcs | ForEach-Object { $_.Id }) }
     handshake = $handshake
-    expected_tools = 269
+    expected_tools = 253
     checked_at = (Get-Date).ToString("o")
 }
 $result | ConvertTo-Json -Depth 6

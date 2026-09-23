@@ -1695,12 +1695,32 @@ class CloudflareAccessModeTests(unittest.TestCase):
 
 class HonchoMcpFacadeTests(unittest.TestCase):
     def setUp(self):
+        self._honcho_mcp_url = patch.object(
+            server_http,
+            "HONCHO_MCP_UPSTREAM_URL",
+            "https://honcho-mcp.example.test/mcp",
+        )
+        self._honcho_mcp_url.start()
+        self.addCleanup(self._honcho_mcp_url.stop)
         with server_http.HONCHO_TOOLS_CACHE_LOCK:
             server_http.HONCHO_TOOLS_CACHE.update({
                 "expires_at": 0.0,
                 "identity": "",
                 "tools": [],
             })
+
+    def test_fetch_honcho_tool_descriptors_skips_when_generic_upstream_is_unconfigured(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            honcho_api_key="honcho-secret",
+        )
+        with patch.object(server_http, "HONCHO_MCP_UPSTREAM_URL", ""), patch.object(
+            server_http,
+            "call_honcho_mcp_json_rpc",
+        ) as mocked_call:
+            self.assertEqual([], server_http.fetch_honcho_tool_descriptors(config))
+        mocked_call.assert_not_called()
 
     def test_fetch_honcho_tool_descriptors_negative_caches_failed_refresh(self):
         config = HandcraftServerConfig(

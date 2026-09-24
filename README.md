@@ -29,21 +29,21 @@ The legacy secret-runner/bootstrap launchers, container bootstrap, and retired b
 
 ## Canonical 284–285-tool profile
 
-`start-mcp.ps1` explicitly enables Playwright, Kapture, Windows-MCP, Desktop Commander, OpenMontage, Hermes, and OpenClaw wrappers. It explicitly disables Descope, cloudflared, and 1Password Connect wrappers inside edgars-mcp. `MCP_WRAP_ALL` stays off.
+`start-mcp.ps1` explicitly enables Playwright, Kapture, Windows-MCP, Desktop Commander, OpenMontage, Hermes, OpenClaw, and Fleet wrappers. It explicitly disables Descope, cloudflared, and 1Password Connect wrappers inside edgars-mcp. `MCP_WRAP_ALL` stays off.
 
 ### Live inventory baseline
 
-The generic tool surface is source-accounted rather than pinned to one brittle total. On 2026-09-25 the same profile live-verified at 284 tools while Kapture exposed 31 bridge tools, and at 285 when Kapture dynamically advertised `evaluate` as a 32nd tool:
+The generic tool surface is source-accounted rather than pinned to one brittle total. On 2026-09-25 the same profile live-verified at 287 tools while Kapture exposed 31 bridge tools, and at 288 when Kapture dynamically advertised `evaluate` as a 32nd tool:
 
 | Layer | Source | Tools |
 | --- | --- | ---: |
 | Base | `server_http.py` base surface | 67 |
-| Native wrapper | wrapper catalog + OpenMontage + Hermes + OpenClaw | 117 |
+| Native wrapper | wrapper catalog + OpenMontage + Hermes + OpenClaw + Fleet + Fleet | 120 |
 | MCP upstream bridge | Playwright 25 + Windows-MCP 18 + Desktop Commander 26 + Kapture 31–32 | 100–101 |
 | Optional upstream | generic Honcho bridge | 0 |
 | **Total generic MCP surface** |  | **284–285** |
 
-All exposed names are unique under both exact and case-insensitive comparison. Kapture can advertise `evaluate` dynamically, so an exact total of 284 versus 285 is not itself a regression; source availability, uniqueness, and the accepted 284–285 range are the stable acceptance criteria.
+All exposed names are unique under both exact and case-insensitive comparison. Kapture can advertise `evaluate` dynamically, so an exact total of 287 versus 288 is not itself a regression; source availability, uniqueness, and the accepted 284–285 range are the stable acceptance criteria.
 
 Honcho is not counted as a generic MCP upstream. The current self-hosted `honcho.edgars.tools` service is an identity-gated REST/memory plane, not a generic MCP server. ChatGPT/Honcho access uses the dedicated `/chatgpt-honcho` contract; generic Honcho MCP proxying is opt-in only through an explicit `HONCHO_MCP_UPSTREAM_URL`. Its independent health route is `https://honcho.edgars.tools/health`.
 

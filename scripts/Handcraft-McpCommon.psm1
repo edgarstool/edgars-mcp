@@ -254,7 +254,7 @@ function Start-HandcraftHttpServer {
         MCP_DESCOPE_PROJECT_ID         = "P3IHk9JHELKS5KT5EWawFro5aPhY"
         MCP_DESCOPE_RESOURCE_SERVER_ID = "RS3IPp7u1MjAlO6wHaafMEw6bgu4C"
         MCP_DESCOPE_AUDIENCE           = "https://mcp.edgars.tools/mcp"
-        MCP_AUTH_SERVER                = "https://auth.edgars.tools"
+        MCP_AUTH_SERVER                = "https://api.descope.com/v1/apps/agentic/P3IHk9JHELKS5KT5EWawFro5aPhY/RS3IPp7u1MjAlO6wHaafMEw6bgu4C"
         MCP_BASE_URL                   = "https://mcp.edgars.tools"
         MCP_BIND_HOST                  = "0.0.0.0"
     }

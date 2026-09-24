@@ -259,6 +259,31 @@ class HttpStartupConfigTests(unittest.TestCase):
         self.assertEqual(issuer, config.auth_server_url)
         self.assertEqual(issuer, config.descope_issuer)
 
+    def test_explicit_descope_pair_canonicalizes_vanity_without_discovery(self):
+        issuer = (
+            "https://api.descope.com/v1/apps/agentic/"
+            "P3IHk9JHELKS5KT5EWawFro5aPhY/RS3IPp7u1MjAlO6wHaafMEw6bgu4C"
+        )
+        environment = {
+            "MCP_API_TOKEN": "test-token",
+            "MCP_BASE_URL": "https://mcp.edgars.tools",
+            "MCP_AUTH_SERVER": "https://auth.edgars.tools",
+            "MCP_DESCOPE_ENABLED": "true",
+            "MCP_DESCOPE_PROJECT_ID": "P3IHk9JHELKS5KT5EWawFro5aPhY",
+            "MCP_DESCOPE_RESOURCE_SERVER_ID": "RS3IPp7u1MjAlO6wHaafMEw6bgu4C",
+        }
+        with patch.dict("os.environ", environment, clear=True), patch(
+            "server_http.urllib.request.urlopen",
+            side_effect=AssertionError("vanity discovery should not run"),
+        ) as mocked_urlopen:
+            config = validate_http_startup_config()
+
+        mocked_urlopen.assert_not_called()
+        self.assertTrue(config.descope_enabled)
+        self.assertEqual(issuer, config.auth_server_url)
+        self.assertEqual(issuer, config.descope_issuer)
+        self.assertEqual("https://mcp.edgars.tools/mcp", config.descope_audience)
+
     def test_chatgpt_honcho_access_mode_fails_fast_without_dedicated_audience(self):
         """The fixed-scope gateway must not accidentally share the broad MCP audience."""
         environment = {

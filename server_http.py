@@ -5496,6 +5496,17 @@ def validate_http_startup_config() -> HandcraftServerConfig:
     descope_resource_server_id = os.getenv("MCP_DESCOPE_RESOURCE_SERVER_ID", "").strip()
     auth_server_url = os.getenv("MCP_AUTH_SERVER", "").strip()
 
+    # A vanity Auth Shell URL is not an RFC 8414 issuer. When the Descope
+    # Agentic project/resource pair is already explicit, it is the stronger
+    # authority and lets startup avoid depending on vanity discovery.
+    if descope_enabled and descope_project_id and descope_resource_server_id:
+        raw_project_id, raw_resource_server_id = parse_descope_agentic_issuer(auth_server_url)
+        if not (raw_project_id and raw_resource_server_id):
+            auth_server_url = (
+                "https://api.descope.com/v1/apps/agentic/"
+                f"{descope_project_id}/{descope_resource_server_id}"
+            )
+
     resolved_auth_server, discovered_project_id, discovered_resource_server_id = (
         resolve_authorization_server(auth_server_url)
     )

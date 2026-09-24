@@ -1696,7 +1696,11 @@ def _normalize_tool_descriptor(tool: dict) -> dict:
     return descriptor
 
 
-TOOLS = [_normalize_tool_descriptor(tool) for tool in TOOLS]
+TOOLS = [
+    _normalize_tool_descriptor(tool)
+    for tool in TOOLS
+    if not str(tool.get("name") or "").startswith("linear_")
+]
 
 CHATGPT_HONCHO_TOOLS = [
     _normalize_tool_descriptor(
@@ -3402,6 +3406,8 @@ def handle_tools_list(req_id, params: dict, config: HandcraftServerConfig | None
 
 def handle_tools_call(req_id, params: dict, config: HandcraftServerConfig | None = None) -> dict:
     name = params.get("name")
+    if isinstance(name, str) and name.startswith("linear_"):
+        return make_error(req_id, -32601, "Tool not found")
     arguments = params.get("arguments", {})
     cleanup_expired_jobs()
     log(f"tools/call: name={name} arguments={arguments}")
@@ -4106,14 +4112,14 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 if not self._ensure_mcp_request_authorized(path):
                     return
             self._handle_health()
-        elif path == LINEAR_OAUTH_AUTHORIZE_PATH:
-            self._handle_linear_oauth_authorize()
-        elif path == LINEAR_OAUTH_CALLBACK_PATH:
-            self._handle_linear_oauth_callback(parsed.query)
-        elif path == LINEAR_OAUTH_STATUS_PATH:
-            self._send_oauth_json(linear_oauth_status_payload())
-        elif path == LINEAR_OAUTH_BOOTSTRAP_PATH:
-            self._handle_linear_oauth_bootstrap()
+        elif path in {
+            LINEAR_OAUTH_AUTHORIZE_PATH,
+            LINEAR_OAUTH_CALLBACK_PATH,
+            LINEAR_OAUTH_STATUS_PATH,
+            LINEAR_OAUTH_BOOTSTRAP_PATH,
+        }:
+            self.send_response(404)
+            self.end_headers()
         elif path in {MCP_PATH, CHATGPT_HONCHO_MCP_PATH}:
             if path == CHATGPT_HONCHO_MCP_PATH and not self.server.config.honcho_chatgpt_gateway_enabled:
                 self.send_response(404)
@@ -4270,7 +4276,6 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 "mcp_url": f"{base_url}{MCP_PATH}",
             },
             "auth": auth_payload,
-            "linear_oauth": linear_oauth_status_payload(),
         })
 
     def _handle_linear_oauth_authorize(self) -> None:
@@ -5603,8 +5608,6 @@ def main() -> None:
             else "Built-in bearer/OAuth"
         )
     )
-    log(f"Linear OAuth authorize: GET http://localhost:{PORT}{LINEAR_OAUTH_AUTHORIZE_PATH}")
-    log(f"Linear OAuth callback: GET http://localhost:{PORT}{LINEAR_OAUTH_CALLBACK_PATH}")
     log(f"Allowed origins: {ALLOWED_HOSTNAMES}")
     try:
         server.serve_forever()

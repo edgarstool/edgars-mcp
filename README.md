@@ -46,7 +46,9 @@ Cursor/stdio uses direct Python; see `config/mcp.local.example.json`. `stdio_pro
 
 ## Runtime variables
 
-Set required values at Windows Machine or User scope. Common variables include `MCP_API_TOKEN`, `LINEAR_API_KEY`, `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET`, `PERPLEXITY_API_KEY`, and provider-specific keys used by enabled tools. Secret values do not belong in this repo, scripts, logs, or command lines.
+Set required values at Windows Machine or User scope. Common variables include `MCP_API_TOKEN`, `PERPLEXITY_API_KEY`, and provider-specific keys used by enabled tools. Secret values do not belong in this repo, scripts, logs, or command lines.
+
+Linear integration was retired on 2026-09-22 after migration to YouTrack. Historical plugin/OAuth artifacts are preserved under `archive/retired-linear-20260922/` and are not active runtime inputs.
 
 ## Acceptance
 
@@ -55,4 +57,4 @@ Invoke-WebRequest http://127.0.0.1:8765/health -UseBasicParsing
 mcporter list
 ```
 
-Accepted state: local health `200`, `edgars-mcp` reports **253 tools**, and no active startup/docs path uses the retired secret-runner/bootstrap architecture.
+Accepted state: local health returns `200`, `edgars-mcp` reports **253 generic tools**, MCP `tools/list` contains no `linear_*` tools, `/linear/oauth/*` returns `404`, and no active startup/docs path uses the retired Linear or secret-runner/bootstrap architecture.

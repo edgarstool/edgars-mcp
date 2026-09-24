@@ -160,7 +160,7 @@ class HttpStartupConfigTests(unittest.TestCase):
 
                 self.assertEqual(1, raised.exception.code)
                 self.assertIn(
-                    "MCP_API_TOKEN is required and must be a non-empty string. Refusing to start.",
+                    "EDGARS_API_TOKEN or MCP_API_TOKEN is required and must be a non-empty string. Refusing to start.",
                     output.getvalue(),
                 )
                 server_class.assert_not_called()
@@ -170,9 +170,28 @@ class HttpStartupConfigTests(unittest.TestCase):
             with self.subTest(raw_token=raw_token):
                 with self.assertRaisesRegex(
                     RuntimeError,
-                    "MCP_API_TOKEN is required and must be a non-empty string. Refusing to start.",
+                    "EDGARS_API_TOKEN or MCP_API_TOKEN is required and must be a non-empty string. Refusing to start.",
                 ):
                     validate_mcp_api_token(raw_token)
+
+    def test_load_mcp_api_token_prefers_edgars_api_token(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "EDGARS_API_TOKEN": "  edgar-token  ",
+                "MCP_API_TOKEN": "mcp-token",
+            },
+            clear=True,
+        ):
+            self.assertEqual("edgar-token", server_http.load_mcp_api_token())
+
+    def test_load_mcp_api_token_falls_back_to_mcp_api_token(self):
+        with patch.dict(
+            "os.environ",
+            {"MCP_API_TOKEN": "  mcp-token  "},
+            clear=True,
+        ):
+            self.assertEqual("mcp-token", server_http.load_mcp_api_token())
 
     def test_mcp_api_token_trims_configured_value(self):
         self.assertEqual("secret-token", validate_mcp_api_token("  secret-token  "))
@@ -1696,12 +1715,32 @@ class CloudflareAccessModeTests(unittest.TestCase):
 
 class HonchoMcpFacadeTests(unittest.TestCase):
     def setUp(self):
+        self._honcho_mcp_url = patch.object(
+            server_http,
+            "HONCHO_MCP_UPSTREAM_URL",
+            "https://honcho-mcp.example.test/mcp",
+        )
+        self._honcho_mcp_url.start()
+        self.addCleanup(self._honcho_mcp_url.stop)
         with server_http.HONCHO_TOOLS_CACHE_LOCK:
             server_http.HONCHO_TOOLS_CACHE.update({
                 "expires_at": 0.0,
                 "identity": "",
                 "tools": [],
             })
+
+    def test_fetch_honcho_tool_descriptors_skips_when_generic_upstream_is_unconfigured(self):
+        config = HandcraftServerConfig(
+            mcp_api_token="secret-token",
+            base_url="https://mcp.example.test",
+            honcho_api_key="honcho-secret",
+        )
+        with patch.object(server_http, "HONCHO_MCP_UPSTREAM_URL", ""), patch.object(
+            server_http,
+            "call_honcho_mcp_json_rpc",
+        ) as mocked_call:
+            self.assertEqual([], server_http.fetch_honcho_tool_descriptors(config))
+        mocked_call.assert_not_called()
 
     def test_fetch_honcho_tool_descriptors_negative_caches_failed_refresh(self):
         config = HandcraftServerConfig(

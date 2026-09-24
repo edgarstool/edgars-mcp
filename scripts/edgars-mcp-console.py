@@ -44,6 +44,7 @@ FLAG_KEYS = [
     "MCP_WRAP_ALL",
     "MCP_WRAP_ALLOW_REMOTE",
     "MCP_WRAP_PLAYWRIGHT",
+    "MCP_WRAP_KAPTURE",
     "MCP_WRAP_WINDOWS",
     "MCP_WRAP_DESKTOP_COMMANDER",
     "MCP_WRAP_DESCOPE",
@@ -55,6 +56,7 @@ FLAG_KEYS = [
 
 SKILLS = [
     ("MCP_WRAP_PLAYWRIGHT", "Playwright 瀏覽器", "stdio", "會開瀏覽器子程序"),
+    ("MCP_WRAP_KAPTURE", "Kapture 瀏覽器", "stdio", "接到已開著的 Chrome 分頁"),
     ("MCP_WRAP_WINDOWS", "Windows 桌面控制", "stdio", "滑鼠鍵盤與截圖"),
     ("MCP_WRAP_DESKTOP_COMMANDER", "Desktop Commander", "stdio", "本機檔案與終端"),
     ("MCP_WRAP_DESCOPE", "Descope 工具面", "native", "SDK / 管理 MCP（授權另看狀態）"),
@@ -177,7 +179,6 @@ BUILTIN_GROUP_RULES = [
     ("Git", lambda n: n.startswith("git_")),
     ("瀏覽器 browser", lambda n: n.startswith("browser_")),
     ("Vault", lambda n: n.startswith("vault_")),
-    ("Linear", lambda n: n.startswith("linear_")),
     ("Warp", lambda n: n.startswith("warp_")),
     ("Cursor Agent", lambda n: n.startswith("cursor_")),
     ("Factory", lambda n: n.startswith("factory_")),
@@ -185,11 +186,19 @@ BUILTIN_GROUP_RULES = [
 
 
 def load_builtin_tool_names() -> list[str]:
+    """Parse raw TOOLS descriptors from server_http.py (before normalize reassignment)."""
     path = REPO / "server_http.py"
     text = path.read_text(encoding="utf-8")
     start = text.index("TOOLS = [")
-    end = text.index("TOOLS = [_normalize_tool_descriptor")
-    return re.findall(r'"name": "([^"]+)"', text[start:end])
+    # Second TOOLS = [ is the normalized reassignment; keep only the raw list between them.
+    end = text.find("TOOLS = [", start + 1)
+    if end < 0:
+        end = text.find("CHATGPT_HONCHO_TOOLS", start + 1)
+    if end < 0:
+        raise ValueError("找不到 server_http.py 的 TOOLS 原始清單結束位置")
+    names = re.findall(r'"name": "([^"]+)"', text[start:end])
+    # Match server_http.py: drop retired Linear tools from the public TOOLS surface.
+    return [name for name in names if not name.startswith("linear_")]
 
 
 def grouped_builtin_tools() -> list[tuple[str, list[str]]]:

@@ -95,14 +95,18 @@ def _playwright_spec() -> UpstreamSpec:
 
 def _windows_spec() -> UpstreamSpec:
     uv = _windows_cmd("uv")
+    root = os.getenv(
+        "WINDOWS_MCP_ROOT",
+        r"C:\Users\EdgarsTool\AppData\Roaming\Claude\Claude Extensions\ant.dir.cursortouch.windows-mcp",
+    ).strip()
     return UpstreamSpec(
         id="windows",
         prefix="win__",
         title="Windows-MCP",
         env_flag="MCP_WRAP_WINDOWS",
         command=uv,
-        args=("--directory", r"V:\projects\Windows-MCP", "run", "windows-mcp", "serve"),
-        cwd=r"V:\projects\Windows-MCP",
+        args=("--directory", root, "run", "windows-mcp", "--transport", "stdio"),
+        cwd=root,
         local_only=True,
     )
 
@@ -128,6 +132,32 @@ def _desktop_commander_spec() -> UpstreamSpec:
         command="npx",
         args=("-y", "@wonderwhy-er/desktop-commander"),
         cwd=r"V:\projects\DesktopCommanderMCP",
+        local_only=True,
+    )
+
+
+def _kapture_spec() -> UpstreamSpec:
+    """Stdio bridge into the local Kapture server (ws://127.0.0.1:61822/mcp)."""
+    local_bridge = r"V:\projects\kapture\server\dist\bridge.js"
+    if os.path.isfile(local_bridge):
+        return UpstreamSpec(
+            id="kapture",
+            prefix="kapture__",
+            title="Kapture MCP",
+            env_flag="MCP_WRAP_KAPTURE",
+            command=_windows_cmd("node"),
+            args=(local_bridge,),
+            cwd=r"V:\projects\kapture\server",
+            local_only=True,
+        )
+    return UpstreamSpec(
+        id="kapture",
+        prefix="kapture__",
+        title="Kapture MCP",
+        env_flag="MCP_WRAP_KAPTURE",
+        command="npx",
+        args=("-y", "kapture-mcp@latest", "bridge"),
+        cwd=r"V:\projects\kapture",
         local_only=True,
     )
 
@@ -164,7 +194,7 @@ def _descope_mcp_spec() -> UpstreamSpec | None:
 
 
 def builtin_upstream_specs() -> list[UpstreamSpec]:
-    specs = [_playwright_spec(), _windows_spec(), _desktop_commander_spec()]
+    specs = [_playwright_spec(), _windows_spec(), _desktop_commander_spec(), _kapture_spec()]
     descope = _descope_mcp_spec()
     if descope is not None:
         specs.append(descope)

@@ -49,12 +49,61 @@ def make_error(req_id, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
 
-def load_auth_token() -> str:
-    # Prefer generic names; keep HERMES_HANDCRAFT_MCP_TOKEN for backward compat.
-    for env_name in ("MCP_API_TOKEN", "MCP_AUTH_TOKEN", "HERMES_HANDCRAFT_MCP_TOKEN"):
-        token = os.getenv(env_name, "").strip()
+def load_windows_persistent_mcp_api_token() -> str:
+    """Read the canonical local MCP token from Windows persistent env.
+
+    This is intentionally a narrow fallback for clients (notably multiplex
+    Hermes gateways) that pass an unresolved ${env:MCP_API_TOKEN} placeholder
+    into the stdio child. User scope wins; machine scope is fallback. The token
+    value is never logged or persisted by this proxy.
+    """
+    if sys.platform != "win32":
+        return ""
+
+    try:
+        import winreg
+    except ImportError:
+        return ""
+
+    locations = (
+        (winreg.HKEY_CURRENT_USER, r"Environment"),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+    )
+    for hive, path in locations:
+        try:
+            with winreg.OpenKey(hive, path) as key:
+                value, _ = winreg.QueryValueEx(key, "MCP_API_TOKEN")
+        except OSError:
+            continue
+        token = str(value or "").strip()
         if token:
             return token
+    return ""
+
+
+def load_auth_token() -> str:
+    # Prefer EDGARS_API_TOKEN; keep MCP_* / Hermes aliases for compatibility.
+    unresolved_env_reference = False
+    for env_name in (
+        "EDGARS_API_TOKEN",
+        "MCP_API_TOKEN",
+        "MCP_AUTH_TOKEN",
+        "HERMES_HANDCRAFT_MCP_TOKEN",
+        "EDGARS_TOOLS_API_TOKEN",
+    ):
+        token = os.getenv(env_name, "").strip()
+        if not token:
+            continue
+        if token.startswith("${") and token.endswith("}"):
+            unresolved_env_reference = True
+            continue
+        return token
+
+    if unresolved_env_reference:
+        return load_windows_persistent_mcp_api_token()
     return ""
 
 
@@ -117,7 +166,7 @@ def validate_auth_token() -> str:
             "Cloudflare Access service token is incomplete. Set both MCP_CF_ACCESS_CLIENT_ID and MCP_CF_ACCESS_CLIENT_SECRET."
         )
     raise PreflightError(
-        "No MCP auth is available for handcraft MCP preflight. Set MCP_API_TOKEN for localhost or MCP_CF_ACCESS_CLIENT_ID and MCP_CF_ACCESS_CLIENT_SECRET for Access-protected public MCP."
+        "No MCP auth is available for handcraft MCP preflight. Set EDGARS_API_TOKEN or MCP_API_TOKEN for localhost or MCP_CF_ACCESS_CLIENT_ID and MCP_CF_ACCESS_CLIENT_SECRET for Access-protected public MCP."
     )
 
 
@@ -128,10 +177,10 @@ def describe_preflight_unauthorized_error() -> str:
     if has_bearer and has_service_token:
         return (
             f"handcraft MCP rejected preflight auth at {MCP_URL}. "
-            "Check MCP_API_TOKEN, MCP_CF_ACCESS_CLIENT_ID / MCP_CF_ACCESS_CLIENT_SECRET, and Cloudflare Access configuration."
+            "Check EDGARS_API_TOKEN / MCP_API_TOKEN, MCP_CF_ACCESS_CLIENT_ID / MCP_CF_ACCESS_CLIENT_SECRET, and Cloudflare Access configuration."
         )
     if has_bearer:
-        return f"MCP_API_TOKEN was rejected by handcraft MCP at {MCP_URL}"
+        return f"Bearer token was rejected by handcraft MCP at {MCP_URL}"
     if has_service_token:
         return (
             f"Cloudflare Access service token was rejected by handcraft MCP at {MCP_URL}. "

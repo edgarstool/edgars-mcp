@@ -42,6 +42,7 @@ function Read-WrapProfileEnv {
         "MCP_WRAP_ALL",
         "MCP_WRAP_ALLOW_REMOTE",
         "MCP_WRAP_PLAYWRIGHT",
+        "MCP_WRAP_KAPTURE",
         "MCP_WRAP_WINDOWS",
         "MCP_WRAP_DESKTOP_COMMANDER",
         "MCP_WRAP_DESCOPE",
@@ -55,6 +56,7 @@ function Read-WrapProfileEnv {
 
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
         $extra["MCP_WRAP_PLAYWRIGHT"] = "1"
+        $extra["MCP_WRAP_KAPTURE"] = "1"
         $extra["MCP_WRAP_WINDOWS"] = "1"
         $extra["MCP_WRAP_DESKTOP_COMMANDER"] = "1"
         $extra["MCP_WRAP_DESCOPE"] = "1"
@@ -74,6 +76,9 @@ function Read-WrapProfileEnv {
             $val = [string]$flags.$key
         }
         $extra[$key] = if ($val -match '^(1|true|yes|on)$') { "1" } else { "0" }
+    }
+    if (-not ($flags.PSObject.Properties.Name -contains "MCP_WRAP_KAPTURE")) {
+        $extra["MCP_WRAP_KAPTURE"] = "1"
     }
     $extra["MCP_WRAP_OP_CONNECT"] = "0"
     $mode = if ($raw.mode) { [string]$raw.mode } else { "custom" }

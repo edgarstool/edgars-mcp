@@ -44,6 +44,7 @@ $verifyEnv = @{}
 if ($IncludeStdio) {
     $verifyEnv = @{
         MCP_WRAP_PLAYWRIGHT         = "1"
+        MCP_WRAP_KAPTURE            = "1"
         MCP_WRAP_WINDOWS            = "1"
         MCP_WRAP_DESKTOP_COMMANDER  = "1"
     }

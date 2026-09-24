@@ -7,17 +7,20 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Get-HandcraftMcpToken {
-    foreach ($name in @("MCP_API_TOKEN", "HERMES_HANDCRAFT_MCP_TOKEN", "MCP_AUTH_TOKEN")) {
+    foreach ($name in @("EDGARS_API_TOKEN", "MCP_API_TOKEN", "HERMES_HANDCRAFT_MCP_TOKEN", "MCP_AUTH_TOKEN", "EDGARS_TOOLS_API_TOKEN")) {
         $value = [Environment]::GetEnvironmentVariable($name, "Process")
         if (-not $value) {
             $value = [Environment]::GetEnvironmentVariable($name, "User")
+        }
+        if (-not $value) {
+            $value = [Environment]::GetEnvironmentVariable($name, "Machine")
         }
         if ($value -and $value.Trim()) {
             return $value.Trim()
         }
     }
 
-    throw "No MCP token found in env. Set MCP_API_TOKEN or HERMES_HANDCRAFT_MCP_TOKEN in the current process or secret manager."
+    throw "No MCP token found in env. Set EDGARS_API_TOKEN or MCP_API_TOKEN in Process/User/Machine scope."
 }
 
 $token = Get-HandcraftMcpToken

@@ -1,4 +1,12 @@
-const HONCHO_MCP_URL = "https://mcp.honcho.dev";
+// Contabo-only cutover 2026-09-22: never default to SaaS mcp.honcho.dev.
+// Prefer Worker env HONCHO_MCP_UPSTREAM_URL. Contabo identity-gate does not yet
+// speak SaaS MCP; leaving unset makes the facade refuse upstream (503).
+function resolveHonchoMcpUrl(env) {
+  const raw = String((env && env.HONCHO_MCP_UPSTREAM_URL) || "").trim();
+  if (!raw) return "";
+  if (/api\.honcho\.dev|mcp\.honcho\.dev/i.test(raw)) return "";
+  return raw;
+}
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -125,8 +133,21 @@ async function proxyToHoncho(request, env) {
     return authorizationError;
   }
 
+  const honchoMcpUrl = resolveHonchoMcpUrl(env);
+  if (!honchoMcpUrl) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "honcho_saas_disconnected",
+        error_description:
+          "SaaS Honcho MCP (mcp.honcho.dev) is disconnected. Contabo plane is https://honcho.edgars.tools (identity-gate). Set Worker secret HONCHO_MCP_UPSTREAM_URL only for a non-SaaS MCP upstream.",
+      },
+      503,
+    );
+  }
+
   const incomingUrl = new URL(request.url);
-  const upstreamUrl = new URL(HONCHO_MCP_URL);
+  const upstreamUrl = new URL(honchoMcpUrl);
   upstreamUrl.search = incomingUrl.search;
 
   const upstreamRequest = new Request(upstreamUrl, {

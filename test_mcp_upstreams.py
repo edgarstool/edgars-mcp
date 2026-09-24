@@ -29,6 +29,7 @@ class WrapDefaultOffTests(unittest.TestCase):
         self.assertFalse(any(name.startswith("pw__") for name in names))
         self.assertFalse(any(name.startswith("win__") for name in names))
         self.assertFalse(any(name.startswith("dc__") for name in names))
+        self.assertFalse(any(name.startswith("kapture__") for name in names))
 
     def test_existing_tools_are_not_removed(self):
         names = {tool["name"] for tool in server_http.TOOLS}
@@ -53,6 +54,7 @@ class WrapDefaultOffTests(unittest.TestCase):
             "playwright",
             "windows",
             "desktop_commander",
+            "kapture",
             "cloudflared",
             "openmontage",
             "hermes",

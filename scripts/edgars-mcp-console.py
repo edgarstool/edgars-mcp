@@ -44,6 +44,7 @@ FLAG_KEYS = [
     "MCP_WRAP_ALL",
     "MCP_WRAP_ALLOW_REMOTE",
     "MCP_WRAP_PLAYWRIGHT",
+    "MCP_WRAP_KAPTURE",
     "MCP_WRAP_WINDOWS",
     "MCP_WRAP_DESKTOP_COMMANDER",
     "MCP_WRAP_DESCOPE",
@@ -55,6 +56,7 @@ FLAG_KEYS = [
 
 SKILLS = [
     ("MCP_WRAP_PLAYWRIGHT", "Playwright 瀏覽器", "stdio", "會開瀏覽器子程序"),
+    ("MCP_WRAP_KAPTURE", "Kapture 瀏覽器", "stdio", "接到已開著的 Chrome 分頁"),
     ("MCP_WRAP_WINDOWS", "Windows 桌面控制", "stdio", "滑鼠鍵盤與截圖"),
     ("MCP_WRAP_DESKTOP_COMMANDER", "Desktop Commander", "stdio", "本機檔案與終端"),
     ("MCP_WRAP_DESCOPE", "Descope 工具面", "native", "SDK / 管理 MCP（授權另看狀態）"),

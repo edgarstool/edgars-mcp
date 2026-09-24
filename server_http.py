@@ -57,7 +57,18 @@ except ImportError:  # pragma: no cover - optional until MCP_DESCOPE_ENABLED
 
 # ── Runtime configuration（Windows Machine/User environment）──────────────────────
 def load_mcp_api_token() -> str:
-    return os.getenv("MCP_API_TOKEN", "").strip()
+    """Load local bearer token. Prefer EDGARS_API_TOKEN; keep MCP_* aliases."""
+    for env_name in (
+        "EDGARS_API_TOKEN",
+        "MCP_API_TOKEN",
+        "MCP_AUTH_TOKEN",
+        "HERMES_HANDCRAFT_MCP_TOKEN",
+        "EDGARS_TOOLS_API_TOKEN",
+    ):
+        token = os.getenv(env_name, "").strip()
+        if token:
+            return token
+    return ""
 
 
 def load_base_url() -> str:
@@ -5386,7 +5397,7 @@ def validate_mcp_api_token(raw_token: str | None) -> str:
     api_token = (raw_token or "").strip()
     if not api_token:
         raise RuntimeError(
-            "MCP_API_TOKEN is required and must be a non-empty string. Refusing to start."
+            "EDGARS_API_TOKEN or MCP_API_TOKEN is required and must be a non-empty string. Refusing to start."
         )
     return api_token
 

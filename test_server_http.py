@@ -160,7 +160,7 @@ class HttpStartupConfigTests(unittest.TestCase):
 
                 self.assertEqual(1, raised.exception.code)
                 self.assertIn(
-                    "MCP_API_TOKEN is required and must be a non-empty string. Refusing to start.",
+                    "EDGARS_API_TOKEN or MCP_API_TOKEN is required and must be a non-empty string. Refusing to start.",
                     output.getvalue(),
                 )
                 server_class.assert_not_called()
@@ -170,9 +170,28 @@ class HttpStartupConfigTests(unittest.TestCase):
             with self.subTest(raw_token=raw_token):
                 with self.assertRaisesRegex(
                     RuntimeError,
-                    "MCP_API_TOKEN is required and must be a non-empty string. Refusing to start.",
+                    "EDGARS_API_TOKEN or MCP_API_TOKEN is required and must be a non-empty string. Refusing to start.",
                 ):
                     validate_mcp_api_token(raw_token)
+
+    def test_load_mcp_api_token_prefers_edgars_api_token(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "EDGARS_API_TOKEN": "  edgar-token  ",
+                "MCP_API_TOKEN": "mcp-token",
+            },
+            clear=True,
+        ):
+            self.assertEqual("edgar-token", server_http.load_mcp_api_token())
+
+    def test_load_mcp_api_token_falls_back_to_mcp_api_token(self):
+        with patch.dict(
+            "os.environ",
+            {"MCP_API_TOKEN": "  mcp-token  "},
+            clear=True,
+        ):
+            self.assertEqual("mcp-token", server_http.load_mcp_api_token())
 
     def test_mcp_api_token_trims_configured_value(self):
         self.assertEqual("secret-token", validate_mcp_api_token("  secret-token  "))

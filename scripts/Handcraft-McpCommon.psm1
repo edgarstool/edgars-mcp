@@ -230,6 +230,24 @@ function Start-HandcraftHttpServer {
 
     Import-HandcraftWindowsEnvironment
 
+    # Contabo-only Honcho cutover: load identity-gate token/URLs and override any SaaS defaults.
+    $contaboEnvPath = Join-Path $env:LOCALAPPDATA 'edgars-mcp\honcho-contabo.env'
+    if (Test-Path -LiteralPath $contaboEnvPath) {
+        Get-Content -LiteralPath $contaboEnvPath | ForEach-Object {
+            $line = $_.Trim()
+            if (-not $line -or $line.StartsWith('#')) { return }
+            $eq = $line.IndexOf('=')
+            if ($eq -lt 1) { return }
+            $name = $line.Substring(0, $eq).Trim()
+            $value = $line.Substring($eq + 1).Trim().Trim('"').Trim("'")
+            if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { return }
+            if ($value -match 'api\.honcho\.dev|mcp\.honcho\.dev') { return }
+            Set-Item -Path "Env:$name" -Value $value
+        }
+        # Explicitly clear archived SaaS key if present in process env
+        Remove-Item Env:\HONCHO_SAAS_API_KEY_ARCHIVED -ErrorAction SilentlyContinue
+    }
+
     # Ensure Descope auth defaults if User/Machine unset (public ids only).
     $descopeDefaults = @{
         MCP_DESCOPE_ENABLED            = "true"
@@ -245,8 +263,23 @@ function Start-HandcraftHttpServer {
             Set-Item -Path "Env:$key" -Value $descopeDefaults[$key]
         }
     }
-    if ([string]::IsNullOrWhiteSpace($env:MCP_API_TOKEN)) {
-        throw "MCP_API_TOKEN is missing after loading Machine/User environment."
+    $tokenNames = @(
+        'EDGARS_API_TOKEN',
+        'MCP_API_TOKEN',
+        'MCP_AUTH_TOKEN',
+        'HERMES_HANDCRAFT_MCP_TOKEN',
+        'EDGARS_TOOLS_API_TOKEN'
+    )
+    $hasToken = $false
+    foreach ($name in $tokenNames) {
+        $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            $hasToken = $true
+            break
+        }
+    }
+    if (-not $hasToken) {
+        throw "EDGARS_API_TOKEN or MCP_API_TOKEN is missing after loading Machine/User environment."
     }
 
     New-Item -ItemType Directory -Force -Path $Config.RepoLogDir | Out-Null
@@ -455,21 +488,31 @@ function Invoke-HandcraftLocalMcpHandshake {
     )
 
     try {
-        $token = [Environment]::GetEnvironmentVariable("MCP_API_TOKEN", "Process")
-        if ([string]::IsNullOrWhiteSpace($token)) {
-            $token = [Environment]::GetEnvironmentVariable("MCP_API_TOKEN", "User")
+        $token = $null
+        foreach ($name in @(
+            'EDGARS_API_TOKEN',
+            'MCP_API_TOKEN',
+            'MCP_AUTH_TOKEN',
+            'HERMES_HANDCRAFT_MCP_TOKEN',
+            'EDGARS_TOOLS_API_TOKEN'
+        )) {
+            foreach ($scope in @('Process', 'User', 'Machine')) {
+                $candidate = [Environment]::GetEnvironmentVariable($name, $scope)
+                if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+                    $token = $candidate.Trim()
+                    break
+                }
+            }
+            if (-not [string]::IsNullOrWhiteSpace($token)) { break }
         }
         if ([string]::IsNullOrWhiteSpace($token)) {
-            $token = [Environment]::GetEnvironmentVariable("MCP_API_TOKEN", "Machine")
-        }
-        if ([string]::IsNullOrWhiteSpace($token)) {
-            throw "MCP_API_TOKEN not available in Windows Process/User/Machine environment"
+            throw "EDGARS_API_TOKEN or MCP_API_TOKEN not available in Windows Process/User/Machine environment"
         }
 
         $headers = @{
             "Content-Type"  = "application/json"
             "Accept"        = "application/json, text/event-stream"
-            "Authorization" = "Bearer $($token.Trim())"
+            "Authorization" = "Bearer $token"
         }
         $body = '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
         $response = Invoke-RestMethod -Uri $McpUrl -Method Post -Headers $headers -Body $body -TimeoutSec $TimeoutSec

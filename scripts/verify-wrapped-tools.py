@@ -13,6 +13,7 @@ os.environ.setdefault("MCP_WRAP_OPENCLAW", "1")
 os.environ.setdefault("MCP_WRAP_DESCOPE", "1")
 os.environ.setdefault("MCP_WRAP_OPENMONTAGE", "1")
 os.environ.setdefault("MCP_WRAP_PLAYWRIGHT", os.getenv("MCP_WRAP_PLAYWRIGHT", "0"))
+os.environ.setdefault("MCP_WRAP_KAPTURE", os.getenv("MCP_WRAP_KAPTURE", "0"))
 os.environ.setdefault("MCP_WRAP_WINDOWS", os.getenv("MCP_WRAP_WINDOWS", "0"))
 os.environ.setdefault("MCP_WRAP_DESKTOP_COMMANDER", os.getenv("MCP_WRAP_DESKTOP_COMMANDER", "0"))
 

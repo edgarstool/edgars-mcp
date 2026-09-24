@@ -471,7 +471,7 @@ def _openmontage_registry_descriptors() -> list[dict]:
 def catalog_tool_descriptor() -> dict:
     return _tool(
         "wrap_catalog",
-        "List every wrapped source (Playwright, Windows-MCP, Desktop Commander, Descope, cloudflared, OpenMontage, Hermes, OpenClaw). Default is off; this catalog is always visible.",
+        "List every wrapped source (Playwright, Kapture, Windows-MCP, Desktop Commander, Descope, cloudflared, OpenMontage, Hermes, OpenClaw). Default is off; this catalog is always visible.",
         {},
         read_only=True,
     )

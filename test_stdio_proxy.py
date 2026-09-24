@@ -8,6 +8,27 @@ import stdio_proxy
 
 
 class StdioProxyPreflightTests(unittest.TestCase):
+    def test_load_auth_token_prefers_edgars_api_token(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"EDGARS_API_TOKEN": "  edgar-token  ", "MCP_API_TOKEN": "mcp-token"},
+            clear=True,
+        ):
+            self.assertEqual("edgar-token", stdio_proxy.load_auth_token())
+
+    def test_unresolved_env_reference_uses_windows_persistent_token(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"MCP_API_TOKEN": "${env:MCP_API_TOKEN}"},
+            clear=True,
+        ):
+            with mock.patch.object(
+                stdio_proxy,
+                "load_windows_persistent_mcp_api_token",
+                return_value="persistent-token",
+            ):
+                self.assertEqual("persistent-token", stdio_proxy.load_auth_token())
+
     def test_missing_token_aborts(self):
         with mock.patch.dict("os.environ", {}, clear=True):
             with self.assertRaises(stdio_proxy.PreflightError):

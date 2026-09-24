@@ -16,8 +16,8 @@ $config = Get-HandcraftConfig -Port $Port -LocalBaseUrl $LocalBaseUrl -PublicMcp
 $ownerPid = Get-PortOwnerPid -Port $config.Port
 $health = Invoke-HandcraftHttpProbe -Name "health" -Uri $config.LocalHealthUrl -TimeoutSec $TimeoutSec
 $cfProcs = @(Get-Process cloudflared -ErrorAction SilentlyContinue)
-$expectedToolsMin = 284
-$expectedToolsMax = 285
+$expectedToolsMin = 287
+$expectedToolsMax = 288
 $handshake = $null
 if (-not $SkipMcpHandshake) {
     $handshake = Invoke-HandcraftLocalMcpHandshake -McpUrl $config.LocalMcpUrl -TimeoutSec $TimeoutSec

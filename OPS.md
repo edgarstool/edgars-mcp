@@ -16,7 +16,7 @@ The login starter hydrates Process environment from Windows Machine/User scope b
 
 ## Canonical profile
 
-Expected generic MCP surface: **284–285 tools**. Breakdown: base 67; native wrappers 117 (catalog 1, OpenMontage 106, Hermes 5, OpenClaw 5); bridged upstreams 100–101 (Playwright 25, Windows-MCP 18, Desktop Commander 26, Kapture 31–32); optional generic Honcho upstream 0. Kapture may dynamically advertise `evaluate`, so 284 and 285 are both accepted for this profile. `MCP_WRAP_ALL` is off. Product/agent wrappers are individually enabled; Descope/cloudflared/1Password-Connect wrappers are individually disabled. Self-hosted Honcho is an identity-gated REST/memory plane and is not counted as a generic MCP upstream.
+Expected generic MCP surface: **284–285 tools**. Breakdown: base 67; native wrappers 120 (catalog 1, OpenMontage 106, Hermes 5, OpenClaw 5, Fleet 3); bridged upstreams 100–101 (Playwright 25, Windows-MCP 18, Desktop Commander 26, Kapture 31–32); optional generic Honcho upstream 0. Kapture may dynamically advertise `evaluate`, so 284 and 285 are both accepted for this profile. `MCP_WRAP_ALL` is off. Product/agent wrappers are individually enabled; Descope/cloudflared/1Password-Connect wrappers are individually disabled. Self-hosted Honcho is an identity-gated REST/memory plane and is not counted as a generic MCP upstream.
 
 ## Health
 

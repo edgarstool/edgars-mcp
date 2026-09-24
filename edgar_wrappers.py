@@ -36,6 +36,8 @@ HERMES_KNOWN = [
     r"C:\Users\EdgarsTool\AppData\Local\EdgarOS\bin\hermes.cmd",
     r"C:\Users\EdgarsTool\AppData\Local\hermes\hermes-agent\venv\Scripts\hermes.exe",
 ]
+FLEET_SCRIPT = Path(r"G:\AI_WORK_512\bin\edgar-fleet.ps1")
+
 OPENCLAW_KNOWN = [
     r"C:\Users\EdgarsTool\AppData\Roaming\npm\openclaw.cmd",
     r"C:\Users\EdgarsTool\AppData\Local\EdgarOS\bin\openclaw.cmd",
@@ -186,6 +188,7 @@ NATIVE_FLAG = {
     "hermes": "MCP_WRAP_HERMES",
     "openclaw": "MCP_WRAP_OPENCLAW",
     "descope": "MCP_WRAP_DESCOPE",
+    "fleet": "MCP_WRAP_FLEET",
 }
 
 
@@ -471,7 +474,7 @@ def _openmontage_registry_descriptors() -> list[dict]:
 def catalog_tool_descriptor() -> dict:
     return _tool(
         "wrap_catalog",
-        "List every wrapped source (Playwright, Kapture, Windows-MCP, Desktop Commander, Descope, cloudflared, OpenMontage, Hermes, OpenClaw). Default is off; this catalog is always visible.",
+        "List every wrapped source (Playwright, Kapture, Windows-MCP, Desktop Commander, Descope, cloudflared, OpenMontage, Hermes, OpenClaw, Fleet). Default is off; this catalog is always visible.",
         {},
         read_only=True,
     )
@@ -487,8 +490,87 @@ def list_wrap_tools() -> list[dict]:
     tools.extend(_openmontage_tools())
     tools.extend(_hermes_tools())
     tools.extend(_openclaw_tools())
+    tools.extend(_fleet_tools())
     return tools
 
+
+
+def _fleet_tools() -> list[dict]:
+    if not _enabled("MCP_WRAP_FLEET"):
+        return []
+    target = {
+        "type": "string",
+        "enum": ["all", "kamatera", "ovh-main", "ovh-sidecar", "azure"],
+        "description": "Allowed fleet target.",
+    }
+    return [
+        _tool(
+            "fleet_health",
+            "[EDGAR Fleet] Check one allowed worker target or the whole fleet.",
+            {"target": target},
+            read_only=True,
+        ),
+        _tool(
+            "fleet_benchmark",
+            "[EDGAR Fleet] Run the bounded benchmark contract on one allowed target or the whole fleet.",
+            {"target": target},
+            read_only=True,
+        ),
+        _tool(
+            "fleet_dispatch",
+            "[EDGAR Fleet] Dispatch a bounded text canary/task message to one allowed target or the whole fleet. No shell/argv input is exposed.",
+            {
+                "target": target,
+                "message": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000,
+                    "description": "Plain text task/canary message; not a shell command.",
+                },
+            },
+            ["target", "message"],
+        ),
+    ]
+
+
+def _handle_fleet(name: str, arguments: dict) -> dict:
+    allowed_targets = {"all", "kamatera", "ovh-main", "ovh-sidecar", "azure"}
+    target = str(arguments.get("target") or "all").strip()
+    if target not in allowed_targets:
+        return _text(f"invalid fleet target: {target}", is_error=True)
+    if not FLEET_SCRIPT.is_file():
+        return _text(f"fleet dispatcher missing: {FLEET_SCRIPT}", is_error=True)
+
+    action_by_tool = {
+        "fleet_health": "health",
+        "fleet_benchmark": "benchmark",
+        "fleet_dispatch": "dispatch",
+    }
+    action = action_by_tool.get(name)
+    if not action:
+        return _text(f"unknown fleet tool: {name}", is_error=True)
+
+    argv = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(FLEET_SCRIPT),
+        "-Target",
+        target,
+        "-Action",
+        action,
+    ]
+    if action == "dispatch":
+        message = str(arguments.get("message") or "").strip()
+        if not message:
+            return _text("fleet_dispatch requires a non-empty message", is_error=True)
+        if len(message) > 1000:
+            return _text("fleet_dispatch message exceeds 1000 characters", is_error=True)
+        argv.extend(["-Message", message])
+
+    return _run(argv, timeout=180)
 
 def _handle_descope(name: str, arguments: dict) -> dict:
     if name == "descope__sdk_status":
@@ -802,6 +884,7 @@ def dispatch_wrap_tool(name: str, arguments: dict | None) -> dict | None:
         ("om__", "openmontage", _handle_openmontage),
         ("hermes_", "hermes", _handle_hermes),
         ("openclaw_", "openclaw", _handle_openclaw),
+        ("fleet_", "fleet", _handle_fleet),
     )
     for prefix, native_id, handler in groups:
         if not name.startswith(prefix):

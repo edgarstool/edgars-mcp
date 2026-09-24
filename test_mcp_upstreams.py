@@ -26,6 +26,7 @@ class WrapDefaultOffTests(unittest.TestCase):
         self.assertNotIn("cloudflared_cli", names)
         self.assertNotIn("om__status", names)
         self.assertNotIn("descope__sdk_status", names)
+        self.assertNotIn("fleet_dispatch", names)
         self.assertFalse(any(name.startswith("pw__") for name in names))
         self.assertFalse(any(name.startswith("win__") for name in names))
         self.assertFalse(any(name.startswith("dc__") for name in names))
@@ -60,6 +61,7 @@ class WrapDefaultOffTests(unittest.TestCase):
             "hermes",
             "openclaw",
             "descope",
+            "fleet",
         ):
             self.assertIn(required, ids)
 
@@ -100,6 +102,17 @@ class WrapDefaultOffTests(unittest.TestCase):
             names = [tool["name"] for tool in edgar_wrappers.list_wrap_tools()]
         for required in ("openclaw_cli", "openclaw_agent", "openclaw_status", "openclaw_version", "openclaw_health"):
             self.assertIn(required, names)
+
+    def test_enabled_fleet_lists_bounded_surface(self):
+        with patch.dict(os.environ, {"MCP_WRAP_FLEET": "1"}, clear=False):
+            tools = edgar_wrappers.list_wrap_tools()
+        by_name = {tool["name"]: tool for tool in tools}
+        self.assertTrue({"fleet_health", "fleet_benchmark", "fleet_dispatch"} <= set(by_name))
+        dispatch = by_name["fleet_dispatch"]
+        self.assertIn("target", dispatch["inputSchema"]["properties"])
+        self.assertIn("message", dispatch["inputSchema"]["properties"])
+        self.assertNotIn("command", dispatch["inputSchema"]["properties"])
+        self.assertNotIn("args", dispatch["inputSchema"]["properties"])
 
     def test_enabled_cloudflared_keeps_start_stop_and_cli(self):
         with patch.dict(os.environ, {"MCP_WRAP_CLOUDFLARED": "1"}, clear=False):

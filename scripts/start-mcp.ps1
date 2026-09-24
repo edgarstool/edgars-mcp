@@ -43,7 +43,7 @@ $config | Add-Member -NotePropertyName WaitSeconds -NotePropertyValue $WaitSecon
 Write-Host "[start-mcp] repo=$($config.RepoRoot)"
 Write-Host "[start-mcp] health=$($config.LocalHealthUrl)"
 
-# Canonical Windows-native 284-tool generic MCP profile.
+# Canonical Windows-native 287-tool generic MCP profile.
 $extraEnv = @{
     MCP_WRAP_ALL               = "0"
     MCP_WRAP_ALLOW_REMOTE      = "0"
@@ -54,6 +54,7 @@ $extraEnv = @{
     MCP_WRAP_OPENMONTAGE       = "1"
     MCP_WRAP_HERMES            = "1"
     MCP_WRAP_OPENCLAW          = "1"
+    MCP_WRAP_FLEET             = "1"
     MCP_WRAP_DESCOPE           = "0"
     MCP_WRAP_CLOUDFLARED       = "0"
 }

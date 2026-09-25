@@ -16,8 +16,7 @@ $config = Get-HandcraftConfig -Port $Port -LocalBaseUrl $LocalBaseUrl -PublicMcp
 $ownerPid = Get-PortOwnerPid -Port $config.Port
 $health = Invoke-HandcraftHttpProbe -Name "health" -Uri $config.LocalHealthUrl -TimeoutSec $TimeoutSec
 $cfProcs = @(Get-Process cloudflared -ErrorAction SilentlyContinue)
-$expectedToolsMin = 287
-$expectedToolsMax = 288
+$expectedTools = 288
 $handshake = $null
 if (-not $SkipMcpHandshake) {
     $handshake = Invoke-HandcraftLocalMcpHandshake -McpUrl $config.LocalMcpUrl -TimeoutSec $TimeoutSec
@@ -28,8 +27,7 @@ if (-not $SkipMcpHandshake) {
     $handshakeOk = [bool](
         $handshake -and
         $handshake.ok -and
-        ([int]$handshake.tool_count -ge $expectedToolsMin) -and
-        ([int]$handshake.tool_count -le $expectedToolsMax)
+        ([int]$handshake.tool_count -eq $expectedTools)
     )
 }
 $overallOk = [bool]($health.ok -and $handshakeOk)
@@ -39,7 +37,7 @@ Write-Host "=== edgars-mcp canonical status ==="
 Write-Host ("HTTP :{0} {1} pid={2}" -f $config.Port, $(if ($health.ok) { "OK" } else { "DOWN" }), $ownerPid)
 Write-Host ("cloudflared {0} process(es)" -f $cfProcs.Count)
 if ($handshake) {
-    $label = if ($handshakeOk) { "OK tools=$($handshake.tool_count)" } else { "FAIL tools=$($handshake.tool_count) expected=$expectedToolsMin-$expectedToolsMax" }
+    $label = if ($handshakeOk) { "OK tools=$($handshake.tool_count)" } else { "FAIL tools=$($handshake.tool_count) expected=$expectedTools" }
     Write-Host ("MCP handshake {0}" -f $label)
 }
 
@@ -51,8 +49,7 @@ $result = [ordered]@{
     pid = $ownerPid
     cloudflared = @{ count = $cfProcs.Count; pids = @($cfProcs | ForEach-Object { $_.Id }) }
     handshake = $handshake
-    expected_tools_min = $expectedToolsMin
-    expected_tools_max = $expectedToolsMax
+    expected_tools = $expectedTools
     checked_at = (Get-Date).ToString("o")
 }
 $result | ConvertTo-Json -Depth 6

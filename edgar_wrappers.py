@@ -129,6 +129,25 @@ def _run(argv: list[str], *, cwd: str | None = None, timeout: int = 120, env: di
     }, is_error=result.returncode != 0)
 
 
+def _run_fleet(argv: list[str], *, timeout: int = 180) -> dict:
+    """Run the fixed fleet dispatcher without leaking its local argv contract."""
+    response = _run(argv, timeout=timeout)
+    payload = response.get("structuredContent")
+    if not isinstance(payload, dict):
+        return response
+    safe_payload = dict(payload)
+    safe_payload.pop("argv", None)
+    output = safe_payload.get("output")
+    if isinstance(output, str):
+        try:
+            safe_payload["result"] = json.loads(output)
+        except (TypeError, ValueError):
+            # Keep the bounded textual output for diagnostics when the
+            # dispatcher fails before it can emit JSON.
+            pass
+    return _json(safe_payload, is_error=bool(response.get("isError")))
+
+
 def _as_argv(arguments: dict) -> list[str]:
     raw = arguments.get("args")
     if isinstance(raw, str) and raw.strip():
@@ -498,29 +517,47 @@ def list_wrap_tools() -> list[dict]:
 def _fleet_tools() -> list[dict]:
     if not _enabled("MCP_WRAP_FLEET"):
         return []
-    target = {
+    direct_target = {
         "type": "string",
         "enum": ["all", "kamatera", "ovh-main", "ovh-sidecar", "azure"],
         "description": "Allowed fleet target.",
+    }
+    dispatch_target = {
+        "type": "string",
+        "enum": ["auto", "all", "kamatera", "ovh-main", "ovh-sidecar", "azure"],
+        "description": "Allowed fleet target. auto performs a fresh bounded route before dispatch.",
+    }
+    task_type = {
+        "type": "string",
+        "enum": ["general", "website-audit", "event", "lightweight"],
+        "default": "general",
+        "description": "Bounded routing class used by fleet_route and fleet_dispatch target=auto.",
     }
     return [
         _tool(
             "fleet_health",
             "[EDGAR Fleet] Check one allowed worker target or the whole fleet.",
-            {"target": target},
+            {"target": direct_target},
             read_only=True,
         ),
         _tool(
             "fleet_benchmark",
             "[EDGAR Fleet] Run the bounded benchmark contract on one allowed target or the whole fleet.",
-            {"target": target},
+            {"target": direct_target},
+            read_only=True,
+        ),
+        _tool(
+            "fleet_route",
+            "[EDGAR Fleet] Read-only live route decision with health, capacity checks, finite OVH-credit guard, ordered fallbacks, and reason.",
+            {"task_type": task_type},
             read_only=True,
         ),
         _tool(
             "fleet_dispatch",
-            "[EDGAR Fleet] Dispatch a bounded text canary/task message to one allowed target or the whole fleet. No shell/argv input is exposed.",
+            "[EDGAR Fleet] Dispatch a bounded text canary/task message. target=auto performs a fresh route. No shell/argv input or local argv output is exposed.",
             {
-                "target": target,
+                "target": dispatch_target,
+                "task_type": task_type,
                 "message": {
                     "type": "string",
                     "minLength": 1,
@@ -534,16 +571,23 @@ def _fleet_tools() -> list[dict]:
 
 
 def _handle_fleet(name: str, arguments: dict) -> dict:
-    allowed_targets = {"all", "kamatera", "ovh-main", "ovh-sidecar", "azure"}
-    target = str(arguments.get("target") or "all").strip()
+    allowed_targets = {"all", "auto", "kamatera", "ovh-main", "ovh-sidecar", "azure"}
+    target = str(arguments.get("target") or ("auto" if name == "fleet_route" else "all")).strip()
     if target not in allowed_targets:
         return _text(f"invalid fleet target: {target}", is_error=True)
+    if target == "auto" and name not in {"fleet_dispatch", "fleet_route"}:
+        return _text("fleet target auto is only supported by fleet_dispatch or fleet_route", is_error=True)
+    task_type = str(arguments.get("task_type") or "general").strip()
+    allowed_task_types = {"general", "website-audit", "event", "lightweight"}
+    if task_type not in allowed_task_types:
+        return _text(f"invalid fleet task_type: {task_type}", is_error=True)
     if not FLEET_SCRIPT.is_file():
         return _text(f"fleet dispatcher missing: {FLEET_SCRIPT}", is_error=True)
 
     action_by_tool = {
         "fleet_health": "health",
         "fleet_benchmark": "benchmark",
+        "fleet_route": "route",
         "fleet_dispatch": "dispatch",
     }
     action = action_by_tool.get(name)
@@ -562,6 +606,8 @@ def _handle_fleet(name: str, arguments: dict) -> dict:
         "-Action",
         action,
     ]
+    if action in {"route", "dispatch"}:
+        argv.extend(["-TaskType", task_type])
     if action == "dispatch":
         message = str(arguments.get("message") or "").strip()
         if not message:
@@ -570,7 +616,7 @@ def _handle_fleet(name: str, arguments: dict) -> dict:
             return _text("fleet_dispatch message exceeds 1000 characters", is_error=True)
         argv.extend(["-Message", message])
 
-    return _run(argv, timeout=180)
+    return _run_fleet(argv, timeout=180)
 
 def _handle_descope(name: str, arguments: dict) -> dict:
     if name == "descope__sdk_status":

@@ -107,12 +107,68 @@ class WrapDefaultOffTests(unittest.TestCase):
         with patch.dict(os.environ, {"MCP_WRAP_FLEET": "1"}, clear=False):
             tools = edgar_wrappers.list_wrap_tools()
         by_name = {tool["name"]: tool for tool in tools}
-        self.assertTrue({"fleet_health", "fleet_benchmark", "fleet_dispatch"} <= set(by_name))
+        self.assertTrue({"fleet_health", "fleet_benchmark", "fleet_route", "fleet_dispatch"} <= set(by_name))
+        route = by_name["fleet_route"]
+        self.assertEqual(
+            ["general", "website-audit", "event", "lightweight"],
+            route["inputSchema"]["properties"]["task_type"]["enum"],
+        )
         dispatch = by_name["fleet_dispatch"]
         self.assertIn("target", dispatch["inputSchema"]["properties"])
+        self.assertIn("auto", dispatch["inputSchema"]["properties"]["target"]["enum"])
+        self.assertIn("task_type", dispatch["inputSchema"]["properties"])
         self.assertIn("message", dispatch["inputSchema"]["properties"])
         self.assertNotIn("command", dispatch["inputSchema"]["properties"])
         self.assertNotIn("args", dispatch["inputSchema"]["properties"])
+        self.assertNotIn("shell", dispatch["inputSchema"]["properties"])
+        self.assertNotIn("argv", dispatch["inputSchema"]["properties"])
+
+    def test_fleet_route_and_auto_dispatch_use_fixed_arguments_without_leaking_argv(self):
+        runner_response = edgar_wrappers._json(
+            {
+                "argv": ["powershell.exe", "-File", "G:/hidden/edgar-fleet.ps1"],
+                "exit_code": 0,
+                "output": '{"selected_target":"azure"}',
+            }
+        )
+        with patch.object(edgar_wrappers, "_run", return_value=runner_response) as run:
+            route_response = edgar_wrappers._handle_fleet(
+                "fleet_route",
+                {"task_type": "event"},
+            )
+            dispatch_response = edgar_wrappers._handle_fleet(
+                "fleet_dispatch",
+                {
+                    "target": "auto",
+                    "task_type": "website-audit",
+                    "message": "bounded website-audit canary",
+                },
+            )
+
+        route_argv = run.call_args_list[0].args[0]
+        dispatch_argv = run.call_args_list[1].args[0]
+        self.assertEqual("route", route_argv[route_argv.index("-Action") + 1])
+        self.assertEqual("event", route_argv[route_argv.index("-TaskType") + 1])
+        self.assertNotIn("-Message", route_argv)
+        self.assertEqual("auto", dispatch_argv[dispatch_argv.index("-Target") + 1])
+        self.assertEqual("dispatch", dispatch_argv[dispatch_argv.index("-Action") + 1])
+        self.assertEqual("website-audit", dispatch_argv[dispatch_argv.index("-TaskType") + 1])
+        self.assertEqual("bounded website-audit canary", dispatch_argv[dispatch_argv.index("-Message") + 1])
+        for response in (route_response, dispatch_response):
+            self.assertFalse(response["isError"])
+            self.assertNotIn("argv", response["structuredContent"])
+            self.assertEqual({"selected_target": "azure"}, response["structuredContent"]["result"])
+
+    def test_fleet_rejects_auto_for_non_dispatch_and_unknown_task_type(self):
+        auto_health = edgar_wrappers._handle_fleet("fleet_health", {"target": "auto"})
+        bad_task_type = edgar_wrappers._handle_fleet(
+            "fleet_dispatch",
+            {"target": "auto", "task_type": "unbounded", "message": "canary"},
+        )
+        self.assertTrue(auto_health["isError"])
+        self.assertIn("only supported", auto_health["content"][0]["text"])
+        self.assertTrue(bad_task_type["isError"])
+        self.assertIn("invalid fleet task_type", bad_task_type["content"][0]["text"])
 
     def test_enabled_cloudflared_keeps_start_stop_and_cli(self):
         with patch.dict(os.environ, {"MCP_WRAP_CLOUDFLARED": "1"}, clear=False):

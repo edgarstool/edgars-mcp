@@ -12,7 +12,7 @@ Port `8765` is MCP-only. Webhook/event ingress does **not** run in `server_http.
 - Public edge: `https://mcp.edgars.tools/mcp`
 - Startup task: `edgars-mcp-http` -> `scripts\Start_Handcraft_MCP_HTTP.vbs`
 - Runtime config/secrets: Windows Machine/User environment variables read directly by Python
-- Canonical generic MCP surface: **288–289 tools** (source-dependent snapshot range after fleet_route)
+- Canonical restart-stable generic MCP surface: **288 tools** (fresh runtime baseline after `fleet_route`)
 
 Supported startup chain:
 
@@ -27,23 +27,23 @@ Windows Scheduled Task
 
 The legacy secret-runner/bootstrap launchers, container bootstrap, and retired batch launchers are removed and are not fallbacks.
 
-## Canonical 288–289-tool profile
+## Canonical 288-tool profile
 
 `start-mcp.ps1` explicitly enables Playwright, Kapture, Windows-MCP, Desktop Commander, OpenMontage, Hermes, OpenClaw, and Fleet wrappers. It explicitly disables Descope, cloudflared, and 1Password Connect wrappers inside edgars-mcp. `MCP_WRAP_ALL` stays off.
 
 ### Live inventory baseline
 
-The generic tool surface is source-accounted rather than pinned to one brittle total. With fleet_route added, Kapture exposing 31 bridge tools yields 288 tools; its dynamic evaluate tool yields 289:
+The generic tool surface is source-accounted and restart-verified. With `fleet_route` added, a fresh Kapture bridge exposes 31 tools, yielding the canonical 288-tool profile:
 
 | Layer | Source | Tools |
 | --- | --- | ---: |
 | Base | `server_http.py` base surface | 67 |
 | Native wrapper | wrapper catalog + OpenMontage + Hermes + OpenClaw + Fleet | 121 |
-| MCP upstream bridge | Playwright 25 + Windows-MCP 18 + Desktop Commander 26 + Kapture 31–32 | 100–101 |
+| MCP upstream bridge | Playwright 25 + Windows-MCP 18 + Desktop Commander 26 + Kapture 31 | 100 |
 | Optional upstream | generic Honcho bridge | 0 |
-| **Total generic MCP surface** |  | **288–289** |
+| **Total generic MCP surface** |  | **288** |
 
-All exposed names are unique under both exact and case-insensitive comparison. Kapture can advertise evaluate dynamically, so an exact total of 288 versus 289 is not itself a regression; source availability, uniqueness, and the accepted 288–289 range are the stable acceptance criteria.
+All exposed names are unique under both exact and case-insensitive comparison. The earlier 289 snapshot came from a pre-restart Kapture bridge session that still exposed `kapture__evaluate`; fresh bridge connections and a restarted aggregate runtime expose 31 Kapture tools without `evaluate`. Treat 288 as the restart-stable acceptance baseline.
 
 Honcho is not counted as a generic MCP upstream. The current self-hosted `honcho.edgars.tools` service is an identity-gated REST/memory plane, not a generic MCP server. ChatGPT/Honcho access uses the dedicated `/chatgpt-honcho` contract; generic Honcho MCP proxying is opt-in only through an explicit `HONCHO_MCP_UPSTREAM_URL`. Its independent health route is `https://honcho.edgars.tools/health`.
 
@@ -87,4 +87,4 @@ hermes mcp test edgars-mcp
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\status-wrap.ps1
 ```
 
-Accepted state: local health returns 200, hermes mcp test edgars-mcp discovers **288–289 generic tools**, status-wrap.ps1 validates that accepted range, MCP tools/list contains no linear_* tools, /linear/oauth/* returns 404, and no active startup/docs path uses the retired Linear or secret-runner/bootstrap architecture.
+Accepted state: local health returns 200, `hermes mcp test edgars-mcp` discovers **288 generic tools**, `status-wrap.ps1` validates the exact restart-stable count, MCP `tools/list` contains no `linear_*` tools, `/linear/oauth/*` returns 404, and no active startup/docs path uses the retired Linear or secret-runner/bootstrap architecture.

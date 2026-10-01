@@ -930,23 +930,53 @@ def tool_knowledge_context_pack(args: dict[str, Any]) -> dict[str, Any]:
     return structured_ok(pack)
 
 
+def _backend_health_qmd(qmd: Any, s_status: int) -> dict[str, Any]:
+    """Gateway answers HTTP 200 even when QMD is down: inspect qmd.error and per-bucket error.
+
+    2026-09-26..10-02 outage: a bucket like {"error": "...Connection refused"} was counted as a hit.
+    """
+    if not isinstance(qmd, dict):
+        return {"reachable": False, "search_http": s_status, "error": "gateway response had no qmd section"}
+    buckets = qmd.get("hits") or []
+    bucket_errors = [str(b.get("error")) for b in buckets if isinstance(b, dict) and b.get("error")]
+    error = qmd.get("error") or (bucket_errors[0] if bucket_errors else None)
+    real = [b for b in buckets if not (isinstance(b, dict) and b.get("error"))]
+    return {
+        "reachable": s_status == 200 and error is None and qmd.get("hits") is not None,
+        "search_http": s_status,
+        "hit_count": len(real),
+        "error_bucket_count": len(bucket_errors),
+        "error": str(error) if error else None,
+        "source": qmd.get("source"),
+        "backend": qmd.get("backend"),
+    }
+
+
+def _backend_health_honcho(honcho: Any, s_status: int) -> dict[str, Any]:
+    if not isinstance(honcho, dict):
+        return {"reachable": False, "search_http": s_status, "error": "gateway response had no honcho section"}
+    status = honcho.get("status")
+    error = honcho.get("error")
+    if error is None and isinstance(status, int) and status != 200:
+        error = f"honcho HTTP {status}"
+    return {
+        "reachable": s_status == 200 and error is None,
+        "search_http": s_status,
+        "hit_count": len(honcho.get("hits") or []),
+        "status": status,
+        "error": str(error) if error else None,
+    }
+
+
 def tool_knowledge_status(_args: dict[str, Any]) -> dict[str, Any]:
     h_status, health = http_json("GET", "/health")
     s_status, sdata = http_json("POST", "/search", {"query": "Edgar's Knowledge status probe"})
     backends: dict[str, Any] = {"knowledge_api": {"http_status": h_status, "body": health}}
     if isinstance(sdata, dict):
-        backends["honcho"] = {
-            "reachable": s_status == 200,
-            "search_http": s_status,
-            "hit_count": len((sdata.get("honcho") or {}).get("hits") or []),
-            "status": (sdata.get("honcho") or {}).get("status"),
-        }
-        backends["qmd"] = {
-            "reachable": s_status == 200 and bool((sdata.get("qmd") or {}).get("hits") is not None),
-            "search_http": s_status,
-            "hit_count": len((sdata.get("qmd") or {}).get("hits") or []),
-            "source": (sdata.get("qmd") or {}).get("source"),
-        }
+        honcho = sdata.get("honcho")
+        qmd = sdata.get("qmd")
+        backends["honcho"] = _backend_health_honcho(honcho, s_status)
+        backends["qmd"] = _backend_health_qmd(qmd, s_status)
     else:
         backends["honcho"] = {"reachable": False, "error": sdata}
         backends["qmd"] = {"reachable": False, "error": sdata}

@@ -12,7 +12,7 @@ Port `8765` is MCP-only. Webhook/event ingress does **not** run in `server_http.
 - Public edge: `https://mcp.edgars.tools/mcp`
 - Startup task: `edgars-mcp-http` -> `scripts\Start_Handcraft_MCP_HTTP.vbs`
 - Runtime config/secrets: Windows Machine/User environment variables read directly by Python
-- Canonical restart-stable generic MCP surface: **288 tools** (fresh runtime baseline after `fleet_route`)
+- Canonical restart-stable generic MCP surface: **384 tools** (fresh runtime after removing `gemini_agent` and `claude_code_agent`, adding YouTrack `yt__`, Chrome DevTools `cdp__`, and richer Codex / Hermes / OpenClaw tools)
 
 Supported startup chain:
 
@@ -27,23 +27,23 @@ Windows Scheduled Task
 
 The legacy secret-runner/bootstrap launchers, container bootstrap, and retired batch launchers are removed and are not fallbacks.
 
-## Canonical 288-tool profile
+## Canonical 384-tool profile
 
-`start-mcp.ps1` explicitly enables Playwright, Kapture, Windows-MCP, Desktop Commander, OpenMontage, Hermes, OpenClaw, and Fleet wrappers. It explicitly disables Descope, cloudflared, and 1Password Connect wrappers inside edgars-mcp. `MCP_WRAP_ALL` stays off.
+`start-mcp.ps1` explicitly enables Playwright, Kapture, Windows-MCP, Desktop Commander, OpenMontage, Hermes, OpenClaw, Fleet, YouTrack (`yt__`), and Chrome DevTools (`cdp__`). It explicitly disables Descope, cloudflared, and 1Password Connect wrappers inside edgars-mcp. `MCP_WRAP_ALL` stays off. Linear tools stay off the public `tools/list`.
 
 ### Live inventory baseline
 
-The generic tool surface is source-accounted and restart-verified. With `fleet_route` added, a fresh Kapture bridge exposes 31 tools, yielding the canonical 288-tool profile:
+The generic tool surface is source-accounted and restart-verified. A fresh Kapture bridge exposes 31 tools. YouTrack exposes 23 `yt__` tools. Chrome DevTools exposes 29 `cdp__` tools. Codex adds resume, review, version, doctor, login status, and mcp list beside `codex_agent`. Hermes is 13 tools and OpenClaw is 11 tools. `gemini_agent` and `claude_code_agent` stay removed.
 
 | Layer | Source | Tools |
 | --- | --- | ---: |
-| Base | `server_http.py` base surface | 67 |
-| Native wrapper | wrapper catalog + OpenMontage + Hermes + OpenClaw + Fleet | 121 |
-| MCP upstream bridge | Playwright 25 + Windows-MCP 18 + Desktop Commander 26 + Kapture 31 | 100 |
+| Base | `server_http.py` base surface, including 7 `codex_*` tools | 71 |
+| Native wrapper | catalog 1 + OpenMontage 132 + Hermes 13 + OpenClaw 11 + Fleet 4 | 161 |
+| MCP upstream bridge | Playwright 25 + Windows-MCP 18 + Desktop Commander 26 + Kapture 31 + YouTrack 23 + Chrome DevTools 29 | 152 |
 | Optional upstream | generic Honcho bridge | 0 |
-| **Total generic MCP surface** |  | **288** |
+| **Total generic MCP surface** |  | **384** |
 
-All exposed names are unique under both exact and case-insensitive comparison. The earlier 289 snapshot came from a pre-restart Kapture bridge session that still exposed `kapture__evaluate`; fresh bridge connections and a restarted aggregate runtime expose 31 Kapture tools without `evaluate`. Treat 288 as the restart-stable acceptance baseline.
+All exposed names are unique under both exact and case-insensitive comparison. The earlier 289 snapshot came from a pre-restart Kapture bridge session that still exposed `kapture__evaluate`; fresh bridge connections and a restarted aggregate runtime expose 31 Kapture tools without `evaluate`. Treat 384 as the restart-stable acceptance baseline.
 
 Honcho is not counted as a generic MCP upstream. The current self-hosted `honcho.edgars.tools` service is an identity-gated REST/memory plane, not a generic MCP server. ChatGPT/Honcho access uses the dedicated `/chatgpt-honcho` contract; generic Honcho MCP proxying is opt-in only through an explicit `HONCHO_MCP_UPSTREAM_URL`. Its independent health route is `https://honcho.edgars.tools/health`.
 
@@ -81,7 +81,7 @@ EDGAR_FLEET_OVH_FREE_TRIAL_EXPIRES_AT is a non-secret, finite UTC cut-off suppli
 
 ## Structured output contract（結構化輸出合約）
 
-`tools/list` 對每個工具宣告 `outputSchema`（輸出結構宣告）；沒有自訂 schema 的工具套用預設文字 schema（`content` 文字區塊 + `isError`），這類工具的 `tools/call` 成功結果會附上符合該 schema 的 `structuredContent` envelope，讓驗證 output schema 的 strict client（嚴格用戶端）能直接接受。既有 `structuredContent`、錯誤回應與自訂 schema 工具（Honcho bridge descriptors、`claude_code_agent`）行為不變。schema 查詢只讀現有資料：Honcho 只用既有快取、stdio 上游沿用連線時快取的工具清單，HTTP 上游在既有 30 秒快取過期時會依既有策略重新讀取 tools/list。
+`tools/list` 對每個工具宣告 `outputSchema`（輸出結構宣告）；沒有自訂 schema 的工具套用預設文字 schema（`content` 文字區塊 + `isError`），這類工具的 `tools/call` 成功結果會附上符合該 schema 的 `structuredContent` envelope，讓驗證 output schema 的 strict client（嚴格用戶端）能直接接受。既有 `structuredContent`、錯誤回應與自訂 schema 工具（Honcho bridge descriptors）行為不變。schema 查詢只讀現有資料：Honcho 只用既有快取、stdio 上游沿用連線時快取的工具清單，HTTP 上游在既有 30 秒快取過期時會依既有策略重新讀取 tools/list。
 
 ## Acceptance
 
@@ -91,4 +91,4 @@ hermes mcp test edgars-mcp
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\status-wrap.ps1
 ```
 
-Accepted state: local health returns 200, `hermes mcp test edgars-mcp` discovers **288 generic tools**, `status-wrap.ps1` validates the exact restart-stable count, MCP `tools/list` contains no `linear_*` tools, `/linear/oauth/*` returns 404, and no active startup/docs path uses the retired Linear or secret-runner/bootstrap architecture.
+Accepted state: local health returns 200, `hermes mcp test edgars-mcp` discovers **384 generic tools**, `status-wrap.ps1` validates the exact restart-stable count, MCP `tools/list` contains no `linear_*` tools, `/linear/oauth/*` returns 404, and no active startup/docs path uses the retired Linear or secret-runner/bootstrap architecture.

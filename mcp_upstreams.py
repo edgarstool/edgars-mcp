@@ -193,8 +193,47 @@ def _descope_mcp_spec() -> UpstreamSpec | None:
     return None
 
 
+def _youtrack_spec() -> UpstreamSpec:
+    root = os.path.dirname(os.path.abspath(__file__))
+    script = os.path.join(root, "scripts", "youtrack-mcp-proxy.mjs")
+    return UpstreamSpec(
+        id="youtrack",
+        prefix="yt__",
+        title="YouTrack MCP",
+        env_flag="MCP_WRAP_YOUTRACK",
+        command="node",
+        args=(script,),
+        cwd=root,
+        local_only=True,
+        timeout_seconds=180.0,
+        extra_env_keys=("YOUTRACK_API_KEY",),
+    )
+
+
+def _chrome_devtools_spec() -> UpstreamSpec:
+    root = r"V:\tools\mcp\chrome-devtools-mcp"
+    entry = os.path.join(root, "build", "src", "bin", "chrome-devtools-mcp.js")
+    return UpstreamSpec(
+        id="chrome_devtools",
+        prefix="cdp__",
+        title="Chrome DevTools MCP",
+        env_flag="MCP_WRAP_CHROME_DEVTOOLS",
+        command="node",
+        args=(entry,),
+        cwd=root,
+        local_only=True,
+    )
+
+
 def builtin_upstream_specs() -> list[UpstreamSpec]:
-    specs = [_playwright_spec(), _windows_spec(), _desktop_commander_spec(), _kapture_spec()]
+    specs = [
+        _playwright_spec(),
+        _windows_spec(),
+        _desktop_commander_spec(),
+        _kapture_spec(),
+        _youtrack_spec(),
+        _chrome_devtools_spec(),
+    ]
     descope = _descope_mcp_spec()
     if descope is not None:
         specs.append(descope)

@@ -16,7 +16,7 @@ The login starter hydrates Process environment from Windows Machine/User scope b
 
 ## Canonical profile
 
-Expected generic MCP surface: **288 tools**. Breakdown: base 67; native wrappers 121 (catalog 1, OpenMontage 106, Hermes 5, OpenClaw 5, Fleet 4); bridged upstreams 100 (Playwright 25, Windows-MCP 18, Desktop Commander 26, Kapture 31); optional generic Honcho upstream 0. Fresh Kapture bridge connections do not expose `evaluate`; the earlier 289 snapshot was a stale pre-restart bridge session and is not canonical. `MCP_WRAP_ALL` is off. Product/agent wrappers are individually enabled; Descope/cloudflared/1Password-Connect wrappers are individually disabled. Self-hosted Honcho is an identity-gated REST/memory plane and is not counted as a generic MCP upstream.
+Expected generic MCP surface: **384 tools**. Breakdown: base 71 (includes 7 `codex_*` tools); native wrappers 161 (catalog 1, OpenMontage 132, Hermes 13, OpenClaw 11, Fleet 4); bridged upstreams 152 (Playwright 25, Windows-MCP 18, Desktop Commander 26, Kapture 31, YouTrack 23, Chrome DevTools 29); optional generic Honcho upstream 0. `gemini_agent` and `claude_code_agent` are removed from the base surface. Linear is not advertised; YouTrack is the `yt__` bridge. Fresh Kapture bridge connections do not expose `evaluate`. `MCP_WRAP_ALL` is off. Product/agent wrappers are individually enabled, including YouTrack and Chrome DevTools. Descope/cloudflared/1Password-Connect wrappers stay individually disabled because their optional command/URL env is not configured. Self-hosted Honcho is an identity-gated REST/memory plane and is not counted as a generic MCP upstream.
 
 ## Health
 
@@ -48,4 +48,4 @@ Maintenance checks Python/cloudflared, rotates logs, validates health, and can r
 1. Python syntax compile passes.
 2. Focused tests pass; Windows-only live assertions may be skipped on non-Windows CI.
 3. Active runtime/docs scan finds zero retired launch references.
-4. Windows live verification returns health 200 and exactly 288 tools via both local `tools/list` and `hermes mcp test edgars-mcp`; tool names have no exact or case-insensitive collision.
+4. Windows live verification returns health 200 and exactly 384 tools via both local `tools/list` and `hermes mcp test edgars-mcp`; tool names have no exact or case-insensitive collision.

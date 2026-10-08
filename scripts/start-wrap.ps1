@@ -49,7 +49,10 @@ function Read-WrapProfileEnv {
         "MCP_WRAP_CLOUDFLARED",
         "MCP_WRAP_OPENMONTAGE",
         "MCP_WRAP_HERMES",
-        "MCP_WRAP_OPENCLAW"
+        "MCP_WRAP_OPENCLAW",
+        "MCP_WRAP_FLEET",
+        "MCP_WRAP_YOUTRACK",
+        "MCP_WRAP_CHROME_DEVTOOLS"
     )
     $extra = [ordered]@{}
     foreach ($key in $keys) { $extra[$key] = "0" }
@@ -64,6 +67,9 @@ function Read-WrapProfileEnv {
         $extra["MCP_WRAP_OPENMONTAGE"] = "1"
         $extra["MCP_WRAP_HERMES"] = "1"
         $extra["MCP_WRAP_OPENCLAW"] = "1"
+        $extra["MCP_WRAP_FLEET"] = "1"
+        $extra["MCP_WRAP_YOUTRACK"] = "1"
+        $extra["MCP_WRAP_CHROME_DEVTOOLS"] = "1"
         return @{ env = $extra; source = "default-native"; mode = "local" }
     }
 
@@ -79,6 +85,15 @@ function Read-WrapProfileEnv {
     }
     if (-not ($flags.PSObject.Properties.Name -contains "MCP_WRAP_KAPTURE")) {
         $extra["MCP_WRAP_KAPTURE"] = "1"
+    }
+    if (-not ($flags.PSObject.Properties.Name -contains "MCP_WRAP_FLEET")) {
+        $extra["MCP_WRAP_FLEET"] = "1"
+    }
+    if (-not ($flags.PSObject.Properties.Name -contains "MCP_WRAP_YOUTRACK")) {
+        $extra["MCP_WRAP_YOUTRACK"] = "1"
+    }
+    if (-not ($flags.PSObject.Properties.Name -contains "MCP_WRAP_CHROME_DEVTOOLS")) {
+        $extra["MCP_WRAP_CHROME_DEVTOOLS"] = "1"
     }
     $extra["MCP_WRAP_OP_CONNECT"] = "0"
     $mode = if ($raw.mode) { [string]$raw.mode } else { "custom" }

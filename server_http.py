@@ -165,8 +165,6 @@ QMD_KNOWN_PATHS = [
     r"C:\Users\EdgarsTool\AppData\Roaming\npm\qmd.ps1",
 ]
 CODEX_KNOWN_PATHS = [r"C:\Users\EdgarsTool\AppData\Roaming\npm\codex.cmd"]
-CLAUDE_KNOWN_PATHS: list[str] = []
-GEMINI_KNOWN_PATHS: list[str] = []
 COPILOT_KNOWN_PATHS = [r"C:\Users\EdgarsTool\AppData\Roaming\npm\copilot.cmd"]
 DROID_KNOWN_PATHS = [r"C:\Users\EdgarsTool\bin\droid.exe"]
 OLLAMA_KNOWN_PATHS = [r"C:\Users\EdgarsTool\AppData\Local\Programs\Ollama\ollama.exe"]
@@ -180,9 +178,7 @@ def probe_runtime_capabilities() -> dict:
     for name, env_var, known in [
         ("qmd", "QMD_CMD", QMD_KNOWN_PATHS),
         ("codex", "CODEX_CMD", CODEX_KNOWN_PATHS),
-        ("claude", "CLAUDE_CMD", CLAUDE_KNOWN_PATHS),
         ("droid", "DROID_CMD", DROID_KNOWN_PATHS),
-        ("gemini", "GEMINI_CMD", GEMINI_KNOWN_PATHS),
         ("ollama", "OLLAMA_CMD", OLLAMA_KNOWN_PATHS),
     ]:
         path = resolve_cli(name, env_var, known)
@@ -383,14 +379,27 @@ BROWSER_VISIBLE_TOOL_NAMES = {
 _mcp_auth_kind: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_auth_kind", default="unknown")
 
 CODEX_CMD = resolve_cli("codex", "CODEX_CMD", CODEX_KNOWN_PATHS)
-CLAUDE_CMD = resolve_cli("claude", "CLAUDE_CMD", CLAUDE_KNOWN_PATHS)
-GEMINI_CMD = resolve_cli("gemini", "GEMINI_CMD", GEMINI_KNOWN_PATHS)
 COPILOT_CMD = resolve_cli("copilot", "COPILOT_CMD", COPILOT_KNOWN_PATHS)
 DROID_CMD = resolve_cli("droid", "DROID_CMD", DROID_KNOWN_PATHS)
 OLLAMA_CMD = resolve_cli("ollama", "OLLAMA_CMD", OLLAMA_KNOWN_PATHS)
 QMD_CMD = resolve_cli("qmd", "QMD_CMD", QMD_KNOWN_PATHS)
-OLLAMA_HOST_RAW = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").strip()
-OLLAMA_HOST = OLLAMA_HOST_RAW if OLLAMA_HOST_RAW.startswith(("http://", "https://")) else f"http://{OLLAMA_HOST_RAW}"
+def _client_ollama_host(raw: str) -> str:
+    """Turn a bind-all OLLAMA_HOST into a client address.
+
+    0.0.0.0 is a listen address. Connecting to it on Windows raises WinError 10049.
+    """
+    value = (raw or "").strip() or "127.0.0.1:11434"
+    if not value.startswith(("http://", "https://")):
+        value = f"http://{value}"
+    parsed = urllib.parse.urlparse(value)
+    host = (parsed.hostname or "").strip().lower()
+    if host == "0.0.0.0":
+        port = parsed.port or 11434
+        return f"{parsed.scheme}://127.0.0.1:{port}"
+    return value.rstrip("/")
+
+
+OLLAMA_HOST = _client_ollama_host(os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"))
 CODEX_DEFAULT_WORKDIR = r"C:\Users\EdgarsTool"
 AGENT_TIMEOUT_SECONDS = int(os.getenv("MCP_AGENT_TIMEOUT_SECONDS", "300"))
 
@@ -622,94 +631,88 @@ TOOLS = [
         },
     },
     {
-        "name": "gemini_agent",
+        "name": "codex_resume",
         "description": (
-            "Delegates a task to the Gemini CLI AI agent running on the local machine. "
-            "Fast response (under 30 seconds). Best for quick coding tasks, file operations, "
-            "shell commands, and general automation on the local Windows machine. "
-            "Use this as the default agent for most tasks."
+            "Resumes a Codex session with `codex exec resume`. "
+            "Pass session_id or last=true, plus prompt. Optional flags: -m/--model, "
+            "-s/--sandbox (read-only, workspace-write, danger-full-access), "
+            "-a/--ask-for-approval (on-request, never), -i/--image, --json, -p/--profile, "
+            "-C/--cd via working_dir, and --skip-git-repo-check."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "task": {
+                "prompt": {"type": "string", "description": "Prompt sent after resume. `task` is accepted as an alias."},
+                "task": {"type": "string"},
+                "session_id": {"type": "string", "description": "Session id or thread name for `codex exec resume`."},
+                "last": {"type": "boolean", "description": "Maps to --last. Do not combine with session_id."},
+                "working_dir": {"type": "string", "description": "Maps to -C/--cd."},
+                "model": {"type": "string", "description": "Maps to -m/--model."},
+                "sandbox": {
                     "type": "string",
-                    "description": "The task or instruction for Gemini to execute",
+                    "enum": ["read-only", "workspace-write", "danger-full-access"],
+                    "description": "Maps to -s/--sandbox.",
                 },
-                "working_dir": {
+                "ask_for_approval": {
                     "type": "string",
-                    "description": (
-                        f"Working directory for Gemini to operate in "
-                        f"(default: {CODEX_DEFAULT_WORKDIR})"
-                    ),
+                    "enum": ["on-request", "never"],
+                    "description": "Maps to -a/--ask-for-approval.",
                 },
-                "async": {
-                    "type": "boolean",
-                    "description": (
-                        "When true, starts the task in the background and returns a job_id "
-                        "immediately. Recommended when the client may timeout before the task finishes."
-                    ),
+                "image": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Image files. Each item maps to one -i/--image.",
                 },
+                "json": {"type": "boolean", "description": "Maps to --json."},
+                "profile": {"type": "string", "description": "Maps to -p/--profile."},
+                "skip_git_repo_check": {"type": "boolean", "description": "Maps to --skip-git-repo-check."},
             },
-            "required": ["task"],
         },
     },
     {
-        "name": "claude_code_agent",
+        "name": "codex_review",
         "description": (
-            "Delegates a task to the Claude Code AI coding agent running on the local machine. "
-            "Claude Code will autonomously plan, write code, run shell commands, and edit files "
-            "to complete the task. Best for complex coding, refactoring, multi-file operations, "
-            "and tasks requiring deep codebase understanding. Returns Claude Code's final response."
+            "Runs `codex review` non-interactively. Optional prompt, --uncommitted, "
+            "--base BRANCH, --commit SHA, and --title. Pass only one of uncommitted, base, or commit."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "task": {
-                    "type": "string",
-                    "description": "The coding task or question to send to Claude Code.",
-                },
-                "working_dir": {
-                    "type": "string",
-                    "description": (
-                        f"Working directory for Claude Code to operate in "
-                        f"(default: {CODEX_DEFAULT_WORKDIR})"
-                    ),
-                },
-                "async": {
-                    "type": "boolean",
-                    "description": (
-                        "When true, starts the task in the background and returns a job_id "
-                        "immediately. Recommended for multi-minute tasks."
-                    ),
-                },
+                "prompt": {"type": "string", "description": "Custom review instructions."},
+                "working_dir": {"type": "string", "description": "Working directory for the review process."},
+                "uncommitted": {"type": "boolean", "description": "Maps to --uncommitted."},
+                "base": {"type": "string", "description": "Maps to --base BRANCH."},
+                "commit": {"type": "string", "description": "Maps to --commit SHA."},
+                "title": {"type": "string", "description": "Maps to --title."},
             },
-            "required": ["task"],
         },
-        "outputSchema": {
-            "type": "object",
-            "properties": {
-                "job_id": {
-                    "type": "string",
-                    "description": "Background job ID (only when async=true). Use agent_job_status to check result."
-                },
-                "output": {
-                    "type": "string",
-                    "description": "Claude Code's final response text, or error message if the call failed."
-                },
-                "exit_code": {
-                    "type": "integer",
-                    "description": "0 on success, non-zero on error."
-                }
-            }
-        },
+    },
+    {
+        "name": "codex_version",
+        "description": "Prints `codex --version`.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "codex_doctor",
+        "description": "Runs `codex doctor --json`. The CLI emits a redacted report; secret-like lines are redacted again before return.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "codex_login_status",
+        "description": "Runs `codex login status`. Does not log in, log out, or read auth files.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "codex_mcp_list",
+        "description": "Runs `codex mcp list`.",
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "copilot_agent",
         "description": (
             "Delegates a task to the GitHub Copilot CLI running on the local machine. "
             "Copilot can edit files, run shell commands, and search the codebase. "
-            "Use for GitHub-centric coding tasks when Codex or Claude Code are unavailable. "
+            "Use for GitHub-centric coding tasks. "
             "Returns Copilot's final response."
         ),
         "inputSchema": {
@@ -781,7 +784,7 @@ TOOLS = [
             "properties": {
                 "job_id": {
                     "type": "string",
-                    "description": "The job_id returned by codex_agent, gemini_agent, claude_code_agent, copilot_agent, or droid_agent.",
+                    "description": "The job_id returned by codex_agent, copilot_agent, droid_agent, or smart_agent.",
                 },
             },
             "required": ["job_id"],
@@ -822,7 +825,7 @@ TOOLS = [
         "name": "smart_agent",
         "description": (
             "Runs a task through a fallback chain of local AI agents. "
-            "Order: Gemini → GitHub Copilot → Factory Droid → Codex → Claude Code. "
+            "Order: GitHub Copilot → Factory Droid → Codex. "
             "Falls back on quota limits, timeouts, missing CLIs, or transient upstream failures. "
             "Use this as the default tool for local execution when the user wants the server "
             "to handle agent rotation automatically, especially for file edits, shell commands, "
@@ -3093,27 +3096,84 @@ def maybe_start_async_job(req_id, arguments: dict, tool_name: str, runner):
     )
 
 
-def run_codex_task(task: str, working_dir: str) -> tuple[str, bool]:
+_CODEX_SANDBOX_MODES = ("read-only", "workspace-write", "danger-full-access")
+_CODEX_APPROVAL_POLICIES = ("on-request", "never")
+_SECRET_LINE_RE = re.compile(
+    r"(?i)(api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|authorization|credential|private[_-]?key)"
+)
+
+
+def _redact_secret_text(text: str) -> str:
+    redacted: list[str] = []
+    for line in str(text or "").splitlines():
+        if _SECRET_LINE_RE.search(line) and (":" in line or "=" in line):
+            key = line.split(":", 1)[0].split("=", 1)[0]
+            redacted.append(f"{key}: [redacted]")
+        else:
+            redacted.append(line)
+    return "\n".join(redacted)
+
+
+def _single_line(value: object, label: str) -> str:
+    text = str(value or "").strip()
+    if any(ch in text for ch in "\r\n"):
+        raise ValueError(f"{label} must be a single line")
+    return text
+
+
+def _extend_codex_exec_flags(argv: list[str], options: dict) -> None:
+    model = _single_line(options.get("model"), "model")
+    if model:
+        argv.extend(["-m", model])
+    sandbox = _single_line(options.get("sandbox"), "sandbox")
+    if sandbox:
+        if sandbox not in _CODEX_SANDBOX_MODES:
+            raise ValueError("sandbox must be read-only, workspace-write, or danger-full-access")
+        argv.extend(["-s", sandbox])
+    approval = _single_line(options.get("ask_for_approval"), "ask_for_approval")
+    if approval:
+        if approval not in _CODEX_APPROVAL_POLICIES:
+            raise ValueError("ask_for_approval must be on-request or never")
+        argv.extend(["-a", approval])
+    raw_images = options.get("image")
+    images: list[str] = []
+    if isinstance(raw_images, str):
+        images = [raw_images]
+    elif isinstance(raw_images, list):
+        images = [str(item) for item in raw_images]
+    elif raw_images not in (None, ""):
+        raise ValueError("image must be a file path or a list of file paths")
+    for image in images:
+        path = _single_line(image, "image")
+        if path:
+            argv.extend(["-i", path])
+    if options.get("json") is True:
+        argv.append("--json")
+    profile = _single_line(options.get("profile"), "profile")
+    if profile:
+        argv.extend(["-p", profile])
+
+
+def run_codex_task(task: str, working_dir: str, options: dict | None = None) -> tuple[str, bool]:
     log(f"codex_agent: task={task!r} workdir={working_dir!r}")
+    options = options or {}
 
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".txt", prefix="codex_out_")
     os.close(tmp_fd)
 
     try:
-        result = run_agent_command(
-            [
-                "cmd.exe",
-                "/c",
-                CODEX_CMD,
-                "exec",
-                "--ephemeral",
-                "--skip-git-repo-check",
-                "--cd", working_dir,
-                "--output-last-message", tmp_path,
-                task,
-            ],
-            cwd=working_dir,
-        )
+        argv = [
+            "cmd.exe",
+            "/c",
+            CODEX_CMD,
+            "exec",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--cd", working_dir,
+        ]
+        _extend_codex_exec_flags(argv, options)
+        argv.extend(["--output-last-message", tmp_path, task])
+        result = run_agent_command(argv, cwd=working_dir)
         log(f"codex_agent: exit_code={result.returncode}")
 
         output = ""
@@ -3130,6 +3190,8 @@ def run_codex_task(task: str, working_dir: str) -> tuple[str, bool]:
         )
     except subprocess.TimeoutExpired:
         return f"codex_agent timed out after {AGENT_TIMEOUT_SECONDS} seconds", True
+    except ValueError as exc:
+        return f"Error: {exc}", True
     except Exception as exc:
         return f"Failed to run Codex: {exc}", True
     finally:
@@ -3137,63 +3199,6 @@ def run_codex_task(task: str, working_dir: str) -> tuple[str, bool]:
             os.unlink(tmp_path)
         except Exception:
             pass
-
-
-def run_gemini_task(task: str, working_dir: str) -> tuple[str, bool]:
-    log(f"gemini_agent: task={task!r} workdir={working_dir!r}")
-
-    try:
-        result = run_agent_command(
-            ["cmd.exe", "/c", GEMINI_CMD, "-p", task],
-            cwd=working_dir,
-        )
-        log(f"gemini_agent: exit_code={result.returncode}")
-
-        return finalize_agent_output(
-            result,
-            fallback_label="Gemini",
-        )
-    except subprocess.TimeoutExpired:
-        return f"gemini_agent timed out after {AGENT_TIMEOUT_SECONDS} seconds", True
-    except FileNotFoundError:
-        return f"Error: gemini command not found at {GEMINI_CMD}", True
-    except Exception as exc:
-        return f"Failed to run Gemini: {exc}", True
-
-
-def run_claude_code_task(task: str, working_dir: str) -> tuple[str, bool]:
-    log(f"claude_code_agent: task={task!r} workdir={working_dir!r}")
-
-    try:
-        result = run_agent_command(
-            ["cmd.exe", "/c", CLAUDE_CMD, "--print", task, "--output-format", "text"],
-            cwd=working_dir,
-            # Force Claude Code to use the locally logged-in first-party account.
-            # Shell-level Anthropic API settings can otherwise override
-            # OAuth and make claude_code_agent fail with "Invalid API key".
-            env_overrides={
-                "ANTHROPIC_AUTH_TOKEN": None,
-                "ANTHROPIC_API_KEY": None,
-                "ANTHROPIC_BASE_URL": None,
-                "ANTHROPIC_MODEL": None,
-                "ANTHROPIC_SMALL_FAST_MODEL": None,
-                "ANTHROPIC_DEFAULT_SONNET_MODEL": None,
-                "ANTHROPIC_DEFAULT_OPUS_MODEL": None,
-                "ANTHROPIC_DEFAULT_HAIKU_MODEL": None,
-            },
-        )
-        log(f"claude_code_agent: exit_code={result.returncode}")
-
-        return finalize_agent_output(
-            result,
-            fallback_label="Claude Code",
-        )
-    except subprocess.TimeoutExpired:
-        return f"claude_code_agent timed out after {AGENT_TIMEOUT_SECONDS} seconds", True
-    except FileNotFoundError:
-        return f"Error: claude command not found at {CLAUDE_CMD}", True
-    except Exception as exc:
-        return f"Failed to run Claude Code: {exc}", True
 
 
 def run_copilot_task(task: str, working_dir: str) -> tuple[str, bool]:
@@ -3294,8 +3299,6 @@ _TRANSIENT_FALLBACK_REASONS = frozenset({
 def should_fallback(tool_name: str, output: str, is_error: bool) -> bool:
     if not is_error:
         return False
-    if tool_name == "claude_code_agent":
-        return False
 
     lowered = (output or "").lower()
     if "command not found" in lowered:
@@ -3306,7 +3309,7 @@ def should_fallback(tool_name: str, output: str, is_error: bool) -> bool:
     # Only stop for genuine task/content failures (where another model would repeat the same bad task).
     if reason in {"account_ineligible", "cli_missing", "quota_exceeded", "rate_limited", "timeout", "connection_aborted", "upstream_error"}:
         return True
-    if tool_name in {"gemini_agent", "copilot_agent", "droid_agent"}:
+    if tool_name in {"copilot_agent", "droid_agent"}:
         return reason in _TRANSIENT_FALLBACK_REASONS
     if tool_name == "codex_agent":
         return reason in {"timeout", "connection_aborted", "upstream_error", "account_ineligible", "cli_missing"}
@@ -3316,11 +3319,9 @@ def should_fallback(tool_name: str, output: str, is_error: bool) -> bool:
 def run_smart_agent(task: str, working_dir: str) -> tuple[str, bool, list[dict]]:
     attempts = []
     runners = [
-        ("gemini_agent", run_gemini_task),
         ("copilot_agent", run_copilot_task),
         ("droid_agent", run_droid_task),
         ("codex_agent", run_codex_task),
-        ("claude_code_agent", run_claude_code_task),
     ]
 
     for tool_name, runner in runners:
@@ -3445,14 +3446,8 @@ def _handle_tools_call_dispatch(req_id, params: dict, config: HandcraftServerCon
         message = arguments.get("message", "")
         return make_response(req_id, make_tool_text_response(f"echo: {message}"))
 
-    if name == "codex_agent":
-        return handle_codex_agent(req_id, arguments)
-
-    if name == "gemini_agent":
-        return handle_gemini_agent(req_id, arguments)
-
-    if name == "claude_code_agent":
-        return handle_claude_code_agent(req_id, arguments)
+    if isinstance(name, str) and (name == "codex_agent" or name.startswith("codex_")):
+        return handle_codex_surface(req_id, name, arguments)
 
     if name == "copilot_agent":
         return handle_copilot_agent(req_id, arguments)
@@ -3615,8 +3610,7 @@ def _handle_tools_call_dispatch(req_id, params: dict, config: HandcraftServerCon
 # "has an output schema but did not return structured content"）。
 # 這個收尾只在「宣告的 schema 就是 DEFAULT_TEXT_OUTPUT_SCHEMA、成功、缺
 # structuredContent、content 是純 text blocks」時補上同形 envelope；
-# 既有 structuredContent、錯誤回應、自訂 schema（Honcho bridge、
-# claude_code_agent 等）一律保持原狀。
+# 既有 structuredContent、錯誤回應、自訂 schema（Honcho bridge descriptors）一律保持原狀。
 
 _NATIVE_WRAP_TOOL_BUILDERS = (
     ("descope__", _descope_native_tools),
@@ -3750,32 +3744,93 @@ def handle_tools_call(req_id, params: dict, config: HandcraftServerConfig | None
 
 
 def handle_codex_agent(req_id, arguments: dict) -> dict:
-    sync_args, async_response = maybe_start_async_job(req_id, arguments, "codex_agent", run_codex_task)
+    def runner(task: str, working_dir: str) -> tuple[str, bool]:
+        return run_codex_task(task, working_dir, arguments)
+
+    sync_args, async_response = maybe_start_async_job(req_id, arguments, "codex_agent", runner)
     if async_response is not None:
         return async_response
 
     task, working_dir = sync_args
-    output, is_error = run_codex_task(task, working_dir)
+    output, is_error = run_codex_task(task, working_dir, arguments)
     return make_response(req_id, make_tool_text_response(output, is_error=is_error))
 
 
-def handle_gemini_agent(req_id, arguments: dict) -> dict:
-    sync_args, async_response = maybe_start_async_job(req_id, arguments, "gemini_agent", run_gemini_task)
-    if async_response is not None:
-        return async_response
-
-    task, working_dir = sync_args
-    output, is_error = run_gemini_task(task, working_dir)
-    return make_response(req_id, make_tool_text_response(output, is_error=is_error))
+def _run_codex_cli(argv: list[str], working_dir: str, *, redact: bool = False) -> tuple[str, bool]:
+    result = run_agent_command(["cmd.exe", "/c", CODEX_CMD, *argv], cwd=working_dir)
+    output, is_error = finalize_agent_output(result, fallback_label="Codex")
+    if redact:
+        output = _redact_secret_text(output)
+    return output, is_error
 
 
-def handle_claude_code_agent(req_id, arguments: dict) -> dict:
-    sync_args, async_response = maybe_start_async_job(req_id, arguments, "claude_code_agent", run_claude_code_task)
-    if async_response is not None:
-        return async_response
+def handle_codex_surface(req_id, name: str, arguments: dict) -> dict:
+    arguments = arguments or {}
+    if name == "codex_agent":
+        return handle_codex_agent(req_id, arguments)
 
-    task, working_dir = sync_args
-    output, is_error = run_claude_code_task(task, working_dir)
+    working_dir = str(arguments.get("working_dir") or CODEX_DEFAULT_WORKDIR).strip() or CODEX_DEFAULT_WORKDIR
+    try:
+        if name == "codex_resume":
+            prompt = _single_line(arguments.get("prompt") or arguments.get("task"), "prompt")
+            if not prompt:
+                raise ValueError("prompt is required")
+            session_id = _single_line(arguments.get("session_id"), "session_id")
+            last = arguments.get("last") is True
+            if last and session_id:
+                raise ValueError("pass session_id or last, not both")
+            if not last and not session_id:
+                raise ValueError("session_id or last=true is required")
+            argv = ["exec", "resume"]
+            if last:
+                argv.append("--last")
+            else:
+                argv.append(session_id)
+            _extend_codex_exec_flags(argv, arguments)
+            if arguments.get("skip_git_repo_check") is True:
+                argv.append("--skip-git-repo-check")
+            argv.extend(["--cd", working_dir, prompt])
+            output, is_error = _run_codex_cli(argv, working_dir)
+        elif name == "codex_review":
+            modes = [
+                arguments.get("uncommitted") is True,
+                bool(_single_line(arguments.get("base"), "base")),
+                bool(_single_line(arguments.get("commit"), "commit")),
+            ]
+            if sum(1 for item in modes if item) > 1:
+                raise ValueError("pass only one of uncommitted, base, or commit")
+            argv = ["review"]
+            if arguments.get("uncommitted") is True:
+                argv.append("--uncommitted")
+            base = _single_line(arguments.get("base"), "base")
+            if base:
+                argv.extend(["--base", base])
+            commit = _single_line(arguments.get("commit"), "commit")
+            if commit:
+                argv.extend(["--commit", commit])
+            title = _single_line(arguments.get("title"), "title")
+            if title:
+                argv.extend(["--title", title])
+            prompt = _single_line(arguments.get("prompt"), "prompt")
+            if prompt:
+                argv.append(prompt)
+            output, is_error = _run_codex_cli(argv, working_dir)
+        elif name == "codex_version":
+            output, is_error = _run_codex_cli(["--version"], working_dir)
+        elif name == "codex_doctor":
+            output, is_error = _run_codex_cli(["doctor", "--json"], working_dir, redact=True)
+        elif name == "codex_login_status":
+            output, is_error = _run_codex_cli(["login", "status"], working_dir, redact=True)
+        elif name == "codex_mcp_list":
+            output, is_error = _run_codex_cli(["mcp", "list"], working_dir)
+        else:
+            output, is_error = f"Unknown Codex tool: {name}", True
+    except ValueError as exc:
+        output, is_error = f"Error: {exc}", True
+    except subprocess.TimeoutExpired:
+        output, is_error = f"{name} timed out after {AGENT_TIMEOUT_SECONDS} seconds", True
+    except Exception as exc:
+        output, is_error = f"Failed to run Codex: {exc}", True
     return make_response(req_id, make_tool_text_response(output, is_error=is_error))
 
 

@@ -186,7 +186,7 @@ def _descope_mcp_spec() -> UpstreamSpec | None:
             env_flag="MCP_WRAP_DESCOPE",
             command=command,
             args=args,
-            cwd=r"V:\tools\mcp\descope-mcp",
+            cwd=r"V:\projects\descope-mcp",
             local_only=False,
             extra_env_keys=("DESCOPE_MANAGEMENT_KEY", "DESCOPE_MCP_WELL_KNOWN_URL"),
         )

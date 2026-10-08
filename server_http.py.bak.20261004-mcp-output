@@ -40,18 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
-from edgar_wrappers import (
-    _cloudflared_tools,
-    _descope_native_tools,
-    _fleet_tools,
-    _hermes_tools,
-    _openclaw_tools,
-    _openmontage_tools,
-    catalog_tool_descriptor,
-    dispatch_wrap_tool,
-    list_wrap_tools,
-)
-from mcp_upstreams import list_upstream_tools, match_upstream
+from edgar_wrappers import dispatch_wrap_tool, list_wrap_tools
 
 try:
     import jwt
@@ -3426,7 +3415,7 @@ def handle_tools_list(req_id, params: dict, config: HandcraftServerConfig | None
     return make_response(req_id, {"tools": tools, "ttlMs": 60000, "cacheScope": "public"})
 
 
-def _handle_tools_call_dispatch(req_id, params: dict, config: HandcraftServerConfig | None = None) -> dict:
+def handle_tools_call(req_id, params: dict, config: HandcraftServerConfig | None = None) -> dict:
     name = params.get("name")
     if isinstance(name, str) and name.startswith("linear_"):
         return make_error(req_id, -32601, "Tool not found")
@@ -3605,148 +3594,6 @@ def _handle_tools_call_dispatch(req_id, params: dict, config: HandcraftServerCon
         return handle_factory_readiness_reports(req_id, arguments)
 
     return make_response(req_id, make_tool_text_response(f"Unknown tool: {name}", is_error=True))
-
-
-# ── tools/call structured-content 收尾（strict client 相容）─────────────────────
-# _normalize_tool_descriptor 為所有沒有自訂 outputSchema 的工具補上
-# DEFAULT_TEXT_OUTPUT_SCHEMA。MCP 規範要求：tools/list 一旦宣告 outputSchema，
-# tools/call 成功結果就必須附帶符合該 schema 的 structuredContent，否則 strict
-# client 會以 -32600 拒絕（例如 native client 呼叫 browser_get_text 時的
-# "has an output schema but did not return structured content"）。
-# 這個收尾只在「宣告的 schema 就是 DEFAULT_TEXT_OUTPUT_SCHEMA、成功、缺
-# structuredContent、content 是純 text blocks」時補上同形 envelope；
-# 既有 structuredContent、錯誤回應、自訂 schema（Honcho bridge、
-# claude_code_agent 等）一律保持原狀。
-
-_NATIVE_WRAP_TOOL_BUILDERS = (
-    ("descope__", _descope_native_tools),
-    ("cloudflared_", _cloudflared_tools),
-    ("om__", _openmontage_tools),
-    ("hermes_", _hermes_tools),
-    ("openclaw_", _openclaw_tools),
-    ("fleet_", _fleet_tools),
-)
-
-
-def _wrap_advertised_output_schema(name: str):
-    """計算 wrap 工具（catalog、native wrapper、upstream bridge）宣告的 outputSchema。
-
-    只讀現有 descriptor，不臆測；查不到回 None（呼叫端因此不補 envelope）。
-    與 dispatch_wrap_tool 的路由順序一致：catalog -> upstream prefix -> native prefix。
-    upstream 工具清單沿用 list_upstream_tools 的既有策略：stdio 連線重用 boot 時
-    快取的清單（無額外 RPC）；HTTP 上游在既有 30 秒快取過期時會重新讀取
-    tools/list（bounded read refresh）。
-    """
-    if name == "wrap_catalog":
-        return _normalize_tool_descriptor(catalog_tool_descriptor()).get("outputSchema")
-    matched = match_upstream(name)
-    if matched is not None:
-        spec, upstream_name = matched
-        for tool in list_upstream_tools(spec):
-            if str(tool.get("name") or "") == upstream_name:
-                return _normalize_tool_descriptor(tool).get("outputSchema")
-        return None
-    for prefix, builder in _NATIVE_WRAP_TOOL_BUILDERS:
-        if not name.startswith(prefix):
-            continue
-        for tool in builder():
-            if str(tool.get("name") or "") == name:
-                return _normalize_tool_descriptor(tool).get("outputSchema")
-        return None
-    return None
-
-
-def _cached_honcho_tool_descriptors(config: HandcraftServerConfig | None) -> list[dict]:
-    """只讀尚未過期的 honcho descriptor 快取；絕不做 upstream 呼叫。
-
-    tools/call 收尾需要 honcho 工具宣告的 schema，但不能為了查 schema 而對
-    honcho upstream 發出額外的 tools/list（會改變既有單一 RPC 的對外行為），
-    所以這裡只用 tools/list 已經填好的快取；快取冷就視為查不到。
-    """
-    try:
-        if not config or not config.honcho_api_key or not HONCHO_MCP_UPSTREAM_URL:
-            return []
-        identity = honcho_config_identity(config)
-        with HONCHO_TOOLS_CACHE_LOCK:
-            if (
-                HONCHO_TOOLS_CACHE.get("identity") == identity
-                and float(HONCHO_TOOLS_CACHE.get("expires_at") or 0) > time.time()
-            ):
-                return list(HONCHO_TOOLS_CACHE.get("tools") or [])
-    except Exception:
-        return []
-    return []
-
-
-def _advertised_output_schema_for_tool(name, config: HandcraftServerConfig | None = None):
-    """回傳 tools/list 實際宣告給 `name` 的 outputSchema；查不到或出錯回 None。"""
-    if not isinstance(name, str) or not name:
-        return None
-    try:
-        if name.startswith(HONCHO_TOOL_PREFIX):
-            for tool in _cached_honcho_tool_descriptors(config):
-                if str(tool.get("name") or "") == name:
-                    return tool.get("outputSchema")
-            return None
-        for tool in TOOLS:
-            if str(tool.get("name") or "") == name:
-                return tool.get("outputSchema")
-        return _wrap_advertised_output_schema(name)
-    except Exception as exc:
-        log(f"structured-content schema lookup failed for {name!r}: {exc}")
-        return None
-
-
-def _pure_text_content_blocks(content) -> list[dict] | None:
-    """content 是「至少一個純 text block」的 list 時回傳複製版，否則 None。"""
-    if not isinstance(content, list) or not content:
-        return None
-    for block in content:
-        if not isinstance(block, dict):
-            return None
-        if block.get("type") != "text":
-            return None
-        if not isinstance(block.get("text"), str):
-            return None
-    return [dict(block) for block in content]
-
-
-def attach_default_text_structured_content(
-    name,
-    response: dict,
-    config: HandcraftServerConfig | None = None,
-) -> dict:
-    """為符合 DEFAULT_TEXT_OUTPUT_SCHEMA 的成功文字結果補 structuredContent。
-
-    保守條件（全部成立才補）：
-    1. response 是帶 result dict 的成功結果（isError falsy）；
-    2. 尚未有 structuredContent（既有值永不覆寫）；
-    3. content 是純 text blocks；
-    4. tools/list 對該工具宣告的 outputSchema 語意等於 DEFAULT_TEXT_OUTPUT_SCHEMA。
-    """
-    try:
-        if not isinstance(response, dict):
-            return response
-        result = response.get("result")
-        if not isinstance(result, dict) or result.get("isError"):
-            return response
-        if result.get("structuredContent") is not None:
-            return response
-        blocks = _pure_text_content_blocks(result.get("content"))
-        if blocks is None:
-            return response
-        if _advertised_output_schema_for_tool(name, config) != DEFAULT_TEXT_OUTPUT_SCHEMA:
-            return response
-        result["structuredContent"] = {"content": blocks, "isError": False}
-        return response
-    except Exception as exc:
-        log(f"structured-content finalize failed for {name!r}: {exc}")
-        return response
-
-
-def handle_tools_call(req_id, params: dict, config: HandcraftServerConfig | None = None) -> dict:
-    response = _handle_tools_call_dispatch(req_id, params, config)
-    return attach_default_text_structured_content(params.get("name"), response, config)
 
 
 def handle_codex_agent(req_id, arguments: dict) -> dict:

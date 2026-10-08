@@ -79,10 +79,6 @@ fleet_dispatch(target="auto", task_type=..., message=...) immediately repeats th
 
 EDGAR_FLEET_OVH_FREE_TRIAL_EXPIRES_AT is a non-secret, finite UTC cut-off supplied by start-mcp.ps1. While it is in the future, OVH candidates are eligible in their policy order. If it is absent, invalid, or elapsed, automatic routing excludes OVH instead of silently treating it as perpetual free capacity; it falls back to another healthy compatible worker. This is a bounded routing guard, not a live billing/credit API, so update the cut-off only after provider billing has been independently rechecked.
 
-## Structured output contract（結構化輸出合約）
-
-`tools/list` 對每個工具宣告 `outputSchema`（輸出結構宣告）；沒有自訂 schema 的工具套用預設文字 schema（`content` 文字區塊 + `isError`），這類工具的 `tools/call` 成功結果會附上符合該 schema 的 `structuredContent` envelope，讓驗證 output schema 的 strict client（嚴格用戶端）能直接接受。既有 `structuredContent`、錯誤回應與自訂 schema 工具（Honcho bridge descriptors、`claude_code_agent`）行為不變。schema 查詢只讀現有資料：Honcho 只用既有快取、stdio 上游沿用連線時快取的工具清單，HTTP 上游在既有 30 秒快取過期時會依既有策略重新讀取 tools/list。
-
 ## Acceptance
 
 ```powershell

@@ -7,6 +7,7 @@ exposed with a prefix. This module does not subset or drop upstream tools.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import shutil
@@ -22,6 +23,26 @@ from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+
+def _client_session_read_timeout(seconds: float) -> float | timedelta:
+    """Build the value to pass as ``ClientSession(read_timeout_seconds=...)``.
+
+    The installed MCP SDK's expected type for this parameter has changed across
+    versions: older releases (<2.0) type it as ``datetime.timedelta``, while
+    newer releases (>=2.0, e.g. 2.2.0) type it as a plain ``float`` number of
+    seconds and perform arithmetic on it directly (a ``timedelta`` there raises
+    ``unsupported operand type(s) for +: 'float' and 'datetime.timedelta'``).
+    Inspect the live signature so we always hand the SDK the type it expects.
+    """
+    try:
+        param = inspect.signature(ClientSession.__init__).parameters["read_timeout_seconds"]
+        annotation = str(param.annotation)
+    except (KeyError, TypeError, ValueError):
+        annotation = ""
+    if "timedelta" in annotation:
+        return timedelta(seconds=seconds)
+    return float(seconds)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -358,7 +379,7 @@ async def _boot_stdio(spec: UpstreamSpec):
     stack = AsyncExitStack()
     read, write = await stack.enter_async_context(stdio_client(params))
     session = await stack.enter_async_context(
-        ClientSession(read, write, read_timeout_seconds=timedelta(seconds=spec.timeout_seconds))
+        ClientSession(read, write, read_timeout_seconds=_client_session_read_timeout(spec.timeout_seconds))
     )
     await session.initialize()
     tools = [_tool_to_dict(tool) for tool in await _list_all_tools(session)]

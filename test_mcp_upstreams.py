@@ -1,13 +1,17 @@
 """Tests for default-off full-surface wrappers."""
 
+import asyncio
+import inspect
 import json
 import os
 import unittest
+from datetime import timedelta
 from unittest.mock import patch
 
 import edgar_wrappers
 import mcp_upstreams
 import server_http
+from mcp import ClientSession
 from mcp_upstreams import UpstreamSpec, prefix_tool_descriptor
 from server_http import handle_tools_call, handle_tools_list
 
@@ -274,6 +278,102 @@ class WrapLiveSafeTests(unittest.TestCase):
     def test_hermes_and_openclaw_binaries_exist(self):
         self.assertTrue(os.path.isfile(edgar_wrappers.hermes_cmd()), edgar_wrappers.hermes_cmd())
         self.assertTrue(os.path.isfile(edgar_wrappers.openclaw_cmd()), edgar_wrappers.openclaw_cmd())
+
+
+class StdioReadTimeoutCompatTests(unittest.TestCase):
+    """Regression coverage for the ClientSession read_timeout_seconds type.
+
+    Different MCP SDK releases disagree on whether
+    ``ClientSession(read_timeout_seconds=...)`` expects a ``datetime.timedelta``
+    or a plain ``float``. Passing the wrong type does not fail at the call
+    site; it blows up later inside the SDK's own timeout arithmetic (e.g.
+    ``unsupported operand type(s) for +: 'float' and 'datetime.timedelta'``),
+    which made the live YouTrack stdio upstream fail. These tests pin down the
+    installed SDK's actual expectation and verify we always match it.
+    """
+
+    def test_installed_sdk_expects_float_read_timeout(self):
+        annotation = str(
+            inspect.signature(ClientSession.__init__).parameters["read_timeout_seconds"].annotation
+        )
+        self.assertTrue("float" in annotation or "timedelta" in annotation, annotation)
+
+    def test_client_session_read_timeout_matches_installed_sdk_signature(self):
+        annotation = str(
+            inspect.signature(ClientSession.__init__).parameters["read_timeout_seconds"].annotation
+        )
+        value = mcp_upstreams._client_session_read_timeout(42.5)
+        if "timedelta" in annotation:
+            self.assertEqual(timedelta(seconds=42.5), value)
+        else:
+            self.assertIs(type(value), float)
+            self.assertEqual(42.5, value)
+
+    def test_client_session_read_timeout_falls_back_to_timedelta_for_older_sdk(self):
+        class _LegacyInit:
+            def __init__(self, read_timeout_seconds: timedelta | None = None):
+                pass
+
+        with patch.object(mcp_upstreams.ClientSession, "__init__", _LegacyInit.__init__):
+            value = mcp_upstreams._client_session_read_timeout(42.5)
+        self.assertIsInstance(value, timedelta)
+        self.assertEqual(timedelta(seconds=42.5), value)
+
+    def test_boot_stdio_never_passes_a_bare_timedelta_to_client_session(self):
+        spec = mcp_upstreams._youtrack_spec()
+        captured = {}
+
+        class _FakeStream:
+            pass
+
+        def _fake_stdio_client(_params):
+            class _Ctx:
+                async def __aenter__(self_inner):
+                    return _FakeStream(), _FakeStream()
+
+                async def __aexit__(self_inner, *exc):
+                    return False
+
+            return _Ctx()
+
+        class _FakeSession:
+            def __init__(self, read, write, read_timeout_seconds=None):
+                captured["read_timeout_seconds"] = read_timeout_seconds
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def initialize(self):
+                return None
+
+            async def list_tools(self):
+                class _Result:
+                    tools = []
+                    nextCursor = None
+
+                return _Result()
+
+        async def _run():
+            with patch.object(mcp_upstreams, "stdio_client", _fake_stdio_client), \
+                 patch.object(mcp_upstreams, "ClientSession", _FakeSession):
+                return await mcp_upstreams._boot_stdio(spec)
+
+        asyncio.run(_run())
+        self.assertIn("read_timeout_seconds", captured)
+        self.assertNotIsInstance(captured["read_timeout_seconds"], timedelta)
+        self.assertIsInstance(captured["read_timeout_seconds"], float)
+        self.assertEqual(spec.timeout_seconds, captured["read_timeout_seconds"])
+
+    def test_youtrack_spec_uses_stdio_boot_with_node_command_and_api_key_env(self):
+        spec = mcp_upstreams._youtrack_spec()
+        self.assertEqual("node", spec.command)
+        self.assertTrue(spec.args[0].endswith("youtrack-mcp-proxy.mjs"))
+        self.assertIn("YOUTRACK_API_KEY", spec.extra_env_keys)
+        self.assertIsNone(spec.url)
+        self.assertIsInstance(spec.timeout_seconds, float)
 
 
 if __name__ == "__main__":

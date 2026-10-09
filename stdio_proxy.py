@@ -7,6 +7,7 @@ server_http.py over HTTP. It forwards JSON-RPC lines from stdin to the HTTP
 endpoint and writes responses back to stdout.
 """
 
+import io
 import json
 import os
 import sys
@@ -30,10 +31,18 @@ PREFLIGHT_TIMEOUT_SECONDS = float(
 if sys.platform == "win32":
     import msvcrt
 
-    msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
-    msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
-    sys.stdin = open(sys.stdin.fileno(), "r", encoding="utf-8", newline="\n", closefd=False)
-    sys.stdout = open(sys.stdout.fileno(), "w", encoding="utf-8", newline="\n", closefd=False)
+    try:
+        stdin_fd = sys.stdin.fileno()
+        stdout_fd = sys.stdout.fileno()
+    except (AttributeError, io.UnsupportedOperation, OSError, ValueError):
+        # Test/capture environments may expose pseudo streams with no OS fd.
+        # Real stdio-launched MCP clients still take the binary-mode path below.
+        pass
+    else:
+        msvcrt.setmode(stdin_fd, os.O_BINARY)
+        msvcrt.setmode(stdout_fd, os.O_BINARY)
+        sys.stdin = open(stdin_fd, "r", encoding="utf-8", newline="\n", closefd=False)
+        sys.stdout = open(stdout_fd, "w", encoding="utf-8", newline="\n", closefd=False)
 
 
 def log(message: str) -> None:

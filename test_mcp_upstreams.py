@@ -1,13 +1,17 @@
 """Tests for default-off full-surface wrappers."""
 
+import asyncio
+import inspect
 import json
 import os
 import unittest
+from datetime import timedelta
 from unittest.mock import patch
 
 import edgar_wrappers
 import mcp_upstreams
 import server_http
+from mcp import ClientSession
 from mcp_upstreams import UpstreamSpec, prefix_tool_descriptor
 from server_http import handle_tools_call, handle_tools_list
 
@@ -62,6 +66,8 @@ class WrapDefaultOffTests(unittest.TestCase):
             "openclaw",
             "descope",
             "fleet",
+            "youtrack",
+            "chrome_devtools",
         ):
             self.assertIn(required, ids)
 
@@ -194,6 +200,77 @@ class WrapDefaultOffTests(unittest.TestCase):
         self.assertIn("MCP_WRAP_HERMES", response["result"]["content"][0]["text"])
 
 
+class RichAgentSurfaceTests(unittest.TestCase):
+    def test_hermes_and_openclaw_register_extra_tools(self):
+        with patch.dict(os.environ, {"MCP_WRAP_HERMES": "1", "MCP_WRAP_OPENCLAW": "1"}, clear=False):
+            names = {tool["name"] for tool in edgar_wrappers.list_wrap_tools()}
+        for required in (
+            "hermes_sessions_list",
+            "hermes_skills_list",
+            "hermes_mcp_list",
+            "hermes_memory_status",
+            "hermes_config_show",
+            "hermes_logs",
+            "hermes_gateway_status",
+            "hermes_usage",
+            "openclaw_doctor",
+            "openclaw_gateway_status",
+            "openclaw_gateway_health",
+            "openclaw_channels",
+            "openclaw_sessions",
+            "openclaw_mcp_doctor",
+        ):
+            self.assertIn(required, names)
+
+    def test_hermes_focused_tools_map_to_real_subcommands(self):
+        cases = {
+            "hermes_sessions_list": ["sessions", "list"],
+            "hermes_skills_list": ["skills", "list"],
+            "hermes_mcp_list": ["mcp", "list"],
+            "hermes_memory_status": ["memory", "status"],
+            "hermes_gateway_status": ["gateway", "status"],
+            "hermes_usage": ["usage"],
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                with patch.object(edgar_wrappers, "_run", return_value=edgar_wrappers._json({"ok": True})) as run:
+                    response = edgar_wrappers._handle_hermes(name, {})
+                self.assertFalse(response["isError"])
+                argv = run.call_args.args[0]
+                self.assertEqual(expected, argv[1:])
+
+    def test_hermes_logs_and_config_show_are_bounded(self):
+        with patch.object(edgar_wrappers, "_run", return_value=edgar_wrappers._json({
+            "output": "api_key: super-secret\nmodel: demo",
+            "exit_code": 0,
+        })) as run:
+            logs = edgar_wrappers._handle_hermes("hermes_logs", {"log_name": "errors", "lines": 20, "since": "1h"})
+            shown = edgar_wrappers._handle_hermes("hermes_config_show", {})
+        self.assertEqual(["logs", "errors", "-n", "20", "--since", "1h"], run.call_args_list[0].args[0][1:])
+        self.assertNotIn("-f", run.call_args_list[0].args[0])
+        text = json.dumps(shown)
+        self.assertNotIn("super-secret", text)
+        self.assertIn("[redacted]", text)
+        self.assertFalse(logs["isError"])
+
+    def test_openclaw_focused_tools_map_to_real_flags(self):
+        cases = [
+            ("openclaw_doctor", {}, ["doctor", "--json"]),
+            ("openclaw_gateway_status", {"no_probe": True}, ["gateway", "status", "--json", "--no-probe"]),
+            ("openclaw_gateway_health", {}, ["health", "--json"]),
+            ("openclaw_channels", {"all": True}, ["channels", "list", "--json", "--all"]),
+            ("openclaw_sessions", {"agent": "ops", "limit": "10", "active_minutes": 15}, ["sessions", "--json", "--agent", "ops", "--limit", "10", "--active", "15"]),
+            ("openclaw_mcp_doctor", {"name": "files", "probe": True}, ["mcp", "doctor", "files", "--probe", "--json"]),
+            ("openclaw_agent", {"task": "hi", "model": "openai/gpt", "thinking": "medium", "local": True}, ["agent", "--message", "hi", "--local", "--json", "--model", "openai/gpt", "--thinking", "medium"]),
+        ]
+        for name, arguments, expected in cases:
+            with self.subTest(name=name):
+                with patch.object(edgar_wrappers, "_run", return_value=edgar_wrappers._json({"ok": True})) as run:
+                    response = edgar_wrappers._handle_openclaw(name, arguments)
+                self.assertFalse(response["isError"])
+                self.assertEqual(expected, run.call_args.args[0][1:])
+
+
 class WrapLiveSafeTests(unittest.TestCase):
     def test_qmd_cli_still_resolves(self):
         self.assertTrue(server_http._qmd_available())
@@ -201,6 +278,102 @@ class WrapLiveSafeTests(unittest.TestCase):
     def test_hermes_and_openclaw_binaries_exist(self):
         self.assertTrue(os.path.isfile(edgar_wrappers.hermes_cmd()), edgar_wrappers.hermes_cmd())
         self.assertTrue(os.path.isfile(edgar_wrappers.openclaw_cmd()), edgar_wrappers.openclaw_cmd())
+
+
+class StdioReadTimeoutCompatTests(unittest.TestCase):
+    """Regression coverage for the ClientSession read_timeout_seconds type.
+
+    Different MCP SDK releases disagree on whether
+    ``ClientSession(read_timeout_seconds=...)`` expects a ``datetime.timedelta``
+    or a plain ``float``. Passing the wrong type does not fail at the call
+    site; it blows up later inside the SDK's own timeout arithmetic (e.g.
+    ``unsupported operand type(s) for +: 'float' and 'datetime.timedelta'``),
+    which made the live YouTrack stdio upstream fail. These tests pin down the
+    installed SDK's actual expectation and verify we always match it.
+    """
+
+    def test_installed_sdk_expects_float_read_timeout(self):
+        annotation = str(
+            inspect.signature(ClientSession.__init__).parameters["read_timeout_seconds"].annotation
+        )
+        self.assertTrue("float" in annotation or "timedelta" in annotation, annotation)
+
+    def test_client_session_read_timeout_matches_installed_sdk_signature(self):
+        annotation = str(
+            inspect.signature(ClientSession.__init__).parameters["read_timeout_seconds"].annotation
+        )
+        value = mcp_upstreams._client_session_read_timeout(42.5)
+        if "timedelta" in annotation:
+            self.assertEqual(timedelta(seconds=42.5), value)
+        else:
+            self.assertIs(type(value), float)
+            self.assertEqual(42.5, value)
+
+    def test_client_session_read_timeout_falls_back_to_timedelta_for_older_sdk(self):
+        class _LegacyInit:
+            def __init__(self, read_timeout_seconds: timedelta | None = None):
+                pass
+
+        with patch.object(mcp_upstreams.ClientSession, "__init__", _LegacyInit.__init__):
+            value = mcp_upstreams._client_session_read_timeout(42.5)
+        self.assertIsInstance(value, timedelta)
+        self.assertEqual(timedelta(seconds=42.5), value)
+
+    def test_boot_stdio_never_passes_a_bare_timedelta_to_client_session(self):
+        spec = mcp_upstreams._youtrack_spec()
+        captured = {}
+
+        class _FakeStream:
+            pass
+
+        def _fake_stdio_client(_params):
+            class _Ctx:
+                async def __aenter__(self_inner):
+                    return _FakeStream(), _FakeStream()
+
+                async def __aexit__(self_inner, *exc):
+                    return False
+
+            return _Ctx()
+
+        class _FakeSession:
+            def __init__(self, read, write, read_timeout_seconds=None):
+                captured["read_timeout_seconds"] = read_timeout_seconds
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def initialize(self):
+                return None
+
+            async def list_tools(self):
+                class _Result:
+                    tools = []
+                    nextCursor = None
+
+                return _Result()
+
+        async def _run():
+            with patch.object(mcp_upstreams, "stdio_client", _fake_stdio_client), \
+                 patch.object(mcp_upstreams, "ClientSession", _FakeSession):
+                return await mcp_upstreams._boot_stdio(spec)
+
+        asyncio.run(_run())
+        self.assertIn("read_timeout_seconds", captured)
+        self.assertNotIsInstance(captured["read_timeout_seconds"], timedelta)
+        self.assertIsInstance(captured["read_timeout_seconds"], float)
+        self.assertEqual(spec.timeout_seconds, captured["read_timeout_seconds"])
+
+    def test_youtrack_spec_uses_stdio_boot_with_node_command_and_api_key_env(self):
+        spec = mcp_upstreams._youtrack_spec()
+        self.assertEqual("node", spec.command)
+        self.assertTrue(spec.args[0].endswith("youtrack-mcp-proxy.mjs"))
+        self.assertIn("YOUTRACK_API_KEY", spec.extra_env_keys)
+        self.assertIsNone(spec.url)
+        self.assertIsInstance(spec.timeout_seconds, float)
 
 
 if __name__ == "__main__":

@@ -116,3 +116,42 @@ def test_status_still_reports_unreachable_for_real_outages(monkeypatch):
     sc = S.tool_knowledge_status({})["structuredContent"]
     assert sc["degraded_reasons"] == {"qmd": "unreachable"}
     assert sc["backends"]["qmd"]["reachable"] is False
+
+
+@pytest.mark.parametrize("honcho,reason", [
+    ({"status": 200, "hits": [], "error": "data not migrated"}, "data not migrated"),
+    ({"status": 502, "hits": []}, "http_502"),
+])
+def test_status_reports_the_precise_honcho_reason(monkeypatch, honcho, reason):
+    body = gateway()
+    body["honcho"] = honcho
+    monkeypatch.setattr(S, "http_json", fake_http(body))
+    sc = S.tool_knowledge_status({})["structuredContent"]
+    assert "honcho" in sc["degraded"]
+    assert sc["degraded_reasons"]["honcho"] == reason
+    assert reason in sc["error"]["message"]
+
+
+@pytest.mark.parametrize("err,reason", [
+    ("embedding unavailable", "embedding unavailable"),
+    ("database cold start", "database cold start"),
+    ("data not migrated", "data not migrated"),
+])
+def test_status_known_qmd_causes_are_never_generic_unreachable(monkeypatch, err, reason):
+    monkeypatch.setattr(S, "http_json", fake_http(gateway(qmd_error=err)))
+    sc = S.tool_knowledge_status({})["structuredContent"]
+    assert sc["degraded_reasons"]["qmd"] == reason
+
+
+def test_context_pack_carries_data_not_migrated(monkeypatch):
+    sc, _ = pack(monkeypatch, gateway(qmd_error="data not migrated"))
+    assert sc["status"] == "Degraded"
+    assert sc["degraded"][0]["reason"] == "data not migrated"
+
+
+def test_context_pack_honcho_data_not_migrated_is_degraded(monkeypatch):
+    body = gateway()
+    body["honcho"] = {"status": 200, "hits": [], "error": "data not migrated"}
+    sc, _ = pack(monkeypatch, body)
+    assert sc["status"] == "Degraded"
+    assert {"backend": "honcho", "reason": "data not migrated", "message": "data not migrated"} in sc["degraded"]

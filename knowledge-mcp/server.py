@@ -852,11 +852,27 @@ RETRIEVAL_NOT_ACCEPTED = "retrieval_not_accepted"
 RETRIEVAL_NOT_ACCEPTED_MESSAGE = "檢索尚未驗收"
 
 
+# Known causes the runtime/consumer report (reason code, matched in the error text).
+# The backend answered, so these are Degraded with a precise reason, never "unreachable".
+KNOWN_REASONS = (
+    RETRIEVAL_NOT_ACCEPTED,
+    "data not migrated",
+    "embedding unavailable",
+    "database cold start",
+    "database unavailable",
+    "index rebuilding",
+    "timeout",
+)
+ANSWERED_REASONS = (RETRIEVAL_NOT_ACCEPTED, "data not migrated", "embedding unavailable", "index rebuilding")
+
+
 def _reason_of(error: Any) -> str:
-    """Classify an upstream backend error string into a stable reason code."""
-    text = str(error or "").strip()
-    if text.lower().startswith(RETRIEVAL_NOT_ACCEPTED):
-        return RETRIEVAL_NOT_ACCEPTED
+    """Classify an upstream backend error string into a stable reason code.
+    "unreachable" only when the cause is not one of the known reasons."""
+    text = str(error or "").strip().lower()
+    for reason in KNOWN_REASONS:
+        if text.startswith(reason) or reason in text:
+            return reason
     return "unreachable"
 
 
@@ -895,6 +911,12 @@ def upstream_degradation(data: Any) -> list[dict[str, Any]]:
         for err in errors:
             if err:
                 add("qmd", _reason_of(err), err)
+    honcho = data.get("honcho")
+    if isinstance(honcho, dict):
+        if honcho.get("error"):
+            add("honcho", _reason_of(honcho["error"]), honcho["error"])
+        elif isinstance(honcho.get("status"), int) and honcho["status"] != 200:
+            add("honcho", f"http_{honcho['status']}")
     retrieval = data.get("retrieval")
     if isinstance(retrieval, dict) and retrieval.get("error"):
         add("qmd", _reason_of(retrieval["error"]), retrieval["error"])
@@ -1027,13 +1049,14 @@ def _backend_health_qmd(qmd: Any, s_status: int) -> dict[str, Any]:
     error = qmd.get("error") or (bucket_errors[0] if bucket_errors else None)
     real = [b for b in buckets if not (isinstance(b, dict) and b.get("error"))]
     errors = [qmd.get("error"), *bucket_errors]
-    if any(_reason_of(e) == RETRIEVAL_NOT_ACCEPTED for e in errors if e):
-        # Reachable and answering, but retrieval is not accepted yet: Degraded, not "unreachable".
-        return {
-            "reachable": s_status == 200,
-            "accepted": False,
-            "reason": RETRIEVAL_NOT_ACCEPTED,
-            "message": RETRIEVAL_NOT_ACCEPTED_MESSAGE,
+    reasons = [_reason_of(e) for e in errors if e]
+    known = next((r for r in reasons if r == RETRIEVAL_NOT_ACCEPTED), None) or \
+        next((r for r in reasons if r != "unreachable"), None)
+    if known:
+        # The backend answered with a known cause: Degraded with that reason, not "unreachable".
+        out = {
+            "reachable": s_status == 200 and known in ANSWERED_REASONS,
+            "reason": known,
             "search_http": s_status,
             "hit_count": len(real),
             "error_bucket_count": len(bucket_errors),
@@ -1041,6 +1064,9 @@ def _backend_health_qmd(qmd: Any, s_status: int) -> dict[str, Any]:
             "source": qmd.get("source"),
             "backend": qmd.get("backend"),
         }
+        if known == RETRIEVAL_NOT_ACCEPTED:
+            out.update(accepted=False, message=RETRIEVAL_NOT_ACCEPTED_MESSAGE)
+        return out
     reachable = s_status == 200 and error is None and qmd.get("hits") is not None
     return {
         "reachable": reachable,
@@ -1059,10 +1085,15 @@ def _backend_health_honcho(honcho: Any, s_status: int) -> dict[str, Any]:
         return {"reachable": False, "search_http": s_status, "error": "gateway response had no honcho section"}
     status = honcho.get("status")
     error = honcho.get("error")
+    reason = None
     if error is None and isinstance(status, int) and status != 200:
         error = f"honcho HTTP {status}"
+        reason = f"http_{status}"
+    elif error is not None:
+        reason = _reason_of(error)
     return {
-        "reachable": s_status == 200 and error is None,
+        "reachable": s_status == 200 and (error is None or reason in ANSWERED_REASONS),
+        "reason": reason,
         "search_http": s_status,
         "hit_count": len(honcho.get("hits") or []),
         "status": status,
@@ -1089,12 +1120,17 @@ def tool_knowledge_status(_args: dict[str, Any]) -> dict[str, Any]:
     if not backends.get("honcho", {}).get("reachable"):
         degraded.append("honcho")
     qmd_health = backends.get("qmd", {})
-    if not qmd_health.get("reachable") or qmd_health.get("accepted") is False:
+    if not qmd_health.get("reachable") or qmd_health.get("reason"):
         degraded.append("qmd")
+    # Honcho: degraded also when it answered with a known cause (e.g. data not migrated).
+    if "honcho" not in degraded and backends.get("honcho", {}).get("reason"):
+        degraded.append("honcho")
     reasons = {
         name: (backends.get(name, {}).get("reason") or "unreachable")
         for name in degraded
     }
+    if h_status != 200:
+        reasons["knowledge_api"] = f"http_{h_status}" if h_status else "unreachable"
 
     payload: dict[str, Any] = {
         "ok": h_status == 200 and not degraded,
@@ -1118,7 +1154,7 @@ def tool_knowledge_status(_args: dict[str, Any]) -> dict[str, Any]:
             "One or more backends degraded: "
             + ", ".join(
                 f"{name} ({RETRIEVAL_NOT_ACCEPTED}: {RETRIEVAL_NOT_ACCEPTED_MESSAGE})"
-                if reasons[name] == RETRIEVAL_NOT_ACCEPTED else name
+                if reasons[name] == RETRIEVAL_NOT_ACCEPTED else f"{name} ({reasons[name]})"
                 for name in degraded
             ),
             extra=payload,

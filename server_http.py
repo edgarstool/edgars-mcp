@@ -174,7 +174,9 @@ def resolve_agent_cli(
     """Deterministic resolver for agent CLIs (codex / copilot / droid / ollama).
 
     Order: existing env override > existing known path or PATH hit, ranked
-    .exe before .cmd/.bat (stable by listing order) > bare name.
+    shell-free first (.exe, or an npm .cmd shim that unwraps to
+    ``node script.js``) before other .cmd/.bat; ties keep listing order
+    (known paths before PATH) > bare name.
     On Windows an extensionless file (e.g. npm's POSIX ``codex`` shim) is never
     returned, because cmd.exe / CreateProcess cannot launch it and fails with
     "The system cannot find the file specified."
@@ -204,7 +206,10 @@ def resolve_agent_cli(
         ext = os.path.splitext(path)[1].lower()
         if is_windows and ext not in _WINDOWS_LAUNCHABLE_EXTS:
             continue
-        ranked.append((_CLI_EXT_RANK.get(ext, 2), index, path))
+        rank = _CLI_EXT_RANK.get(ext, 2)
+        if ext in (".cmd", ".bat") and _npm_shim_node_argv(path):
+            rank = 0
+        ranked.append((rank, index, path))
     if ranked:
         ranked.sort()
         return ranked[0][2]
@@ -270,10 +275,13 @@ QMD_KNOWN_PATHS = [
     r"C:\Users\EdgarsTool\AppData\Roaming\npm\qmd.cmd",
     r"C:\Users\EdgarsTool\AppData\Roaming\npm\qmd.ps1",
 ]
+# npm's codex.cmd first: it unwraps to `node codex.js`, which keeps stdin.
+# The EdgarOS bin\codex.exe/.cmd launchers re-enter PowerShell, which drops
+# piped stdin and cannot carry a multi-line argument, so they are last resort.
 CODEX_KNOWN_PATHS = [
+    r"C:\Users\EdgarsTool\AppData\Roaming\npm\codex.cmd",
     r"C:\Users\EdgarsTool\AppData\Local\EdgarOS\bin\codex.exe",
     r"C:\Users\EdgarsTool\AppData\Local\EdgarOS\bin\codex.cmd",
-    r"C:\Users\EdgarsTool\AppData\Roaming\npm\codex.cmd",
 ]
 COPILOT_KNOWN_PATHS = [r"C:\Users\EdgarsTool\AppData\Roaming\npm\copilot.cmd"]
 DROID_KNOWN_PATHS = [r"C:\Users\EdgarsTool\bin\droid.exe"]

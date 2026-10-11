@@ -4203,6 +4203,25 @@ class AgentCliRobustnessTests(unittest.TestCase):
                     server_http.resolve_agent_cli("codex", "CODEX_CMD", [b["codex"]], is_windows=True),
                 )
 
+    def test_resolver_prefers_npm_shim_listed_first_over_launcher_exe(self):
+        with tempfile.TemporaryDirectory() as npm, tempfile.TemporaryDirectory() as edgaros:
+            script = Path(npm) / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+            script.parent.mkdir(parents=True)
+            script.write_text("// codex", encoding="utf-8")
+            (Path(npm) / "node.exe").write_text("stub", encoding="utf-8")
+            shim = Path(npm) / "codex.cmd"
+            shim.write_text('"%_prog%"  "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n', encoding="utf-8")
+            launcher = self._make_bins(edgaros, ["codex.exe"])["codex.exe"]
+            with patch.dict(os.environ, {"CODEX_CMD": ""}), patch.object(server_http.shutil, "which", return_value=None):
+                self.assertEqual(
+                    str(shim),
+                    server_http.resolve_agent_cli("codex", "CODEX_CMD", [str(shim), launcher], is_windows=True),
+                )
+                self.assertEqual(
+                    launcher,
+                    server_http.resolve_agent_cli("codex", "CODEX_CMD", [launcher, str(shim)], is_windows=True),
+                )
+
     def test_resolver_env_override_wins_when_it_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             bins = self._make_bins(tmp, ["codex.cmd", "codex.exe"])

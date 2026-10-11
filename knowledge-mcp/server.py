@@ -844,6 +844,78 @@ def tool_knowledge_get(args: dict[str, Any]) -> dict[str, Any]:
     return structured_ok(payload)
 
 
+# ---------------------------------------------------------------------------
+# Upstream degradation (gate #8: no silent Live)
+# ---------------------------------------------------------------------------
+
+RETRIEVAL_NOT_ACCEPTED = "retrieval_not_accepted"
+RETRIEVAL_NOT_ACCEPTED_MESSAGE = "檢索尚未驗收"
+
+
+def _reason_of(error: Any) -> str:
+    """Classify an upstream backend error string into a stable reason code."""
+    text = str(error or "").strip()
+    if text.lower().startswith(RETRIEVAL_NOT_ACCEPTED):
+        return RETRIEVAL_NOT_ACCEPTED
+    return "unreachable"
+
+
+def _degradation_entry(backend: str, reason: str, detail: Any = None) -> dict[str, Any]:
+    entry: dict[str, Any] = {"backend": backend, "reason": reason}
+    if reason == RETRIEVAL_NOT_ACCEPTED:
+        entry["message"] = RETRIEVAL_NOT_ACCEPTED_MESSAGE
+    elif detail:
+        entry["message"] = str(detail)[:300]
+    return entry
+
+
+def upstream_degradation(data: Any) -> list[dict[str, Any]]:
+    """Every degradation the gateway reports, fail-closed.
+
+    Reads ``qmd.error`` / per-bucket ``error`` (the gateway answers HTTP 200 even
+    when retrieval is degraded), the top-level ``degraded`` list, and a runtime
+    ``meta`` (``status`` + ``degraded``) when present. A missing ``qmd`` section
+    is Degraded too. Empty list == Live.
+    """
+    if not isinstance(data, dict):
+        return [_degradation_entry("qmd", "unreachable", "gateway response was not an object")]
+    out: dict[str, dict[str, Any]] = {}
+
+    def add(backend: str, reason: str, detail: Any = None) -> None:
+        current = out.get(backend)
+        # retrieval_not_accepted is the more specific reason; never downgrade it
+        if current is None or (reason == RETRIEVAL_NOT_ACCEPTED and current["reason"] != reason):
+            out[backend] = _degradation_entry(backend, reason, detail)
+
+    qmd = data.get("qmd")
+    if not isinstance(qmd, dict):
+        add("qmd", "unreachable", "gateway response had no qmd section")
+    else:
+        errors = [qmd.get("error")] + [b.get("error") for b in (qmd.get("hits") or []) if isinstance(b, dict)]
+        for err in errors:
+            if err:
+                add("qmd", _reason_of(err), err)
+    retrieval = data.get("retrieval")
+    if isinstance(retrieval, dict) and retrieval.get("error"):
+        add("qmd", _reason_of(retrieval["error"]), retrieval["error"])
+    for name in data.get("degraded") or []:
+        backend = "qmd" if name in ("retrieval", "qmd") else str(name)
+        add(backend, "degraded")
+    meta = data.get("meta")
+    if isinstance(meta, dict) and meta.get("status") not in (None, "Live"):
+        degraded = meta.get("degraded") or {}
+        items = degraded.items() if isinstance(degraded, dict) else []
+        found = False
+        for backend, info in items:
+            reason = (info or {}).get("reason") if isinstance(info, dict) else None
+            add("qmd" if backend in ("retrieval", "qmd") else str(backend),
+                RETRIEVAL_NOT_ACCEPTED if reason == RETRIEVAL_NOT_ACCEPTED else str(reason or "degraded"))
+            found = True
+        if not found:
+            add("qmd", "degraded")
+    return list(out.values())
+
+
 def tool_knowledge_context_pack(args: dict[str, Any]) -> dict[str, Any]:
     """Minimal Context Pack for Prompt Forge / generic query (CORE §5-ish)."""
     query = (args.get("query") or "").strip()
@@ -865,6 +937,8 @@ def tool_knowledge_context_pack(args: dict[str, Any]) -> dict[str, Any]:
         )
 
     shaped = normalize_search(query, status, data, apply_ranking=True)
+    degraded = upstream_degradation(data)
+    not_accepted = any(d["reason"] == RETRIEVAL_NOT_ACCEPTED for d in degraded)
     evidence = (shaped.get("hits") or [])[:5]
     pointers: list[str] = []
     for h in evidence:
@@ -897,11 +971,19 @@ def tool_knowledge_context_pack(args: dict[str, Any]) -> dict[str, Any]:
     if not evidence:
         unknown.append("No substantive ranked evidence for this query")
     unknown.append("Full document bodies may require GitHub (Agent-KB) or live systems")
+    if not_accepted:
+        unknown.insert(0, f"{RETRIEVAL_NOT_ACCEPTED}: {RETRIEVAL_NOT_ACCEPTED_MESSAGE} "
+                          "(retrieval not accepted yet; evidence may be incomplete)")
+    elif degraded:
+        unknown.insert(0, "Retrieval degraded: " + ", ".join(f"{d['backend']} ({d['reason']})" for d in degraded))
 
     conflicts: list[Any] = []  # optional; deferred full fixtures
 
+    pack_status = "Degraded" if degraded else "Live"
     pack: dict[str, Any] = {
         "ok": True,
+        "status": pack_status,
+        "degraded": degraded,
         "goal": f"Assemble minimal context pack for: {query}",
         "authority": authority,
         "evidence": evidence,
@@ -917,6 +999,7 @@ def tool_knowledge_context_pack(args: dict[str, Any]) -> dict[str, Any]:
             "source": "live knowledge-api /search at call time",
             "api": BASE,
             "http_status": status,
+            "status": pack_status,
         },
         "semantics": shaped.get("semantics"),
         "backends": shaped.get("backends"),
@@ -926,6 +1009,8 @@ def tool_knowledge_context_pack(args: dict[str, Any]) -> dict[str, Any]:
     if shaped.get("live_verify"):
         pack["live_verify"] = shaped["live_verify"]
         pack["constraints"].append(shaped["live_verify"]["message"])
+    if degraded:
+        pack["constraints"].insert(0, "Pack is Degraded: never present it as Live; say which backend is degraded and why")
 
     return structured_ok(pack)
 
@@ -941,8 +1026,25 @@ def _backend_health_qmd(qmd: Any, s_status: int) -> dict[str, Any]:
     bucket_errors = [str(b.get("error")) for b in buckets if isinstance(b, dict) and b.get("error")]
     error = qmd.get("error") or (bucket_errors[0] if bucket_errors else None)
     real = [b for b in buckets if not (isinstance(b, dict) and b.get("error"))]
+    errors = [qmd.get("error"), *bucket_errors]
+    if any(_reason_of(e) == RETRIEVAL_NOT_ACCEPTED for e in errors if e):
+        # Reachable and answering, but retrieval is not accepted yet: Degraded, not "unreachable".
+        return {
+            "reachable": s_status == 200,
+            "accepted": False,
+            "reason": RETRIEVAL_NOT_ACCEPTED,
+            "message": RETRIEVAL_NOT_ACCEPTED_MESSAGE,
+            "search_http": s_status,
+            "hit_count": len(real),
+            "error_bucket_count": len(bucket_errors),
+            "error": str(error) if error else None,
+            "source": qmd.get("source"),
+            "backend": qmd.get("backend"),
+        }
+    reachable = s_status == 200 and error is None and qmd.get("hits") is not None
     return {
-        "reachable": s_status == 200 and error is None and qmd.get("hits") is not None,
+        "reachable": reachable,
+        "reason": None if reachable else "unreachable",
         "search_http": s_status,
         "hit_count": len(real),
         "error_bucket_count": len(bucket_errors),
@@ -986,8 +1088,13 @@ def tool_knowledge_status(_args: dict[str, Any]) -> dict[str, Any]:
         degraded.append("knowledge_api")
     if not backends.get("honcho", {}).get("reachable"):
         degraded.append("honcho")
-    if not backends.get("qmd", {}).get("reachable"):
+    qmd_health = backends.get("qmd", {})
+    if not qmd_health.get("reachable") or qmd_health.get("accepted") is False:
         degraded.append("qmd")
+    reasons = {
+        name: (backends.get(name, {}).get("reason") or "unreachable")
+        for name in degraded
+    }
 
     payload: dict[str, Any] = {
         "ok": h_status == 200 and not degraded,
@@ -997,6 +1104,7 @@ def tool_knowledge_status(_args: dict[str, Any]) -> dict[str, Any]:
         "health": health,
         "backends": backends,
         "degraded": degraded,
+        "degraded_reasons": reasons,
         "freshness": "live probe at call time",
         "historical_note": (
             "Do not answer status solely from the 2026-09-04 canonicalization receipt; "
@@ -1007,7 +1115,12 @@ def tool_knowledge_status(_args: dict[str, Any]) -> dict[str, Any]:
     if degraded:
         return structured_error(
             "DEGRADED",
-            f"One or more backends degraded: {', '.join(degraded)}",
+            "One or more backends degraded: "
+            + ", ".join(
+                f"{name} ({RETRIEVAL_NOT_ACCEPTED}: {RETRIEVAL_NOT_ACCEPTED_MESSAGE})"
+                if reasons[name] == RETRIEVAL_NOT_ACCEPTED else name
+                for name in degraded
+            ),
             extra=payload,
         )
     return structured_ok(payload)

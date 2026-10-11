@@ -86,6 +86,31 @@ def _local_permitted(local_only: bool) -> bool:
     return _auth_kind() in {"none", "static", "cf_access", "unknown"}
 
 
+_SECRET_LINE_RE = re.compile(
+    r"(?i)(api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|authorization|credential|private[_-]?key)"
+)
+
+
+def _redact_secret_text(text: str) -> str:
+    redacted: list[str] = []
+    for line in str(text or "").splitlines():
+        if _SECRET_LINE_RE.search(line) and (":" in line or "=" in line):
+            key = line.split(":", 1)[0].split("=", 1)[0]
+            redacted.append(f"{key}: [redacted]")
+        else:
+            redacted.append(line)
+    return "\n".join(redacted)
+
+
+def _redact_run_output(response: dict) -> dict:
+    payload = response.get("structuredContent")
+    if not isinstance(payload, dict) or not isinstance(payload.get("output"), str):
+        return response
+    cleaned = dict(payload)
+    cleaned["output"] = _redact_secret_text(str(payload.get("output") or ""))
+    return _json(cleaned, is_error=bool(response.get("isError")))
+
+
 def _text(text: str, *, is_error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": text}], "isError": is_error}
 
@@ -361,10 +386,13 @@ def _hermes_tools() -> list[dict]:
                 "provider": {"type": "string"},
                 "reasoning": {"type": "string"},
                 "skills": {"type": "string"},
-                "yolo": {"type": "boolean"},
-                "resume": {"type": "string"},
-                "continue": {"type": "string"},
-                "toolsets": {"type": "string"},
+                "yolo": {"type": "boolean", "description": "Maps to --yolo."},
+                "resume": {"type": "string", "description": "Maps to --resume/-r. Use latest for the newest session."},
+                "continue": {"type": "string", "description": "Maps to --continue/-c session name."},
+                "toolsets": {"type": "string", "description": "Maps to -t/--toolsets."},
+                "accept_hooks": {"type": "boolean", "description": "Maps to --accept-hooks."},
+                "worktree": {"type": "boolean", "description": "Maps to --worktree."},
+                "ignore_rules": {"type": "boolean", "description": "Maps to --ignore-rules."},
                 "extra_args": {"type": "array", "items": {"type": "string"}},
                 "async": {"type": "boolean"},
                 "timeout_seconds": {"type": "integer"},
@@ -375,6 +403,33 @@ def _hermes_tools() -> list[dict]:
         _tool("hermes_status", "[Hermes] `hermes status`.", {}, read_only=True),
         _tool("hermes_version", "[Hermes] `hermes --version`.", {}, read_only=True),
         _tool("hermes_doctor", "[Hermes] `hermes doctor`.", {}, read_only=True),
+        _tool("hermes_sessions_list", "[Hermes] `hermes sessions list`. Lists recent sessions. Read-only.", {}, read_only=True),
+        _tool("hermes_skills_list", "[Hermes] `hermes skills list`. Lists installed skills. Read-only.", {}, read_only=True),
+        _tool("hermes_mcp_list", "[Hermes] `hermes mcp list`. Lists configured MCP servers. Read-only.", {}, read_only=True),
+        _tool("hermes_memory_status", "[Hermes] `hermes memory status`. Shows the external memory provider. Read-only.", {}, read_only=True),
+        _tool(
+            "hermes_config_show",
+            "[Hermes] `hermes config show`. Secret-like values are redacted before the result is returned.",
+            {},
+            read_only=True,
+        ),
+        _tool(
+            "hermes_logs",
+            "[Hermes] `hermes logs` tail. Does not follow. log_name is agent, errors, gateway, gui, desktop, update, handoff, or list. Flags: -n/--lines, --since, --level, --component.",
+            {
+                "log_name": {
+                    "type": "string",
+                    "enum": ["agent", "errors", "gateway", "gui", "desktop", "update", "handoff", "list"],
+                },
+                "lines": {"type": "integer", "description": "Maps to -n/--lines. Default 50, max 500."},
+                "since": {"type": "string", "description": "Maps to --since, for example 30m, 1h, or 2d."},
+                "level": {"type": "string", "enum": ["DEBUG", "INFO", "WARNING", "ERROR"]},
+                "component": {"type": "string", "enum": ["gateway", "agent", "tools", "cli", "cron", "gui"]},
+            },
+            read_only=True,
+        ),
+        _tool("hermes_gateway_status", "[Hermes] `hermes gateway status`. Read-only.", {}, read_only=True),
+        _tool("hermes_usage", "[Hermes] `hermes usage`. Rate-limit windows without starting a session. Read-only.", {}, read_only=True),
     ]
 
 
@@ -402,7 +457,14 @@ def _openclaw_tools() -> list[dict]:
                 "json": {"type": "boolean"},
                 "session_id": {"type": "string"},
                 "session_key": {"type": "string"},
-                "thinking": {"type": "string"},
+                "thinking": {
+                    "type": "string",
+                    "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"],
+                    "description": "Maps to --thinking.",
+                },
+                "verbose": {"type": "string", "enum": ["on", "off"], "description": "Maps to --verbose."},
+                "message_file": {"type": "string", "description": "Maps to --message-file. When set, task/message is not also sent."},
+                "turn_timeout": {"type": "integer", "description": "Maps to --timeout seconds."},
                 "extra_args": {"type": "array", "items": {"type": "string"}},
                 "async": {"type": "boolean"},
                 "timeout_seconds": {"type": "integer"},
@@ -413,6 +475,39 @@ def _openclaw_tools() -> list[dict]:
         _tool("openclaw_status", "[OpenClaw] `openclaw status --json`.", {}, read_only=True),
         _tool("openclaw_version", "[OpenClaw] `openclaw --version`.", {}, read_only=True),
         _tool("openclaw_health", "[OpenClaw] `openclaw status --all --json`.", {}, read_only=True),
+        _tool("openclaw_doctor", "[OpenClaw] `openclaw doctor --json`. Read-only advisory report. Does not pass --fix.", {}, read_only=True),
+        _tool(
+            "openclaw_gateway_status",
+            "[OpenClaw] `openclaw gateway status --json`. Includes the connectivity probe unless no_probe=true (`--no-probe`). Does not accept token or password arguments.",
+            {"no_probe": {"type": "boolean"}},
+            read_only=True,
+        ),
+        _tool("openclaw_gateway_health", "[OpenClaw] `openclaw health --json`. Live health probe. Read-only.", {}, read_only=True),
+        _tool(
+            "openclaw_channels",
+            "[OpenClaw] `openclaw channels list --json`. all=true maps to --all.",
+            {"all": {"type": "boolean"}},
+            read_only=True,
+        ),
+        _tool(
+            "openclaw_sessions",
+            "[OpenClaw] `openclaw sessions --json`. Optional --agent, --limit (integer or all), and --active minutes.",
+            {
+                "agent": {"type": "string"},
+                "limit": {"type": "string", "description": "Integer or all. Maps to --limit."},
+                "active_minutes": {"type": "integer", "description": "Maps to --active."},
+            },
+            read_only=True,
+        ),
+        _tool(
+            "openclaw_mcp_doctor",
+            "[OpenClaw] `openclaw mcp doctor --json`. Optional server name. probe=true adds --probe.",
+            {
+                "name": {"type": "string"},
+                "probe": {"type": "boolean"},
+            },
+            read_only=True,
+        ),
     ]
 
 
@@ -855,6 +950,12 @@ def _handle_hermes(name: str, arguments: dict) -> dict:
             argv.extend(["-t", str(arguments["toolsets"])])
         if arguments.get("yolo") is True:
             argv.append("--yolo")
+        if arguments.get("accept_hooks") is True:
+            argv.append("--accept-hooks")
+        if arguments.get("worktree") is True:
+            argv.append("--worktree")
+        if arguments.get("ignore_rules") is True:
+            argv.append("--ignore-rules")
         if arguments.get("resume"):
             argv.extend(["--resume", str(arguments["resume"])])
         if arguments.get("continue"):
@@ -863,6 +964,48 @@ def _handle_hermes(name: str, arguments: dict) -> dict:
         if isinstance(extra, list):
             argv.extend(str(item) for item in extra)
         return _run(argv, cwd=working_dir, timeout=timeout)
+    if name == "hermes_sessions_list":
+        return _run([binary, "sessions", "list"], timeout=60)
+    if name == "hermes_skills_list":
+        return _run([binary, "skills", "list"], timeout=60)
+    if name == "hermes_mcp_list":
+        return _run([binary, "mcp", "list"], timeout=60)
+    if name == "hermes_memory_status":
+        return _run([binary, "memory", "status"], timeout=60)
+    if name == "hermes_config_show":
+        return _redact_run_output(_run([binary, "config", "show"], timeout=60))
+    if name == "hermes_logs":
+        log_name = str(arguments.get("log_name") or "agent").strip()
+        allowed_logs = {"agent", "errors", "gateway", "gui", "desktop", "update", "handoff", "list"}
+        if log_name not in allowed_logs:
+            return _text("log_name must be agent, errors, gateway, gui, desktop, update, handoff, or list", is_error=True)
+        argv = [binary, "logs"]
+        if log_name != "agent":
+            argv.append(log_name)
+        lines = arguments.get("lines", 50)
+        if isinstance(lines, bool) or not isinstance(lines, int) or lines < 1 or lines > 500:
+            return _text("lines must be an integer from 1 to 500", is_error=True)
+        argv.extend(["-n", str(lines)])
+        since = str(arguments.get("since") or "").strip()
+        if since:
+            if not re.fullmatch(r"\d+[smhd]", since):
+                return _text("since must look like 30m, 1h, or 2d", is_error=True)
+            argv.extend(["--since", since])
+        level = str(arguments.get("level") or "").strip()
+        if level:
+            if level not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
+                return _text("level must be DEBUG, INFO, WARNING, or ERROR", is_error=True)
+            argv.extend(["--level", level])
+        component = str(arguments.get("component") or "").strip()
+        if component:
+            if component not in {"gateway", "agent", "tools", "cli", "cron", "gui"}:
+                return _text("component must be gateway, agent, tools, cli, cron, or gui", is_error=True)
+            argv.extend(["--component", component])
+        return _run(argv, timeout=60)
+    if name == "hermes_gateway_status":
+        return _run([binary, "gateway", "status"], timeout=60)
+    if name == "hermes_usage":
+        return _run([binary, "usage"], timeout=60)
     return _text(f"Unknown Hermes tool: {name}", is_error=True)
 
 
@@ -879,9 +1022,15 @@ def _handle_openclaw(name: str, arguments: dict) -> dict:
         return _run([binary, "status", "--all", "--json"], timeout=120)
     if name == "openclaw_agent":
         message = str(arguments.get("message") or arguments.get("task") or "").strip()
-        if not message:
-            return _text("task/message is required", is_error=True)
-        argv = [binary, "agent", "--message", message]
+        message_file = str(arguments.get("message_file") or "").strip()
+        if message_file and any(ch in message_file for ch in "\r\n"):
+            return _text("message_file must be a single line", is_error=True)
+        if message_file:
+            argv = [binary, "agent", "--message-file", message_file]
+        else:
+            if not message:
+                return _text("task/message is required", is_error=True)
+            argv = [binary, "agent", "--message", message]
         if arguments.get("local") is not False:
             argv.append("--local")
         if arguments.get("json") is not False:
@@ -894,13 +1043,71 @@ def _handle_openclaw(name: str, arguments: dict) -> dict:
             argv.extend(["--session-id", str(arguments["session_id"])])
         if arguments.get("session_key"):
             argv.extend(["--session-key", str(arguments["session_key"])])
-        if arguments.get("thinking"):
-            argv.extend(["--thinking", str(arguments["thinking"])])
+        thinking = str(arguments.get("thinking") or "").strip()
+        if thinking:
+            allowed_thinking = {"off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"}
+            if thinking not in allowed_thinking:
+                return _text("thinking must be a documented OpenClaw level", is_error=True)
+            argv.extend(["--thinking", thinking])
+        verbose = str(arguments.get("verbose") or "").strip()
+        if verbose:
+            if verbose not in {"on", "off"}:
+                return _text("verbose must be on or off", is_error=True)
+            argv.extend(["--verbose", verbose])
+        turn_timeout = arguments.get("turn_timeout")
+        if turn_timeout is not None:
+            if isinstance(turn_timeout, bool) or not isinstance(turn_timeout, int) or turn_timeout < 0:
+                return _text("turn_timeout must be an integer number of seconds", is_error=True)
+            argv.extend(["--timeout", str(turn_timeout)])
         extra = arguments.get("extra_args")
         if isinstance(extra, list):
             argv.extend(str(item) for item in extra)
         working_dir = str(arguments.get("working_dir") or r"V:\projects").strip()
         return _run(argv, cwd=working_dir, timeout=timeout)
+    if name == "openclaw_doctor":
+        return _run([binary, "doctor", "--json"], timeout=120)
+    if name == "openclaw_gateway_status":
+        argv = [binary, "gateway", "status", "--json"]
+        if arguments.get("no_probe") is True:
+            argv.append("--no-probe")
+        return _run(argv, timeout=90)
+    if name == "openclaw_gateway_health":
+        return _run([binary, "health", "--json"], timeout=90)
+    if name == "openclaw_channels":
+        argv = [binary, "channels", "list", "--json"]
+        if arguments.get("all") is True:
+            argv.append("--all")
+        return _run(argv, timeout=60)
+    if name == "openclaw_sessions":
+        argv = [binary, "sessions", "--json"]
+        agent = str(arguments.get("agent") or "").strip()
+        if agent:
+            if any(ch in agent for ch in "\r\n"):
+                return _text("agent must be a single line", is_error=True)
+            argv.extend(["--agent", agent])
+        limit = arguments.get("limit")
+        if limit is not None and str(limit).strip():
+            limit_text = str(limit).strip()
+            if limit_text != "all" and not limit_text.isdigit():
+                return _text("limit must be an integer or all", is_error=True)
+            argv.extend(["--limit", limit_text])
+        active = arguments.get("active_minutes")
+        if active is not None:
+            if isinstance(active, bool) or not isinstance(active, int) or active < 1:
+                return _text("active_minutes must be a positive integer", is_error=True)
+            argv.extend(["--active", str(active)])
+        return _run(argv, timeout=60)
+    if name == "openclaw_mcp_doctor":
+        argv = [binary, "mcp", "doctor"]
+        server_name = str(arguments.get("name") or "").strip()
+        if server_name:
+            if any(ch in server_name for ch in "\r\n \t"):
+                return _text("name must be a single token", is_error=True)
+            argv.append(server_name)
+        if arguments.get("probe") is True:
+            argv.append("--probe")
+        argv.append("--json")
+        return _run(argv, timeout=120)
     return _text(f"Unknown OpenClaw tool: {name}", is_error=True)
 
 

@@ -52,18 +52,24 @@ FLAG_KEYS = [
     "MCP_WRAP_OPENMONTAGE",
     "MCP_WRAP_HERMES",
     "MCP_WRAP_OPENCLAW",
+    "MCP_WRAP_FLEET",
+    "MCP_WRAP_YOUTRACK",
+    "MCP_WRAP_CHROME_DEVTOOLS",
 ]
 
 SKILLS = [
-    ("MCP_WRAP_PLAYWRIGHT", "Playwright 瀏覽器", "stdio", "會開瀏覽器子程序"),
-    ("MCP_WRAP_KAPTURE", "Kapture 瀏覽器", "stdio", "接到已開著的 Chrome 分頁"),
-    ("MCP_WRAP_WINDOWS", "Windows 桌面控制", "stdio", "滑鼠鍵盤與截圖"),
-    ("MCP_WRAP_DESKTOP_COMMANDER", "Desktop Commander", "stdio", "本機檔案與終端"),
-    ("MCP_WRAP_DESCOPE", "Descope 工具面", "native", "SDK / 管理 MCP（授權另看狀態）"),
-    ("MCP_WRAP_CLOUDFLARED", "cloudflared CLI", "native", "不管正式 tunnel 開關"),
-    ("MCP_WRAP_OPENMONTAGE", "OpenMontage", "native", "pipeline 與 BaseTools"),
-    ("MCP_WRAP_HERMES", "Hermes", "native", "hermes CLI"),
-    ("MCP_WRAP_OPENCLAW", "OpenClaw", "native", "openclaw agent"),
+    ("MCP_WRAP_PLAYWRIGHT", "Playwright 瀏覽器", "stdio", "自己開一個瀏覽器"),
+    ("MCP_WRAP_KAPTURE", "Kapture 瀏覽器", "stdio", "接到已經開著的 Chrome"),
+    ("MCP_WRAP_WINDOWS", "Windows 桌面控制", "stdio", "滑鼠、鍵盤、截圖"),
+    ("MCP_WRAP_DESKTOP_COMMANDER", "Desktop Commander", "stdio", "本機檔案和終端"),
+    ("MCP_WRAP_DESCOPE", "Descope", "native", "登入和權限"),
+    ("MCP_WRAP_CLOUDFLARED", "cloudflared", "native", "看通道，不關正式那條"),
+    ("MCP_WRAP_OPENMONTAGE", "OpenMontage", "native", "影片製作管線"),
+    ("MCP_WRAP_HERMES", "Hermes", "native", "本機 Hermes 助手"),
+    ("MCP_WRAP_OPENCLAW", "OpenClaw", "native", "本機 OpenClaw 助手"),
+    ("MCP_WRAP_FLEET", "Fleet 調度", "native", "看哪一台比較適合"),
+    ("MCP_WRAP_YOUTRACK", "YouTrack", "stdio", "工作單。不再使用 Linear"),
+    ("MCP_WRAP_CHROME_DEVTOOLS", "Chrome DevTools", "stdio", "看網頁怎麼跑"),
 ]
 
 NATIVE_FLAGS = {
@@ -72,17 +78,24 @@ NATIVE_FLAGS = {
     "MCP_WRAP_OPENMONTAGE",
     "MCP_WRAP_HERMES",
     "MCP_WRAP_OPENCLAW",
+    "MCP_WRAP_FLEET",
 }
 
-BG = "#16181d"
-PANEL = "#21252c"
-PANEL2 = "#2a2f38"
-FG = "#e8eaed"
-MUTED = "#9aa3af"
-ACCENT = "#3dd68c"
-DANGER = "#ff6b6b"
-WARN = "#f5c542"
-BTN = "#3a404c"
+BG = "#10141c"
+PANEL = "#171d28"
+PANEL2 = "#202838"
+FG = "#f4f7fb"
+MUTED = "#8e9bb0"
+ACCENT = "#3dcc8e"
+ACCENT_SOFT = "#17362b"
+BLUE = "#8eb7ff"
+BLUE_SOFT = "#1c2944"
+DANGER = "#ff8d8d"
+DANGER_SOFT = "#3a2226"
+WARN = "#e7c36a"
+BTN = "#2a3344"
+LINE = "#2c3648"
+FONT = "Microsoft JhengHei UI"
 CREATE_NO_WINDOW = 0x08000000
 
 
@@ -113,6 +126,7 @@ def load_profile() -> tuple[str, dict[str, str]]:
             mode = str(data.get("mode") or "custom")
             raw = data.get("flags") if isinstance(data.get("flags"), dict) else data
             flags = default_flags("core")
+            flags["MCP_WRAP_FLEET"] = "1"
             for key in FLAG_KEYS:
                 if key in raw:
                     flags[key] = "1" if _on(raw[key]) else "0"
@@ -172,15 +186,15 @@ def infer_mode(flags: dict[str, str]) -> str:
 
 
 BUILTIN_GROUP_RULES = [
-    ("Agent", lambda n: n.endswith("_agent") or n.startswith("agent_job") or n.startswith("ollama_")),
-    ("檔案 fs", lambda n: n.startswith("fs_")),
-    ("系統 sys", lambda n: n.startswith("sys_")),
-    ("QMD", lambda n: n.startswith("qmd_")),
+    ("助手", lambda n: n.endswith("_agent") or n.startswith(("agent_job", "ollama_", "codex_"))),
+    ("檔案", lambda n: n.startswith("fs_")),
+    ("系統", lambda n: n.startswith("sys_")),
+    ("搜尋", lambda n: n.startswith("qmd_")),
     ("Git", lambda n: n.startswith("git_")),
-    ("瀏覽器 browser", lambda n: n.startswith("browser_")),
-    ("Vault", lambda n: n.startswith("vault_")),
+    ("瀏覽器", lambda n: n.startswith("browser_")),
+    ("筆記本", lambda n: n.startswith("vault_")),
     ("Warp", lambda n: n.startswith("warp_")),
-    ("Cursor Agent", lambda n: n.startswith("cursor_")),
+    ("Cursor", lambda n: n.startswith("cursor_")),
     ("Factory", lambda n: n.startswith("factory_")),
 ]
 
@@ -201,6 +215,40 @@ def load_builtin_tool_names() -> list[str]:
     return [name for name in names if not name.startswith("linear_")]
 
 
+def load_builtin_tool_details() -> dict[str, str]:
+    """Best-effort description for each public base tool."""
+    path = REPO / "server_http.py"
+    text = path.read_text(encoding="utf-8")
+    start = text.index("TOOLS = [")
+    end = text.find("TOOLS = [", start + 1)
+    if end < 0:
+        end = text.find("CHATGPT_HONCHO_TOOLS", start + 1)
+    block = text[start:end]
+    details: dict[str, str] = {}
+    for name in load_builtin_tool_names():
+        marker = f'"name": "{name}"'
+        idx = block.find(marker)
+        if idx < 0:
+            details[name] = ""
+            continue
+        window = block[idx:idx + 1200]
+        immediate = re.match(r'[\s\S]*?"description":\s*(\(|")', window)
+        if not immediate:
+            details[name] = ""
+            continue
+        if immediate.group(1) == '"':
+            quoted = re.search(r'"description":\s*"((?:\\.|[^"\\])*)"', window)
+            details[name] = quoted.group(1) if quoted else ""
+            continue
+        paren = re.search(r'"description":\s*\(', window)
+        chunk = window[paren.end():]
+        stop = chunk.find("),")
+        if stop > 0:
+            chunk = chunk[:stop]
+        details[name] = "".join(re.findall(r'"((?:\\.|[^"\\])*)"', chunk))
+    return details
+
+
 def grouped_builtin_tools() -> list[tuple[str, list[str]]]:
     names = load_builtin_tool_names()
     used: set[str] = set()
@@ -213,7 +261,27 @@ def grouped_builtin_tools() -> list[tuple[str, list[str]]]:
     leftover = [name for name in names if name not in used]
     if leftover:
         groups.append(("其他", leftover))
+    wrapper_names = load_wrapper_agent_tool_names()
+    hermes = [name for name in wrapper_names if name.startswith("hermes_")]
+    openclaw = [name for name in wrapper_names if name.startswith("openclaw_")]
+    if hermes:
+        groups.append(("Hermes", hermes))
+    if openclaw:
+        groups.append(("OpenClaw", openclaw))
     return groups
+
+
+def load_wrapper_agent_tool_names() -> list[str]:
+    text = (REPO / "edgar_wrappers.py").read_text(encoding="utf-8")
+    return re.findall(r'_tool\(\s*"((?:hermes_|openclaw_)[^"]+)"', text)
+
+
+def load_wrapper_agent_tool_details() -> dict[str, str]:
+    text = (REPO / "edgar_wrappers.py").read_text(encoding="utf-8")
+    details: dict[str, str] = {}
+    for name, description in re.findall(r'_tool\(\s*"((?:hermes_|openclaw_)[^"]+)"\s*,\s*"([^"]*)"', text):
+        details[name] = description
+    return details
 
 
 def fetch_json(url: str, timeout: float = 2.0) -> tuple[bool, dict | str]:
@@ -320,21 +388,32 @@ class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("edgars-mcp 控制台")
-        self.geometry("1280x860")
-        self.minsize(1100, 760)
+        self.geometry("1360x900")
+        self.minsize(1180, 760)
         self.configure(bg=BG)
         self.busy = False
         self._log_job = None
         self._status_job = None
+        self._status_running = False
         self.msg_q: queue.Queue[str] = queue.Queue()
         self.mode_var = tk.StringVar(value="local")
+        self.search_var = tk.StringVar()
+        self.log_filter_var = tk.StringVar()
+        self.page_var = tk.StringVar(value="overview")
         self.flag_vars: dict[str, tk.BooleanVar] = {key: tk.BooleanVar(value=False) for key in FLAG_KEYS}
+        self.mode_buttons: dict[str, dict[str, tk.Widget]] = {}
+        self.nav_buttons: dict[str, dict[str, tk.Widget]] = {}
+        self.pages: dict[str, ttk.Frame] = {}
+        self.metrics: dict[str, tuple[tk.Label, tk.Label]] = {}
+        self.tool_details = load_builtin_tool_details()
+        self.tool_details.update(load_wrapper_agent_tool_details())
         self._loading = True
         self._build_style()
         self._build()
         mode, flags = load_profile()
         self._apply_flags_to_ui(mode, flags)
         self._loading = False
+        self.show_page("overview")
         self.after(200, self.refresh_status)
         self.after(400, self.refresh_logs)
         self.after(300, self._drain_messages)
@@ -342,168 +421,392 @@ class App(tk.Tk):
     def _build_style(self) -> None:
         style = ttk.Style(self)
         style.theme_use("clam")
-        font = ("Microsoft JhengHei UI", 10)
+        font = (FONT, 10)
         style.configure(".", background=BG, foreground=FG, font=font)
         style.configure("TFrame", background=BG)
         style.configure("Card.TFrame", background=PANEL)
         style.configure("TLabel", background=PANEL, foreground=FG, font=font)
         style.configure("Muted.TLabel", background=PANEL, foreground=MUTED, font=font)
-        style.configure("Head.TLabel", background=BG, foreground=FG, font=("Microsoft JhengHei UI", 16, "bold"))
-        style.configure("Status.TLabel", background=PANEL, foreground=ACCENT, font=("Microsoft JhengHei UI", 13, "bold"))
-        style.configure("TRadiobutton", background=PANEL, foreground=FG, font=font)
         style.configure("TCheckbutton", background=PANEL, foreground=FG, font=font)
-        style.configure("TNotebook", background=BG, borderwidth=0)
-        style.configure("TNotebook.Tab", background=PANEL2, foreground=FG, padding=(14, 6))
-        style.map("TNotebook.Tab", background=[("selected", PANEL)], foreground=[("selected", ACCENT)])
-        style.configure("Power.TButton", font=("Microsoft JhengHei UI", 11, "bold"), padding=8)
-        style.configure("TButton", background=BTN, foreground=FG, padding=6)
-        style.map("TButton", background=[("active", "#4b5362")])
+        style.map("TCheckbutton", background=[("active", PANEL)])
+        style.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
+        style.configure("TNotebook.Tab", background=PANEL2, foreground=MUTED, padding=(18, 10), font=(FONT, 10))
+        style.map("TNotebook.Tab", background=[("selected", PANEL)], foreground=[("selected", FG)])
+        style.configure("Treeview", background="#1a2130", fieldbackground="#1a2130", foreground=FG, borderwidth=0, rowheight=32, font=font)
+        style.configure("Treeview.Heading", background=PANEL, foreground=MUTED, relief="flat")
+        style.map("Treeview", background=[("selected", ACCENT_SOFT)], foreground=[("selected", FG)])
+        style.configure("Vertical.TScrollbar", background=PANEL2, troughcolor=BG, borderwidth=0, arrowsize=12)
 
-    def _card(self, parent: tk.Widget) -> ttk.Frame:
-        return ttk.Frame(parent, style="Card.TFrame", padding=14)
+    def _card(self, parent: tk.Widget, **pack) -> tk.Frame:
+        frame = tk.Frame(parent, bg=PANEL, highlightbackground=LINE, highlightthickness=1, padx=18, pady=16)
+        if pack:
+            frame.pack(**pack)
+        return frame
+
+    def _ghost_button(self, parent: tk.Widget, text: str, command) -> tk.Button:
+        return tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=PANEL,
+            fg=FG,
+            activebackground=PANEL2,
+            activeforeground=FG,
+            relief="flat",
+            padx=14,
+            pady=7,
+            cursor="hand2",
+            font=(FONT, 10),
+            highlightthickness=1,
+            highlightbackground=LINE,
+            highlightcolor=LINE,
+        )
 
     def _build(self) -> None:
-        outer = ttk.Frame(self, padding=16)
-        outer.pack(fill="both", expand=True)
+        shell = tk.Frame(self, bg=BG)
+        shell.pack(fill="both", expand=True)
 
-        head = ttk.Frame(outer)
-        head.pack(fill="x")
-        ttk.Label(head, text="edgars-mcp 控制台", style="Head.TLabel").pack(side="left")
-        sub = ttk.Label(
-            head,
-            text="Windows native · Descope 授權 · 不用 Docker / 1Password",
-            style="Muted.TLabel",
+        top = tk.Frame(shell, bg=BG, padx=24, pady=12)
+        top.pack(fill="x")
+        mark = tk.Frame(top, bg=ACCENT, width=10, height=36)
+        mark.pack(side="left")
+        mark.pack_propagate(False)
+        titles = tk.Frame(top, bg=BG)
+        titles.pack(side="left", padx=(14, 0))
+        tk.Label(titles, text="edgars-mcp", bg=BG, fg=FG, font=(FONT, 20, "bold")).pack(anchor="w")
+        tk.Label(titles, text="本機控制台", bg=BG, fg=MUTED, font=(FONT, 10)).pack(anchor="w")
+        self.power_chip = tk.Label(
+            top,
+            text="  讀取中  ",
+            bg=PANEL2,
+            fg=MUTED,
+            font=(FONT, 10, "bold"),
+            padx=14,
+            pady=8,
         )
-        sub.configure(background=BG)
-        sub.pack(side="left", padx=12)
-        ttk.Button(head, text="重新整理", command=self.refresh_all).pack(side="right", padx=4)
-        ttk.Button(head, text="開 log 資料夾", command=self.open_logs).pack(side="right", padx=4)
+        self.power_chip.pack(side="right", pady=4)
+        self._ghost_button(top, "重新整理", self.refresh_all).pack(side="right", padx=(0, 10))
+        self._ghost_button(top, "開 log 資料夾", self.open_logs).pack(side="right", padx=(0, 8))
 
-        self.power_label = ttk.Label(outer, text="狀態載入中…", style="Status.TLabel")
-        self.power_label.configure(background=BG)
-        self.power_label.pack(anchor="w", pady=(10, 12))
+        tk.Frame(shell, bg=LINE, height=1).pack(fill="x", padx=24)
 
-        body = ttk.Frame(outer)
+        body = tk.Frame(shell, bg=BG, padx=20, pady=16)
         body.pack(fill="both", expand=True)
-        body.columnconfigure(0, weight=2, minsize=360)
-        body.columnconfigure(1, weight=5)
-        body.rowconfigure(0, weight=1)
-
-        left = ttk.Frame(body)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        right = ttk.Frame(body)
-        right.grid(row=0, column=1, sticky="nsew")
-
-        power = self._card(left)
-        power.pack(fill="x")
-        ttk.Label(power, text="開關機", font=("Microsoft JhengHei UI", 12, "bold")).pack(anchor="w")
-        row = ttk.Frame(power, style="Card.TFrame")
-        row.pack(fill="x", pady=(10, 0))
-        ttk.Button(row, text="啟動", style="Power.TButton", command=lambda: self.run_action("start")).pack(side="left")
-        ttk.Button(row, text="關閉", command=lambda: self.run_action("stop")).pack(side="left", padx=8)
-        ttk.Button(row, text="只開核心", command=lambda: self.run_action("start_core")).pack(side="left")
-        ttk.Button(power, text="套用技能並重啟", command=lambda: self.run_action("apply")).pack(fill="x", pady=(10, 0))
-
-        mode_card = self._card(left)
-        mode_card.pack(fill="x", pady=(12, 0))
-        ttk.Label(mode_card, text="模式", font=("Microsoft JhengHei UI", 12, "bold")).pack(anchor="w")
-        ttk.Label(mode_card, text="模式會改技能開關；要生效請按「套用技能並重啟」。", style="Muted.TLabel").pack(
-            anchor="w", pady=(4, 8)
-        )
-        for value, label in (
-            ("core", "核心 — 原本技能常開，wrap 全關"),
-            ("local", "本機常用 — Descope / Hermes / OpenClaw / cloudflared"),
-            ("full", "全開 — 全部 wrap，遠端桌面仍關"),
-            ("custom", "自訂 — 下面逐項勾選"),
-        ):
-            ttk.Radiobutton(
-                mode_card,
+        rail = tk.Frame(body, bg=PANEL, width=188, highlightbackground=LINE, highlightthickness=1)
+        rail.pack(side="left", fill="y", padx=(0, 16))
+        rail.pack_propagate(False)
+        tk.Label(rail, text="導覽", bg=PANEL, fg=MUTED, font=(FONT, 9)).pack(anchor="w", padx=18, pady=(18, 10))
+        for key, label in (("overview", "總覽"), ("skills", "技能"), ("logs", "日誌")):
+            row = tk.Frame(rail, bg=PANEL)
+            row.pack(fill="x", padx=10, pady=3)
+            indicator = tk.Frame(row, bg=PANEL, width=3)
+            indicator.pack(side="left", fill="y", padx=(0, 2))
+            indicator.pack_propagate(False)
+            btn = tk.Button(
+                row,
                 text=label,
-                value=value,
-                variable=self.mode_var,
-                command=self._on_mode_change,
-            ).pack(anchor="w", pady=2)
+                command=lambda k=key: self.show_page(k),
+                bg=PANEL,
+                fg=FG,
+                activebackground=PANEL2,
+                activeforeground=FG,
+                relief="flat",
+                anchor="w",
+                padx=12,
+                pady=11,
+                cursor="hand2",
+                font=(FONT, 13),
+            )
+            btn.pack(side="left", fill="x", expand=True)
+            self.nav_buttons[key] = {"row": row, "mark": indicator, "btn": btn}
 
-        skills = self._card(left)
-        skills.pack(fill="both", expand=True, pady=(12, 0))
-        ttk.Label(skills, text="技能", font=("Microsoft JhengHei UI", 12, "bold")).pack(anchor="w")
-        ttk.Label(
-            skills,
-            text="原本技能常開。第二頁是可開關的 wrap（不含 1Password Connect）。",
-            style="Muted.TLabel",
-        ).pack(anchor="w", pady=(4, 8))
-        skill_tabs = ttk.Notebook(skills)
-        skill_tabs.pack(fill="both", expand=True)
+        content = tk.Frame(body, bg=BG)
+        content.pack(side="left", fill="both", expand=True)
+        for key in ("overview", "skills", "logs"):
+            page = ttk.Frame(content)
+            self.pages[key] = page
+        self._build_overview(self.pages["overview"])
+        self._build_skills(self.pages["skills"])
+        self._build_logs(self.pages["logs"])
 
-        builtin_tab = ttk.Frame(skill_tabs, style="Card.TFrame", padding=8)
-        wrap_tab = ttk.Frame(skill_tabs, style="Card.TFrame", padding=8)
-        skill_tabs.add(builtin_tab, text="原本技能（常開）")
-        skill_tabs.add(wrap_tab, text="新包技能（可開關）")
+        tk.Frame(shell, bg=LINE, height=1).pack(fill="x")
+        self.footer = tk.Label(shell, text="就緒", bg=BG, fg=MUTED, anchor="w", padx=24, pady=10, font=(FONT, 9))
+        self.footer.pack(fill="x")
 
-        builtin_inner = self._scrollable(builtin_tab, height=280)
+    def show_page(self, key: str) -> None:
+        self.page_var.set(key)
+        for name, page in self.pages.items():
+            page.pack_forget()
+        self.pages[key].pack(fill="both", expand=True)
+        for name, parts in self.nav_buttons.items():
+            selected = name == key
+            bg = PANEL2 if selected else PANEL
+            parts["row"].configure(bg=bg)
+            parts["mark"].configure(bg=ACCENT if selected else PANEL)
+            parts["btn"].configure(bg=bg, fg=ACCENT if selected else FG, activebackground=PANEL2)
+
+    def _metric(self, parent: tk.Widget, key: str, title: str, stripe: str) -> None:
+        card = tk.Frame(parent, bg=PANEL, highlightbackground=LINE, highlightthickness=1)
+        card.pack(side="left", fill="both", expand=True, padx=6)
+        tk.Frame(card, bg=stripe, height=3).pack(fill="x")
+        body = tk.Frame(card, bg=PANEL, padx=14, pady=10)
+        body.pack(fill="both", expand=True)
+        tk.Label(body, text=title, bg=PANEL, fg=MUTED, font=(FONT, 9)).pack(anchor="w")
+        value = tk.Label(body, text="…", bg=PANEL, fg=FG, font=(FONT, 14, "bold"))
+        value.pack(anchor="w", pady=(8, 0))
+        hint = tk.Label(body, text=" ", bg=PANEL, fg=MUTED, font=(FONT, 9), wraplength=280, justify="left")
+        hint.pack(anchor="w", pady=(6, 0))
+        self.metrics[key] = (value, hint)
+
+    def _build_overview(self, page: ttk.Frame) -> None:
+        metrics = tk.Frame(page, bg=BG)
+        metrics.pack(fill="x", pady=(0, 10))
+        for key, title, stripe in (
+            ("http", "本機 HTTP", ACCENT),
+            ("public", "公開位址", BLUE),
+            ("tunnel", "cloudflared", WARN),
+            ("task", "登入排程", "#c4b5fd"),
+        ):
+            self._metric(metrics, key, title, stripe)
+
+        actions = self._card(page, fill="x", pady=(0, 10))
+        tk.Label(actions, text="開關機", bg=PANEL, fg=FG, font=(FONT, 14, "bold")).pack(anchor="w")
+        tk.Label(
+            actions,
+            text="啟動會套用左邊技能頁的勾選。關閉只停本機 HTTP，不關正式 tunnel。",
+            bg=PANEL,
+            fg=MUTED,
+            font=(FONT, 10),
+        ).pack(anchor="w", pady=(4, 10))
+        row = tk.Frame(actions, bg=PANEL)
+        row.pack(fill="x")
+        self._action_button(row, "啟動", ACCENT, "#062117", lambda: self.run_action("start")).pack(side="left")
+        self._action_button(row, "關閉", DANGER_SOFT, DANGER, lambda: self.run_action("stop")).pack(side="left", padx=10)
+        self._action_button(row, "只開核心", BTN, FG, lambda: self.run_action("start_core")).pack(side="left")
+        self._action_button(row, "套用技能並重啟", BLUE_SOFT, BLUE, lambda: self.run_action("apply")).pack(side="left", padx=10)
+
+        lower = tk.Frame(page, bg=BG)
+        lower.pack(fill="both", expand=True)
+        lower.columnconfigure(0, weight=6, minsize=560)
+        lower.columnconfigure(1, weight=4, minsize=320)
+        lower.rowconfigure(0, weight=1)
+
+        mode_card = tk.Frame(lower, bg=PANEL, highlightbackground=LINE, highlightthickness=1, padx=14, pady=12)
+        mode_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        tk.Label(mode_card, text="模式", bg=PANEL, fg=FG, font=(FONT, 14, "bold")).pack(anchor="w", pady=(0, 8))
+        grid = tk.Frame(mode_card, bg=PANEL)
+        grid.pack(fill="both", expand=True)
+        for col in range(2):
+            grid.columnconfigure(col, weight=1, uniform="mode")
+        for row in range(2):
+            grid.rowconfigure(row, weight=1, minsize=58)
+        for index, (value, label, hint) in enumerate(
+            (
+                ("core", "核心", "只留基本功能"),
+                ("local", "本機常用", "這台平常會用的"),
+                ("full", "全開", "能開的都打開"),
+                ("custom", "自訂", "自己一項一項勾"),
+            )
+        ):
+            cell = tk.Frame(grid, bg=PANEL2, highlightbackground=LINE, highlightthickness=1, padx=10, pady=6, cursor="hand2")
+            cell.grid(row=index // 2, column=index % 2, sticky="nsew", padx=4, pady=3)
+            title = tk.Label(cell, text=label, bg=PANEL2, fg=FG, font=(FONT, 12, "bold"), anchor="w", cursor="hand2")
+            title.grid(row=0, column=0, sticky="w")
+            sub = tk.Label(cell, text=hint, bg=PANEL2, fg=MUTED, font=(FONT, 9), anchor="w", cursor="hand2")
+            sub.grid(row=1, column=0, sticky="w", pady=(2, 0))
+            for widget in (cell, title, sub):
+                widget.bind("<Button-1>", lambda _e, v=value: self._select_mode(v))
+            self.mode_buttons[value] = {"frame": cell, "title": title, "hint": sub}
+
+        note = tk.Frame(lower, bg=PANEL, highlightbackground=LINE, highlightthickness=1, padx=18, pady=16)
+        note.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        tk.Label(note, text="現在這台", bg=PANEL, fg=FG, font=(FONT, 14, "bold")).pack(anchor="w")
+        self.summary = tk.Text(
+            note,
+            height=8,
+            width=8,
+            bg="#141a24",
+            fg=FG,
+            insertbackground=FG,
+            relief="flat",
+            font=(FONT, 12),
+            wrap="word",
+            highlightthickness=0,
+            padx=12,
+            pady=12,
+            spacing1=2,
+            spacing3=6,
+        )
+        self.summary.pack(fill="both", expand=True, pady=(12, 0))
+        self.summary.configure(state="disabled")
+
+    def _action_button(self, parent: tk.Widget, text: str, bg: str, fg: str, command) -> tk.Button:
+        return tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=bg,
+            fg=fg,
+            activebackground=bg,
+            activeforeground=fg,
+            relief="flat",
+            padx=18,
+            pady=10,
+            cursor="hand2",
+            font=(FONT, 11, "bold"),
+        )
+
+    def _build_skills(self, page: ttk.Frame) -> None:
+        notebook = ttk.Notebook(page)
+        notebook.pack(fill="both", expand=True)
+        builtin = ttk.Frame(notebook, style="Card.TFrame", padding=12)
+        wraps = ttk.Frame(notebook, style="Card.TFrame", padding=12)
+        notebook.add(builtin, text="原本技能")
+        notebook.add(wraps, text="可開關的 wrap")
+
         groups = grouped_builtin_tools()
         self.builtin_count = sum(len(items) for _, items in groups)
-        ttk.Label(
-            builtin_inner,
-            text=f"共 {self.builtin_count} 個，服務在跑就可用。Honcho 連上時另加 honcho__*。",
-            style="Muted.TLabel",
-        ).pack(anchor="w", pady=(0, 8))
-        for title, items in groups:
-            ttk.Label(builtin_inner, text=f"{title}  ({len(items)})", font=("Microsoft JhengHei UI", 10, "bold")).pack(
-                anchor="w", pady=(8, 2)
-            )
-            ttk.Label(builtin_inner, text="、".join(items), style="Muted.TLabel", wraplength=340).pack(anchor="w")
+        bar = tk.Frame(builtin, bg=PANEL)
+        bar.pack(fill="x")
+        tk.Label(
+            bar,
+            text=f"常開 {self.builtin_count} 個，服務在跑就能用。",
+            bg=PANEL,
+            fg=MUTED,
+            font=(FONT, 10),
+        ).pack(side="left", padx=4)
+        search_box = tk.Frame(bar, bg=LINE, padx=1, pady=1)
+        search_box.pack(side="right")
+        search = tk.Entry(
+            search_box,
+            textvariable=self.search_var,
+            bg="#141a24",
+            fg=FG,
+            insertbackground=FG,
+            relief="flat",
+            font=(FONT, 11),
+            width=28,
+        )
+        search.pack(ipady=7, ipadx=10)
+        search.bind("<KeyRelease>", lambda _e: self._fill_tool_tree())
+        tk.Label(bar, text="搜尋", bg=PANEL, fg=MUTED, font=(FONT, 10)).pack(side="right", padx=(0, 8))
 
+        tree_wrap = tk.Frame(builtin, bg=PANEL)
+        tree_wrap.pack(fill="both", expand=True, pady=(10, 0))
+        self.tool_tree = ttk.Treeview(tree_wrap, show="tree", selectmode="browse")
+        scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.tool_tree.yview)
+        self.tool_tree.configure(yscrollcommand=scroll.set)
+        self.tool_tree.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        self.tool_tree.bind("<<TreeviewSelect>>", self._on_tool_select)
+        desc_box = tk.Frame(builtin, bg="#141a24", highlightbackground=LINE, highlightthickness=1, padx=12, pady=10)
+        desc_box.pack(fill="x", pady=(10, 0))
+        self.tool_desc = tk.Label(
+            desc_box,
+            text="點一個工具看它做什麼。",
+            bg="#141a24",
+            fg=FG,
+            justify="left",
+            anchor="w",
+            wraplength=980,
+            font=(FONT, 10),
+        )
+        self.tool_desc.pack(fill="x")
+        self._fill_tool_tree()
+
+        tk.Label(wraps, text="這些開關要重啟才生效。1Password Connect 不在這條啟動路徑。", bg=PANEL, fg=MUTED).pack(anchor="w")
+        toggles = tk.Frame(wraps, bg=PANEL)
+        toggles.pack(fill="x", pady=(8, 4))
         ttk.Checkbutton(
-            wrap_tab,
-            text="一次打開全部新包（MCP_WRAP_ALL）",
+            toggles,
+            text="一次打開全部新包",
             variable=self.flag_vars["MCP_WRAP_ALL"],
             command=self._mark_custom,
-        ).pack(anchor="w", pady=(0, 2))
+        ).pack(side="left", padx=(0, 16))
         ttk.Checkbutton(
-            wrap_tab,
+            toggles,
             text="允許遠端呼叫桌面技能（危險）",
             variable=self.flag_vars["MCP_WRAP_ALLOW_REMOTE"],
             command=self._mark_custom,
-        ).pack(anchor="w", pady=(0, 8))
-        inner = self._scrollable(wrap_tab, height=220)
-        last_group = ""
-        for key, title, group, hint in SKILLS:
-            if group != last_group:
-                ttk.Label(
-                    inner,
-                    text="子程序 MCP" if group == "stdio" else "本機 CLI / SDK",
-                    style="Muted.TLabel",
-                ).pack(anchor="w", pady=(8, 2))
-                last_group = group
-            ttk.Checkbutton(
-                inner,
-                text=f"{title}  — {hint}",
+        ).pack(side="left")
+
+        grid = tk.Frame(wraps, bg=PANEL)
+        grid.pack(fill="both", expand=True, pady=(8, 0))
+        for index, (key, title, group, hint) in enumerate(SKILLS):
+            card = tk.Frame(grid, bg=PANEL2, highlightbackground=LINE, highlightthickness=1)
+            card.grid(row=index // 2, column=index % 2, sticky="nsew", padx=6, pady=6)
+            grid.columnconfigure(index % 2, weight=1)
+            stripe = ACCENT if group == "native" else BLUE
+            tk.Frame(card, bg=stripe, width=4).pack(side="left", fill="y")
+            body = tk.Frame(card, bg=PANEL2, padx=14, pady=12)
+            body.pack(side="left", fill="both", expand=True)
+            kind = "本機" if group == "native" else "子程序"
+            tk.Label(body, text=kind, bg=PANEL2, fg=stripe, font=(FONT, 8, "bold")).pack(anchor="w")
+            tk.Checkbutton(
+                body,
+                text=title,
                 variable=self.flag_vars[key],
                 command=self._mark_custom,
-            ).pack(anchor="w")
+                bg=PANEL2,
+                fg=FG,
+                activebackground=PANEL2,
+                activeforeground=FG,
+                selectcolor="#10141c",
+                font=(FONT, 12, "bold"),
+                anchor="w",
+                cursor="hand2",
+            ).pack(anchor="w", pady=(6, 2))
+            tk.Label(body, text=hint, bg=PANEL2, fg=MUTED, font=(FONT, 9), wraplength=430, justify="left").pack(anchor="w")
 
-        status = self._card(right)
-        status.pack(fill="x")
-        ttk.Label(status, text="狀態", font=("Microsoft JhengHei UI", 12, "bold")).pack(anchor="w")
-        self.status_text = tk.Text(
-            status,
-            height=11,
-            bg=PANEL2,
+    def _fill_tool_tree(self) -> None:
+        query = self.search_var.get().strip().lower()
+        self.tool_tree.delete(*self.tool_tree.get_children())
+        for title, items in grouped_builtin_tools():
+            shown = []
+            for name in items:
+                desc = self.tool_details.get(name, "")
+                if not query or query in name.lower() or query in title.lower() or query in desc.lower():
+                    shown.append(name)
+            if not shown:
+                continue
+            parent = self.tool_tree.insert("", "end", text=f"{title}    {len(shown)}", open=bool(query))
+            for name in shown:
+                self.tool_tree.insert(parent, "end", text=name, values=(name,))
+
+    def _on_tool_select(self, _event=None) -> None:
+        selected = self.tool_tree.selection()
+        if not selected:
+            return
+        label = self.tool_tree.item(selected[0], "text")
+        name = label.split()[0]
+        desc = self.tool_details.get(name)
+        if not desc:
+            self.tool_desc.configure(text=label)
+            return
+        self.tool_desc.configure(text=f"{name}\n{desc}")
+
+    def _build_logs(self, page: ttk.Frame) -> None:
+        bar = tk.Frame(page, bg=BG)
+        bar.pack(fill="x", pady=(0, 8))
+        tk.Label(bar, text="過濾", bg=BG, fg=MUTED).pack(side="left")
+        entry_box = tk.Frame(bar, bg=LINE, padx=1, pady=1)
+        entry_box.pack(side="left", padx=8)
+        entry = tk.Entry(
+            entry_box,
+            textvariable=self.log_filter_var,
+            bg="#141a24",
             fg=FG,
             insertbackground=FG,
             relief="flat",
             font=("Cascadia Mono", 10),
-            wrap="word",
+            width=36,
         )
-        self.status_text.pack(fill="x", pady=(8, 0))
-        self.status_text.configure(state="disabled")
+        entry.pack(ipady=6, ipadx=8)
+        entry.bind("<KeyRelease>", lambda _e: self.refresh_logs())
+        tk.Label(bar, text="只顯示含這段字的列。空白等於看全部。", bg=BG, fg=MUTED).pack(side="left")
 
-        logs = self._card(right)
-        logs.pack(fill="both", expand=True, pady=(12, 0))
-        ttk.Label(logs, text="Log", font=("Microsoft JhengHei UI", 12, "bold")).pack(anchor="w")
-        notebook = ttk.Notebook(logs)
-        notebook.pack(fill="both", expand=True, pady=(8, 0))
+        notebook = ttk.Notebook(page)
+        notebook.pack(fill="both", expand=True)
         out_frame, self.log_out = self._log_box(notebook)
         err_frame, self.log_err = self._log_box(notebook)
         act_frame, self.log_act = self._log_box(notebook)
@@ -511,20 +814,18 @@ class App(tk.Tk):
         notebook.add(err_frame, text="HTTP 錯誤")
         notebook.add(act_frame, text="控制台動作")
 
-        self.footer = ttk.Label(outer, text="就緒", style="Muted.TLabel")
-        self.footer.configure(background=BG)
-        self.footer.pack(fill="x", pady=(10, 0))
-
     def _log_box(self, parent: tk.Widget) -> tuple[ttk.Frame, tk.Text]:
         frame = ttk.Frame(parent, style="Card.TFrame")
         text = tk.Text(
             frame,
-            bg="#12141a",
-            fg="#d7dde8",
+            bg="#121820",
+            fg="#d5deea",
             insertbackground=FG,
             relief="flat",
-            font=("Cascadia Mono", 9),
+            font=("Cascadia Mono", 10),
             wrap="word",
+            padx=8,
+            pady=8,
         )
         scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
         text.configure(yscrollcommand=scroll.set)
@@ -532,37 +833,29 @@ class App(tk.Tk):
         scroll.pack(side="right", fill="y")
         return frame, text
 
-    def _scrollable(self, parent: tk.Widget, height: int = 240) -> ttk.Frame:
-        canvas = tk.Canvas(parent, bg=PANEL, highlightthickness=0, height=height)
-        scroll = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        inner = ttk.Frame(canvas, style="Card.TFrame")
-        inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
-        inner.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(inner_id, width=e.width))
-        canvas.configure(yscrollcommand=scroll.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-        canvas.bind(
-            "<Enter>",
-            lambda _e: canvas.bind_all(
-                "<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-            ),
-        )
-        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
-        return inner
-
-    def _on_mode_change(self) -> None:
+    def _select_mode(self, mode: str) -> None:
         if self._loading:
             return
-        mode = self.mode_var.get()
-        if mode == "custom":
-            return
-        self._apply_flags_to_ui(mode, default_flags(mode), keep_mode=True)
+        self.mode_var.set(mode)
+        if mode != "custom":
+            self._apply_flags_to_ui(mode, default_flags(mode), keep_mode=True)
+        self._paint_modes()
+
+    def _paint_modes(self) -> None:
+        current = self.mode_var.get()
+        for value, parts in self.mode_buttons.items():
+            selected = value == current
+            bg = ACCENT_SOFT if selected else PANEL2
+            edge = ACCENT if selected else LINE
+            parts["frame"].configure(bg=bg, highlightbackground=edge)
+            parts["title"].configure(bg=bg, fg="#eafff4" if selected else FG)
+            parts["hint"].configure(bg=bg, fg="#d7efe4" if selected else MUTED)
 
     def _mark_custom(self) -> None:
         if self._loading:
             return
         self.mode_var.set("custom")
+        self._paint_modes()
 
     def _apply_flags_to_ui(self, mode: str, flags: dict[str, str], keep_mode: bool = False) -> None:
         self._loading = True
@@ -574,6 +867,7 @@ class App(tk.Tk):
             for key, _, _, _ in SKILLS:
                 self.flag_vars[key].set(True)
         self._loading = False
+        self._paint_modes()
 
     def current_flags(self) -> dict[str, str]:
         mode = self.mode_var.get()
@@ -609,67 +903,98 @@ class App(tk.Tk):
         self.refresh_logs()
 
     def refresh_status(self) -> None:
-        ok, payload = fetch_json(HEALTH_URL)
-        pid = read_pid()
-        cf_count = cloudflared_count()
-        task_state = login_task_state()
-        live = parse_launcher_flags()
+        if self._status_job:
+            self.after_cancel(self._status_job)
+            self._status_job = None
+        if not self._status_running:
+            self._status_running = True
+            threading.Thread(target=self._status_worker, daemon=True).start()
+        self._status_job = self.after(4000, self.refresh_status)
+
+    def _status_worker(self) -> None:
+        try:
+            ok, payload = fetch_json(HEALTH_URL)
+            public_ok, public_payload = fetch_json(PUBLIC_HEALTH_URL, timeout=3.0)
+            snapshot = {
+                "ok": ok,
+                "payload": payload,
+                "public_ok": public_ok,
+                "public_payload": public_payload,
+                "pid": read_pid(),
+                "cf_count": cloudflared_count(),
+                "task_state": login_task_state(),
+                "live": parse_launcher_flags(),
+            }
+        except Exception as exc:
+            snapshot = {"error": str(exc)}
+        self.after(0, lambda: self._apply_status(snapshot))
+
+    def _apply_status(self, snapshot: dict) -> None:
+        self._status_running = False
+        if snapshot.get("error"):
+            self.power_chip.configure(text="  狀態失敗  ", bg="#3a2428", fg=DANGER)
+            return
+        ok = bool(snapshot["ok"])
+        payload = snapshot["payload"]
+        pid = snapshot["pid"]
+        live = snapshot["live"] or {}
         wanted = self.current_flags()
-        pending = live != wanted and bool(live)
-
-        auth_line = "Descope  （health 讀不到）"
-        mode_line = "—"
-        if ok and isinstance(payload, dict):
-            auth = payload.get("auth") or {}
-            descope = bool(auth.get("descope_enabled"))
-            oauth_mode = str(auth.get("oauth_mode") or "—")
-            as_url = str(auth.get("authorization_server") or "")
-            auth_line = f"Descope  {'ON' if descope else 'OFF'}   mode={oauth_mode}"
-            if as_url:
-                auth_line += f"   AS={as_url}"
-            mode_line = oauth_mode
-            color = ACCENT if descope else WARN
-        else:
-            color = DANGER
-
+        pending = bool(live) and live != wanted
+        auth = (payload.get("auth") or {}) if ok and isinstance(payload, dict) else {}
+        descope = bool(auth.get("descope_enabled"))
+        oauth_mode = str(auth.get("oauth_mode") or "—")
         if ok:
-            self.power_label.configure(text=f"運轉中    PID {pid or '—'}    授權 {mode_line}", foreground=color)
+            self.power_chip.configure(text="  運轉中  ", bg="#163528", fg=ACCENT)
+            self.metrics["http"][0].configure(text="正常", fg=ACCENT)
+            self.metrics["http"][1].configure(text=f"PID {pid}" if pid else "本機服務")
         else:
-            self.power_label.configure(text="已關機", foreground=DANGER)
+            self.power_chip.configure(text="  已關機  ", bg="#3a2428", fg=DANGER)
+            self.metrics["http"][0].configure(text="關機", fg=DANGER)
+            self.metrics["http"][1].configure(text=str(payload)[:80])
+        self.metrics["public"][0].configure(
+            text="可連" if snapshot["public_ok"] else "連不到",
+            fg=ACCENT if snapshot["public_ok"] else WARN,
+        )
+        self.metrics["public"][1].configure(text="mcp.edgars.tools")
+        cf_count = snapshot["cf_count"]
+        self.metrics["tunnel"][0].configure(text=f"{cf_count} 個", fg=ACCENT if cf_count else WARN)
+        self.metrics["tunnel"][1].configure(text="正式 tunnel 不由這裡關閉")
+        task_state = snapshot["task_state"]
+        task_ok = task_state.lower() in {"ready", "running"}
+        self.metrics["task"][0].configure(text=task_state or "—", fg=ACCENT if task_ok else WARN)
+        self.metrics["task"][1].configure(text=LOGIN_TASK)
 
         wrap_all = _on(live.get("MCP_WRAP_ALL")) if live else False
-        enabled: list[str] = []
+        enabled = []
         if live:
             enabled = ["全部新包"] if wrap_all else [title for key, title, _, _ in SKILLS if _on(live.get(key))]
             if _on(live.get("MCP_WRAP_ALLOW_REMOTE")):
                 enabled.append("允許遠端桌面")
-
         lines = [
-            f"HTTP      {'OK' if ok else 'DOWN'}   {HEALTH_URL}   {payload if not ok else 200}",
-            f"授權      {auth_line}",
-            f"啟動路徑  native（start-wrap / start-mcp；無 Docker / 1Password）",
-            f"登入排程  {LOGIN_TASK} = {task_state}",
-            f"cloudflared  {cf_count} 個程序（正式 tunnel 不由這裡關）",
-            f"原本技能  {getattr(self, 'builtin_count', 80)} 個常開",
-            f"目前模式  {infer_mode(live) if live else '（尚未寫入 launcher）'}",
-            f"新包已開  {('、'.join(enabled) if enabled else '無')}",
-            f"技能套用  {'要重啟才會跟上畫面勾選' if pending else '與畫面一致'}",
-            f"profile   {PROFILE_PATH}",
+            f"授權    {'Descope 開' if descope else 'Descope 關'}    {oauth_mode}",
+            f"原本技能    {getattr(self, 'builtin_count', 0)} 個常開",
+            f"目前模式    {infer_mode(live) if live else '尚未寫入 launcher'}",
+            f"已開 wrap    {'、'.join(enabled) if enabled else '無'}",
+            f"套用狀態    {'勾選還沒寫進正在跑的服務' if pending else '跟畫面一致'}",
         ]
-        self.status_text.configure(state="normal")
-        self.status_text.delete("1.0", "end")
-        self.status_text.insert("1.0", "\n".join(lines))
-        self.status_text.configure(state="disabled")
-        if self._status_job:
-            self.after_cancel(self._status_job)
-        self._status_job = self.after(3000, self.refresh_status)
+        self.summary.configure(state="normal")
+        self.summary.delete("1.0", "end")
+        self.summary.insert("1.0", "\n\n".join(lines))
+        self.summary.configure(state="disabled")
 
     def refresh_logs(self) -> None:
-        self._set_log(self.log_out, tail_file(OUT_LOG))
-        self._set_log(self.log_err, tail_file(ERR_LOG))
+        needle = self.log_filter_var.get().strip().lower()
+        self._set_log(self.log_out, self._filter_log(tail_file(OUT_LOG), needle))
+        self._set_log(self.log_err, self._filter_log(tail_file(ERR_LOG), needle))
         if self._log_job:
             self.after_cancel(self._log_job)
         self._log_job = self.after(2500, self.refresh_logs)
+
+    def _filter_log(self, text: str, needle: str) -> str:
+        if not needle:
+            return text
+        lines = [line for line in text.splitlines() if needle in line.lower()]
+        return "\n".join(lines) if lines else f"（沒有含「{needle}」的列）"
 
     def _set_log(self, widget: tk.Text, text: str) -> None:
         at_end = float(widget.yview()[1]) >= 0.95
@@ -699,6 +1024,7 @@ class App(tk.Tk):
             "apply": "套用技能並重啟",
         }
         self.set_busy(True, "關閉中…" if action == "stop" else "啟動中…")
+        self.show_page("logs")
         self.log_action(labels[action])
         threading.Thread(target=self._worker, args=(action,), daemon=True).start()
 

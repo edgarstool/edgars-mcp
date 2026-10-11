@@ -1,6 +1,7 @@
 """Unit tests and smoke checks for server_http helpers."""
 
 import json
+import os
 import io
 import jsonschema
 import threading
@@ -16,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import server_http
+import edgar_wrappers
 from server_http import (
     JOBS,
     JOBS_LOCK,
@@ -27,7 +29,6 @@ from server_http import (
     create_job,
     handle_agent_job_cleanup,
     handle_agent_job_list,
-    handle_claude_code_agent,
     handle_tools_call,
     handle_tools_list,
     handle_tracktw_package_status,
@@ -57,9 +58,9 @@ class ServerHttpJobApiTests(unittest.TestCase):
             JOBS.clear()
 
     def test_list_jobs_sorted_and_limited(self):
-        first = create_job("gemini_agent", "task-1", "C:/tmp")
+        first = create_job("copilot_agent", "task-1", "C:/tmp")
         second = create_job("codex_agent", "task-2", "C:/tmp")
-        third = create_job("claude_code_agent", "task-3", "C:/tmp")
+        third = create_job("droid_agent", "task-3", "C:/tmp")
 
         update_job(first, created_at=100.0, updated_at=100.0, status="queued")
         update_job(second, created_at=200.0, updated_at=200.0, status="running")
@@ -71,7 +72,7 @@ class ServerHttpJobApiTests(unittest.TestCase):
         self.assertEqual(second, jobs[1]["job_id"])
 
     def test_cleanup_expired_jobs_only_removes_expired(self):
-        expired = create_job("gemini_agent", "expired", "C:/tmp")
+        expired = create_job("copilot_agent", "expired", "C:/tmp")
         alive = create_job("codex_agent", "alive", "C:/tmp")
 
         update_job(expired, expires_at=1.0)
@@ -85,7 +86,7 @@ class ServerHttpJobApiTests(unittest.TestCase):
             self.assertIn(alive, JOBS)
 
     def test_agent_job_list_handler_with_status_filter(self):
-        create_job("gemini_agent", "queued", "C:/tmp")
+        create_job("copilot_agent", "queued", "C:/tmp")
         done = create_job("codex_agent", "done", "C:/tmp")
         update_job(done, status="succeeded", created_at=500.0, updated_at=500.0)
 
@@ -96,7 +97,7 @@ class ServerHttpJobApiTests(unittest.TestCase):
         self.assertIn("status=succeeded", text)
 
     def test_agent_job_cleanup_handler_reports_count(self):
-        expired = create_job("gemini_agent", "expired", "C:/tmp")
+        expired = create_job("copilot_agent", "expired", "C:/tmp")
         update_job(expired, expires_at=1.0)
 
         response = handle_agent_job_cleanup(req_id=1, arguments={})
@@ -3438,87 +3439,21 @@ class SafeMcpWriteTests(unittest.TestCase):
         self.assertIn("Verified comment: comment-1", text)
 
 
-class ClaudeCodeAgentSmokeTests(unittest.TestCase):
-    def test_claude_code_agent_schema_matches_handler_contract(self):
-        response = handle_tools_list(req_id=1, params={})
-        listed_tools = response["result"]["tools"]
-        listed_claude = next(tool for tool in listed_tools if tool["name"] == "claude_code_agent")
-        source_claude = next(tool for tool in TOOLS if tool["name"] == "claude_code_agent")
+class RemovedAgentToolsTests(unittest.TestCase):
+    def test_gemini_and_claude_code_agents_are_not_registered(self):
+        names = {tool["name"] for tool in TOOLS}
+        self.assertNotIn("gemini_agent", names)
+        self.assertNotIn("claude_code_agent", names)
 
-        self.assertEqual(source_claude, listed_claude)
-        self.assertEqual("object", listed_claude["inputSchema"]["type"])
-        self.assertEqual(["task"], listed_claude["inputSchema"]["required"])
-        self.assertEqual("string", listed_claude["inputSchema"]["properties"]["task"]["type"])
-        self.assertEqual("string", listed_claude["inputSchema"]["properties"]["working_dir"]["type"])
-        self.assertEqual("boolean", listed_claude["inputSchema"]["properties"]["async"]["type"])
+        listed = handle_tools_list(req_id=1, params={})["result"]["tools"]
+        listed_names = {tool["name"] for tool in listed}
+        self.assertNotIn("gemini_agent", listed_names)
+        self.assertNotIn("claude_code_agent", listed_names)
 
-    def test_claude_code_agent_missing_task_returns_tool_error(self):
-        response = handle_claude_code_agent(req_id=1, arguments={})
-
-        self.assertTrue(tool_is_error(response))
-        self.assertEqual("Error: task is required", tool_text(response))
-
-    def test_claude_code_agent_missing_command_returns_tool_call_error(self):
-        original_run_agent_command = server_http.run_agent_command
-        try:
-            def raise_file_not_found(*args, **kwargs):
-                raise FileNotFoundError
-
-            server_http.run_agent_command = raise_file_not_found
-            response = handle_tools_call(
-                req_id=1,
-                params={
-                    "name": "claude_code_agent",
-                    "arguments": {
-                        "task": "say hi",
-                        "working_dir": "C:/tmp",
-                    },
-                },
-            )
-        finally:
-            server_http.run_agent_command = original_run_agent_command
-
-        self.assertTrue(tool_is_error(response))
-        self.assertIn("Error: claude command not found", tool_text(response))
-
-    def test_claude_code_agent_normal_tool_call_example(self):
-        completed = subprocess.CompletedProcess(
-            args=["claude", "-p", "say hi"],
-            returncode=0,
-            stdout="hello from claude\n",
-            stderr="",
-        )
-
-        calls = []
-        original_run_agent_command = server_http.run_agent_command
-        try:
-            def fake_run_agent_command(*args, **kwargs):
-                calls.append((args, kwargs))
-                return completed
-
-            server_http.run_agent_command = fake_run_agent_command
-            response = handle_tools_call(
-                req_id=1,
-                params={
-                    "name": "claude_code_agent",
-                    "arguments": {
-                        "task": "say hi",
-                        "working_dir": "C:/tmp",
-                    },
-                },
-            )
-        finally:
-            server_http.run_agent_command = original_run_agent_command
-
-        self.assertFalse(tool_is_error(response))
-        self.assertEqual("hello from claude", tool_text(response))
-        self.assertEqual(1, len(calls))
-        args, kwargs = calls[0]
-        command = args[0]
-        self.assertEqual(["cmd.exe", "/c", server_http.CLAUDE_CMD, "--print", "say hi", "--output-format", "text"], command)
-        self.assertEqual("C:/tmp", kwargs["cwd"])
-        self.assertIsNone(kwargs["env_overrides"]["ANTHROPIC_AUTH_TOKEN"])
-        self.assertIsNone(kwargs["env_overrides"]["ANTHROPIC_API_KEY"])
+        for name in ("gemini_agent", "claude_code_agent"):
+            response = handle_tools_call(req_id=1, params={"name": name, "arguments": {"task": "say hi"}})
+            self.assertTrue(tool_is_error(response))
+            self.assertIn("Unknown tool:", tool_text(response))
 
 
 class CopilotDroidAgentTests(unittest.TestCase):
@@ -3569,7 +3504,9 @@ class CopilotDroidAgentTests(unittest.TestCase):
         self.assertEqual("hello from copilot", tool_text(response))
         command = calls[0][0][0]
         self.assertEqual(
-            ["cmd.exe", "/c", server_http.COPILOT_CMD, "-p", "say hi", "-C", "C:/tmp", "--allow-all-tools"],
+            server_http.build_cli_argv(
+                server_http.COPILOT_CMD, ["-p", "say hi", "-C", "C:/tmp", "--allow-all-tools"]
+            ),
             command,
         )
         self.assertEqual("C:/tmp", calls[0][1]["cwd"])
@@ -3605,23 +3542,14 @@ class CopilotDroidAgentTests(unittest.TestCase):
         self.assertFalse(tool_is_error(response))
         self.assertIn("hello from droid", tool_text(response))
         command = calls[0][0][0]
+        self.assertEqual(server_http.DROID_CMD, command[0])
+        self.assertEqual(["exec", "--auto", "medium", "--file"], command[1:5])
         self.assertEqual(
-            [
-                "cmd.exe",
-                "/c",
-                server_http.DROID_CMD,
-                "exec",
-                "--auto",
-                "medium",
-                "say hi",
-                "--cwd",
-                "C:/tmp",
-                "--skip-permissions-unsafe",
-                "--output-format",
-                "text",
-            ],
-            command,
+            ["--cwd", "C:/tmp", "--output-format", "text"],
+            command[6:],
         )
+        self.assertNotIn("--skip-permissions-unsafe", command)
+        self.assertNotIn("say hi", command)
         self.assertEqual("C:/tmp", calls[0][1]["cwd"])
 
 
@@ -3629,32 +3557,26 @@ class SmartAgentChainTests(unittest.TestCase):
     def test_smart_agent_chain_order(self):
         call_order = []
         original = {
-            "gemini": server_http.run_gemini_task,
             "copilot": server_http.run_copilot_task,
             "droid": server_http.run_droid_task,
             "codex": server_http.run_codex_task,
-            "claude": server_http.run_claude_code_task,
         }
         try:
-            server_http.run_gemini_task = lambda t, w: (call_order.append("gemini_agent"), ("quota exceeded", True))[1]
             server_http.run_copilot_task = lambda t, w: (call_order.append("copilot_agent"), ("timeout", True))[1]
             server_http.run_droid_task = lambda t, w: (call_order.append("droid_agent"), ("ok from droid", False))[1]
             server_http.run_codex_task = lambda t, w: ("should not run", False)
-            server_http.run_claude_code_task = lambda t, w: ("should not run", False)
 
             output, is_error, attempts = server_http.run_smart_agent("task", "C:/tmp")
         finally:
-            server_http.run_gemini_task = original["gemini"]
             server_http.run_copilot_task = original["copilot"]
             server_http.run_droid_task = original["droid"]
             server_http.run_codex_task = original["codex"]
-            server_http.run_claude_code_task = original["claude"]
 
         self.assertFalse(is_error)
         self.assertEqual("ok from droid", output)
-        self.assertEqual(["gemini_agent", "copilot_agent", "droid_agent"], call_order)
+        self.assertEqual(["copilot_agent", "droid_agent"], call_order)
         self.assertEqual(
-            ["gemini_agent", "copilot_agent", "droid_agent"],
+            ["copilot_agent", "droid_agent"],
             [attempt["tool"] for attempt in attempts],
         )
 
@@ -3667,9 +3589,9 @@ class SmartAgentChainTests(unittest.TestCase):
             )
         )
 
-    def test_should_not_fallback_claude_code(self):
+    def test_should_not_fallback_on_task_failure(self):
         self.assertFalse(
-            server_http.should_fallback("claude_code_agent", "fatal error", True)
+            server_http.should_fallback("copilot_agent", "fatal error", True)
         )
 
 
@@ -3914,6 +3836,525 @@ class VisibleBrowserTests(unittest.TestCase):
 
         self.assertFalse(tool_is_error(response))
         self.assertEqual("Visible browser closed.", tool_text(response))
+
+
+class StructuredContentContractTests(unittest.TestCase):
+    """Strict-client structured output contract for tools/call.
+
+    tools/list advertises DEFAULT_TEXT_OUTPUT_SCHEMA for every tool without a
+    custom schema, so successful tools/call results must carry a matching
+    structuredContent envelope or strict clients reject the response with
+    -32600. Existing structuredContent, error results, and custom-schema tools
+    (Honcho bridge descriptors) keep their existing contracts.
+    """
+
+    def _call(self, name, arguments):
+        return handle_tools_call(req_id=1, params={"name": name, "arguments": arguments})
+
+    def test_echo_success_returns_default_schema_structured_content(self):
+        response = self._call("echo", {"message": "structured"})
+        result = response["result"]
+
+        self.assertFalse(tool_is_error(response))
+        self.assertEqual("echo: structured", tool_text(response))
+        structured = result["structuredContent"]
+        self.assertEqual(result["content"], structured["content"])
+        self.assertFalse(structured["isError"])
+        jsonschema.validate(structured, server_http.DEFAULT_TEXT_OUTPUT_SCHEMA)
+
+    def test_browser_get_text_success_returns_structured_content_with_mocked_playwright(self):
+        class FakeLocator:
+            @property
+            def first(self):
+                return self
+
+            def inner_text(self, timeout=None):
+                return "page text"
+
+        class FakePage:
+            def goto(self, url, timeout=None):
+                pass
+
+            def wait_for_load_state(self, state, timeout=None):
+                pass
+
+            def wait_for_timeout(self, ms):
+                pass
+
+            def locator(self, selector):
+                return FakeLocator()
+
+            def title(self):
+                return "Test"
+
+        class FakeBrowser:
+            def new_page(self):
+                return FakePage()
+
+            def close(self):
+                pass
+
+        class FakeChromium:
+            def launch(self, headless=True):
+                return FakeBrowser()
+
+        class FakePlaywright:
+            chromium = FakeChromium()
+
+        class FakeSyncPlaywright:
+            def __enter__(self):
+                return FakePlaywright()
+
+            def __exit__(self, *args):
+                return False
+
+        with patch.object(server_http, "_pw_launch", return_value=lambda: FakeSyncPlaywright()):
+            response = self._call(
+                "browser_get_text",
+                {"url": "http://127.0.0.1:9/", "wait_ms": 0},
+            )
+        result = response["result"]
+
+        self.assertFalse(tool_is_error(response))
+        self.assertEqual(
+            "URL: http://127.0.0.1:9/\nTitle: Test\nSelector: body\n---\npage text",
+            tool_text(response),
+        )
+        structured = result["structuredContent"]
+        self.assertEqual(result["content"], structured["content"])
+        self.assertFalse(structured["isError"])
+        jsonschema.validate(structured, server_http.DEFAULT_TEXT_OUTPUT_SCHEMA)
+
+    def test_browser_get_text_error_keeps_existing_error_contract(self):
+        with patch.object(server_http, "_pw_launch", side_effect=RuntimeError("playwright offline")):
+            response = self._call("browser_get_text", {"url": "http://127.0.0.1:9/"})
+        result = response["result"]
+
+        self.assertTrue(tool_is_error(response))
+        self.assertNotIn("structuredContent", result)
+
+    def test_unknown_tool_error_keeps_existing_error_contract(self):
+        response = self._call("structured_content_unknown_tool", {})
+        result = response["result"]
+
+        self.assertTrue(tool_is_error(response))
+        self.assertIn("Unknown tool:", tool_text(response))
+        self.assertNotIn("structuredContent", result)
+
+    def test_wrap_catalog_preserves_existing_structured_content(self):
+        response = self._call("wrap_catalog", {})
+        result = response["result"]
+
+        self.assertFalse(tool_is_error(response))
+        structured = result["structuredContent"]
+        self.assertEqual("off", structured["default"])
+        self.assertEqual(
+            json.dumps(structured, ensure_ascii=False, indent=2),
+            tool_text(response),
+        )
+
+    def test_default_wrapped_text_tool_gets_structured_content(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "pipeline_defs").mkdir()
+            (root / "pipeline_defs" / "hello.yaml").write_text("name: hello\n", encoding="utf-8")
+
+            with patch.dict("os.environ", {"MCP_WRAP_OPENMONTAGE": "1"}), patch.object(
+                edgar_wrappers, "OPENMONTAGE_DIR", root
+            ):
+                response = self._call("om__read_pipeline", {"name": "hello"})
+
+        result = response["result"]
+        self.assertFalse(tool_is_error(response))
+        self.assertEqual("name: hello\n", tool_text(response))
+        structured = result["structuredContent"]
+        self.assertEqual(result["content"], structured["content"])
+        self.assertFalse(structured["isError"])
+        jsonschema.validate(structured, server_http.DEFAULT_TEXT_OUTPUT_SCHEMA)
+
+    def test_upstream_bridge_text_response_gets_structured_content(self):
+        upstream_result = {"content": [{"type": "text", "text": "upstream text"}], "isError": False}
+        with patch.dict("os.environ", {"MCP_WRAP_PLAYWRIGHT": "1"}), patch.object(
+            edgar_wrappers, "call_upstream_tool", return_value=upstream_result
+        ) as call_upstream, patch.object(
+            server_http,
+            "list_upstream_tools",
+            return_value=[{"name": "browser_get_text", "description": "Get text"}],
+        ):
+            response = self._call("pw__browser_get_text", {"url": "http://127.0.0.1:9/"})
+
+        result = response["result"]
+        self.assertFalse(tool_is_error(response))
+        self.assertEqual([{"type": "text", "text": "upstream text"}], result["content"])
+        self.assertEqual("browser_get_text", call_upstream.call_args[0][1])
+        structured = result["structuredContent"]
+        self.assertEqual(result["content"], structured["content"])
+        self.assertFalse(structured["isError"])
+        jsonschema.validate(structured, server_http.DEFAULT_TEXT_OUTPUT_SCHEMA)
+
+    def test_upstream_bridge_existing_structured_content_is_preserved(self):
+        upstream_result = {
+            "content": [{"type": "text", "text": "{\"ok\": true}"}],
+            "structuredContent": {"ok": True},
+            "isError": False,
+        }
+        with patch.dict("os.environ", {"MCP_WRAP_PLAYWRIGHT": "1"}), patch.object(
+            edgar_wrappers, "call_upstream_tool", return_value=upstream_result
+        ), patch.object(
+            server_http,
+            "list_upstream_tools",
+            return_value=[{"name": "browser_get_text", "description": "Get text"}],
+        ):
+            response = self._call("pw__browser_get_text", {"url": "http://127.0.0.1:9/"})
+
+        result = response["result"]
+        self.assertFalse(tool_is_error(response))
+        self.assertEqual({"ok": True}, result["structuredContent"])
+        self.assertEqual([{"type": "text", "text": "{\"ok\": true}"}], result["content"])
+
+    def test_upstream_bridge_custom_schema_text_response_is_not_wrapped(self):
+        upstream_result = {"content": [{"type": "text", "text": "raw"}], "isError": False}
+        with patch.dict("os.environ", {"MCP_WRAP_PLAYWRIGHT": "1"}), patch.object(
+            edgar_wrappers, "call_upstream_tool", return_value=upstream_result
+        ), patch.object(
+            server_http,
+            "list_upstream_tools",
+            return_value=[
+                {
+                    "name": "browser_get_text",
+                    "outputSchema": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                    },
+                }
+            ],
+        ):
+            response = self._call("pw__browser_get_text", {"url": "http://127.0.0.1:9/"})
+
+        result = response["result"]
+        self.assertFalse(tool_is_error(response))
+        self.assertNotIn("structuredContent", result)
+
+
+class CodexSurfaceTests(unittest.TestCase):
+    def test_codex_tools_are_registered(self):
+        names = {tool["name"] for tool in server_http.TOOLS}
+        for required in (
+            "codex_agent",
+            "codex_resume",
+            "codex_review",
+            "codex_version",
+            "codex_doctor",
+            "codex_login_status",
+            "codex_mcp_list",
+        ):
+            self.assertIn(required, names)
+        self.assertNotIn("gemini_agent", names)
+        self.assertNotIn("claude_code_agent", names)
+
+    def test_ollama_bind_all_host_uses_loopback(self):
+        self.assertEqual(server_http._client_ollama_host("0.0.0.0"), "http://127.0.0.1:11434")
+        self.assertEqual(server_http._client_ollama_host("http://0.0.0.0:11434"), "http://127.0.0.1:11434")
+
+    def _invoke(self, name, arguments):
+        completed = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout="ok\n", stderr="")
+        calls = []
+
+        def fake_run_agent_command(*args, **kwargs):
+            calls.append((args, kwargs))
+            return completed
+
+        original = server_http.run_agent_command
+        server_http.run_agent_command = fake_run_agent_command
+        try:
+            response = server_http.handle_tools_call(req_id=1, params={"name": name, "arguments": arguments})
+        finally:
+            server_http.run_agent_command = original
+        return response, calls
+
+    def test_codex_surface_invocations_map_real_flags(self):
+        cases = [
+            ("codex_version", {}, ["--version"]),
+            ("codex_doctor", {}, ["doctor", "--json"]),
+            ("codex_login_status", {}, ["login", "status"]),
+            ("codex_mcp_list", {}, ["mcp", "list"]),
+            ("codex_review", {"uncommitted": True, "working_dir": "C:/tmp"}, ["review", "--uncommitted"]),
+            (
+                "codex_resume",
+                {"prompt": "continue", "last": True, "model": "gpt-5", "sandbox": "read-only", "working_dir": "C:/tmp"},
+                ["exec", "resume", "--last", "-m", "gpt-5", "-s", "read-only", "--cd", "C:/tmp", "continue"],
+            ),
+            (
+                "codex_agent",
+                {"task": "say hi", "working_dir": "C:/tmp", "model": "gpt-5", "ask_for_approval": "never"},
+                ["exec", "--ephemeral", "--skip-git-repo-check", "--cd", "C:/tmp", "-m", "gpt-5", "-a", "never"],
+            ),
+        ]
+        for name, arguments, expected in cases:
+            with self.subTest(name=name):
+                response, calls = self._invoke(name, arguments)
+                self.assertFalse(tool_is_error(response), tool_text(response))
+                command = calls[0][0][0]
+                self.assertEqual(server_http.CODEX_CMD, command[0])
+                self.assertEqual(expected, command[1:1 + len(expected)])
+
+
+class AgentCliRobustnessTests(unittest.TestCase):
+    MULTILINE_TASK = "全程用繁中\n讀取 notes.txt\n回報它有幾行\n最後一行寫 DONE"
+
+    def _capture(self, completed):
+        calls = []
+
+        def fake_run_agent_command(*args, **kwargs):
+            calls.append((args, kwargs))
+            return completed
+
+        return calls, patch.object(server_http, "run_agent_command", fake_run_agent_command)
+
+    # --- bug 1: multi-line task delivery -------------------------------------
+    def test_codex_agent_sends_full_multiline_task_on_stdin(self):
+        completed = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout="ok\n", stderr="")
+        calls, patcher = self._capture(completed)
+        with patcher:
+            output, is_error = server_http.run_codex_task(self.MULTILINE_TASK, "C:/tmp")
+        self.assertFalse(is_error, output)
+        argv = calls[0][0][0]
+        self.assertEqual("-", argv[-1])
+        self.assertFalse(any("\n" in arg for arg in argv), argv)
+        self.assertEqual(self.MULTILINE_TASK, calls[0][1]["input_text"])
+
+    def test_codex_agent_output_file_is_cleaned_up(self):
+        seen = {}
+
+        def fake_run_agent_command(argv, cwd, **kwargs):
+            out_path = argv[argv.index("--output-last-message") + 1]
+            seen["path"] = out_path
+            Path(out_path).write_text("4 lines", encoding="utf-8")
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+        with patch.object(server_http, "run_agent_command", fake_run_agent_command):
+            output, is_error = server_http.run_codex_task(self.MULTILINE_TASK, "C:/tmp")
+        self.assertEqual(("4 lines", False), (output, is_error))
+        self.assertFalse(os.path.exists(seen["path"]))
+
+    def test_run_agent_command_delivers_multiline_stdin_to_real_process(self):
+        import sys as _sys
+        script = "import sys; data = sys.stdin.read(); print(len(data.splitlines())); print(data.splitlines()[-1])"
+        result = server_http.run_agent_command(
+            [_sys.executable, "-c", script], cwd=tempfile.gettempdir(), input_text=self.MULTILINE_TASK
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(["4", "最後一行寫 DONE"], result.stdout.strip().splitlines())
+
+    def test_droid_agent_writes_full_task_to_temp_file_and_cleans_it(self):
+        seen = {}
+
+        def fake_run_agent_command(argv, cwd, **kwargs):
+            prompt_path = argv[argv.index("--file") + 1]
+            seen["path"] = prompt_path
+            seen["content"] = Path(prompt_path).read_text(encoding="utf-8")
+            seen["argv"] = argv
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="done\n", stderr="")
+
+        with patch.object(server_http, "run_agent_command", fake_run_agent_command):
+            output, is_error = server_http.run_droid_task(self.MULTILINE_TASK, "C:/tmp")
+        self.assertEqual(("done", False), (output, is_error))
+        self.assertEqual(self.MULTILINE_TASK, seen["content"])
+        self.assertFalse(os.path.exists(seen["path"]))
+        self.assertFalse(any("\n" in arg for arg in seen["argv"]))
+
+    def test_copilot_multiline_through_plain_cmd_is_rotatable_not_truncated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            shim = Path(tmp) / "copilot.cmd"
+            shim.write_text("@echo off\r\nC:\\tools\\copilot-real.exe %*\r\n", encoding="utf-8")
+            calls, patcher = self._capture(None)
+            with patcher, patch.object(server_http, "COPILOT_CMD", str(shim)):
+                output, is_error = server_http.run_copilot_task(self.MULTILINE_TASK, "C:/tmp")
+        self.assertTrue(is_error)
+        self.assertEqual([], calls)
+        self.assertEqual("cli_incompatible", server_http.summarize_error_reason(output))
+        self.assertTrue(server_http.should_fallback("copilot_agent", output, True))
+
+    # --- bug 2: deterministic binary resolution ------------------------------
+    def _make_bins(self, tmp, names):
+        paths = {}
+        for name in names:
+            path = Path(tmp) / name
+            path.write_text("stub", encoding="utf-8")
+            paths[name] = str(path)
+        return paths
+
+    def test_resolver_prefers_exe_and_never_returns_extensionless_shim(self):
+        with tempfile.TemporaryDirectory() as edgaros, tempfile.TemporaryDirectory() as npm:
+            a = self._make_bins(edgaros, ["codex.cmd", "codex.exe"])
+            b = self._make_bins(npm, ["codex", "codex.cmd"])
+            known = [b["codex"], b["codex.cmd"], a["codex.cmd"], a["codex.exe"]]
+            with patch.dict(os.environ, {"CODEX_CMD": ""}), patch.object(server_http.shutil, "which", return_value=None):
+                self.assertEqual(
+                    a["codex.exe"],
+                    server_http.resolve_agent_cli("codex", "CODEX_CMD", known, is_windows=True),
+                )
+                self.assertEqual(
+                    b["codex.cmd"],
+                    server_http.resolve_agent_cli("codex", "CODEX_CMD", known[:3], is_windows=True),
+                )
+                self.assertEqual(
+                    "codex",
+                    server_http.resolve_agent_cli("codex", "CODEX_CMD", [b["codex"]], is_windows=True),
+                )
+
+    def test_resolver_prefers_npm_shim_listed_first_over_launcher_exe(self):
+        with tempfile.TemporaryDirectory() as npm, tempfile.TemporaryDirectory() as edgaros:
+            script = Path(npm) / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+            script.parent.mkdir(parents=True)
+            script.write_text("// codex", encoding="utf-8")
+            (Path(npm) / "node.exe").write_text("stub", encoding="utf-8")
+            shim = Path(npm) / "codex.cmd"
+            shim.write_text('"%_prog%"  "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n', encoding="utf-8")
+            launcher = self._make_bins(edgaros, ["codex.exe"])["codex.exe"]
+            with patch.dict(os.environ, {"CODEX_CMD": ""}), patch.object(server_http.shutil, "which", return_value=None):
+                self.assertEqual(
+                    str(shim),
+                    server_http.resolve_agent_cli("codex", "CODEX_CMD", [str(shim), launcher], is_windows=True),
+                )
+                self.assertEqual(
+                    launcher,
+                    server_http.resolve_agent_cli("codex", "CODEX_CMD", [launcher, str(shim)], is_windows=True),
+                )
+
+    def test_resolver_env_override_wins_when_it_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bins = self._make_bins(tmp, ["codex.cmd", "codex.exe"])
+            with patch.dict(os.environ, {"CODEX_CMD": bins["codex.cmd"]}):
+                self.assertEqual(
+                    bins["codex.cmd"],
+                    server_http.resolve_agent_cli("codex", "CODEX_CMD", [bins["codex.exe"]], is_windows=True),
+                )
+            with patch.dict(os.environ, {"CODEX_CMD": str(Path(tmp) / "missing.exe")}):
+                self.assertEqual(
+                    bins["codex.exe"],
+                    server_http.resolve_agent_cli("codex", "CODEX_CMD", [bins["codex.exe"]], is_windows=True),
+                )
+
+    def test_build_cli_argv_runs_exe_directly(self):
+        self.assertEqual(
+            [r"C:\bin\codex.exe", "exec", "-"],
+            server_http.build_cli_argv(r"C:\bin\codex.exe", ["exec", "-"]),
+        )
+
+    def test_build_cli_argv_unwraps_npm_shim_to_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+            script.parent.mkdir(parents=True)
+            script.write_text("// codex", encoding="utf-8")
+            node = Path(tmp) / "node.exe"
+            node.write_text("stub", encoding="utf-8")
+            shim = Path(tmp) / "codex.cmd"
+            shim.write_text(
+                '@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  '
+                '"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n',
+                encoding="utf-8",
+            )
+            argv = server_http.build_cli_argv(str(shim), ["exec", "line1\nline2"])
+        self.assertEqual(str(node), argv[0])
+        self.assertTrue(argv[1].endswith("codex.js"), argv)
+        self.assertEqual(["exec", "line1\nline2"], argv[2:])
+
+    def test_build_cli_argv_plain_cmd_uses_cmd_without_autorun(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            shim = Path(tmp) / "tool.cmd"
+            shim.write_text("@echo off\r\nC:\\tools\\real.exe %*\r\n", encoding="utf-8")
+            self.assertEqual(
+                ["cmd.exe", "/d", "/c", str(shim), "login", "status"],
+                server_http.build_cli_argv(str(shim), ["login", "status"]),
+            )
+            with self.assertRaises(server_http.CliArgumentError):
+                server_http.build_cli_argv(str(shim), ["a\nb"])
+
+    def test_codex_login_status_reports_stderr_and_resolved_path(self):
+        completed = subprocess.CompletedProcess(
+            args=["codex"], returncode=0, stdout="", stderr="Logged in using ChatGPT\n"
+        )
+        calls, patcher = self._capture(completed)
+        with patcher:
+            response = server_http.handle_tools_call(
+                req_id=1, params={"name": "codex_login_status", "arguments": {}}
+            )
+        text = tool_text(response)
+        self.assertFalse(tool_is_error(response), text)
+        self.assertIn("Logged in using ChatGPT", text)
+        self.assertIn(f"codex_cmd: {server_http.CODEX_CMD}", text)
+
+    def test_codex_missing_binary_is_reported_and_rotatable(self):
+        def raise_missing(*args, **kwargs):
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+
+        with patch.object(server_http, "run_agent_command", raise_missing):
+            output, is_error = server_http.run_codex_task("hi", "C:/tmp")
+        self.assertTrue(is_error)
+        self.assertIn("codex command not found", output)
+        self.assertEqual("cli_missing", server_http.summarize_error_reason(output))
+
+    # --- bug 3: droid flag set ------------------------------------------------
+    def test_droid_exec_args_never_combine_auto_and_skip_permissions(self):
+        for level in ("", "low", "medium", "high", "bogus"):
+            with self.subTest(level=level), patch.dict(os.environ, {"DROID_AUTO_LEVEL": level}):
+                args = server_http.droid_exec_args("C:/tmp/p.md", "C:/tmp")
+                self.assertNotIn("--skip-permissions-unsafe", args)
+                self.assertEqual(1, args.count("--auto"))
+                self.assertIn(args[args.index("--auto") + 1], ("low", "medium", "high"))
+                self.assertEqual("C:/tmp/p.md", args[args.index("--file") + 1])
+
+    # --- routing gap: quota / rate-limit rotation -----------------------------
+    def test_quota_and_rate_limit_errors_are_rotatable(self):
+        cases = {
+            "Error: You have exceeded your monthly quota. Please upgrade.": "quota_exceeded",
+            "[stderr]\n402 You have exceeded your monthly quota for premium requests": "quota_exceeded",
+            "insufficient_quota": "quota_exceeded",
+            "Usage limit reached, try again later": "quota_exceeded",
+            "HTTP 429 Too Many Requests": "rate_limited",
+            "rate limit exceeded for this model": "rate_limited",
+            "Rate-limited by upstream": "rate_limited",
+        }
+        for text, reason in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(reason, server_http.summarize_error_reason(text))
+                for tool in ("copilot_agent", "droid_agent", "codex_agent"):
+                    self.assertTrue(server_http.should_fallback(tool, text, True), tool)
+        self.assertFalse(server_http.should_fallback("copilot_agent", "fatal error", True))
+
+    def test_smart_agent_rotates_past_copilot_monthly_quota(self):
+        calls = []
+
+        def copilot(task, wd):
+            calls.append(("copilot_agent", task))
+            return "Error: You have exceeded your monthly quota.", True
+
+        def droid(task, wd):
+            calls.append(("droid_agent", task))
+            return "Invalid flags: something else", True
+
+        def codex(task, wd):
+            calls.append(("codex_agent", task))
+            return "4 lines", False
+
+        with patch.object(server_http, "run_copilot_task", copilot), \
+             patch.object(server_http, "run_droid_task", droid), \
+             patch.object(server_http, "run_codex_task", codex):
+            output, is_error, attempts = server_http.run_smart_agent(self.MULTILINE_TASK, "C:/tmp")
+        # Droid's generic failure stops the chain; quota on Copilot must not.
+        self.assertEqual(["copilot_agent", "droid_agent"], [c[0] for c in calls])
+        self.assertEqual("quota_exceeded", attempts[0]["reason"])
+        self.assertTrue(all(task == self.MULTILINE_TASK for _, task in calls))
+
+        calls.clear()
+        with patch.object(server_http, "run_copilot_task", copilot), \
+             patch.object(server_http, "run_droid_task", lambda t, w: (calls.append(("droid_agent", t)), ("HTTP 429 Too Many Requests", True))[1]), \
+             patch.object(server_http, "run_codex_task", codex):
+            output, is_error, attempts = server_http.run_smart_agent(self.MULTILINE_TASK, "C:/tmp")
+        self.assertEqual((output, is_error), ("4 lines", False))
+        self.assertEqual(["copilot_agent", "droid_agent", "codex_agent"], [a["tool"] for a in attempts])
+        self.assertEqual(["quota_exceeded", "rate_limited", ""], [a["reason"] for a in attempts])
 
 
 if __name__ == "__main__":

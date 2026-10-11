@@ -18,7 +18,7 @@ Invoke-WebRequest http://127.0.0.1:8765/health -UseBasicParsing
 mcporter list
 ```
 
-預期：health 200，`hermes mcp test edgars-mcp` 為 **288 tools**。fresh restart 後 Kapture 固定列出 31 tools；舊 session 的 `kapture__evaluate` 不納入 canonical baseline。來源分組與驗收基線請以 `README.md` 的 Canonical 288-tool profile 為準。
+預期：health 200，`hermes mcp test edgars-mcp` 為 **384 tools**。fresh restart 後 Kapture 固定列出 31 tools；YouTrack 是 `yt__`，Chrome DevTools 是 `cdp__`。舊 session 的 `kapture__evaluate` 不納入 canonical baseline。來源分組與驗收基線請以 `README.md` 的 Canonical 384-tool profile 為準。
 
 ## Secret / API key
 
@@ -26,9 +26,9 @@ Server 與 stdio proxy 直接讀 Windows Machine/User environment。舊的 secre
 
 ## Wrapper profile
 
-Canonical profile 啟用：Playwright、Kapture、Windows-MCP、Desktop Commander、OpenMontage、Hermes、OpenClaw。
+Canonical profile 啟用：Playwright、Kapture、Windows-MCP、Desktop Commander、OpenMontage、Hermes、OpenClaw、Fleet、YouTrack（`yt__`）、Chrome DevTools（`cdp__`）。
 
-明確不併入 edgars-mcp：Descope、cloudflared、1Password Connect wrapper，以及 self-hosted Honcho 的 REST/identity-gate plane。它們是獨立服務/工具，不是 288-tool generic MCP profile 的一部分。
+明確不併入 edgars-mcp：Descope、cloudflared、1Password Connect wrapper，以及 self-hosted Honcho 的 REST/identity-gate plane。它們是獨立服務/工具，不是 384-tool generic MCP profile 的一部分。Linear 也不在公開工具清單。
 
 ## Cursor
 

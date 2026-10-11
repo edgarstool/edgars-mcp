@@ -1,6 +1,7 @@
 """Unit tests and smoke checks for server_http helpers."""
 
 import json
+import os
 import io
 import jsonschema
 import threading
@@ -3503,7 +3504,9 @@ class CopilotDroidAgentTests(unittest.TestCase):
         self.assertEqual("hello from copilot", tool_text(response))
         command = calls[0][0][0]
         self.assertEqual(
-            ["cmd.exe", "/c", server_http.COPILOT_CMD, "-p", "say hi", "-C", "C:/tmp", "--allow-all-tools"],
+            server_http.build_cli_argv(
+                server_http.COPILOT_CMD, ["-p", "say hi", "-C", "C:/tmp", "--allow-all-tools"]
+            ),
             command,
         )
         self.assertEqual("C:/tmp", calls[0][1]["cwd"])
@@ -3539,23 +3542,14 @@ class CopilotDroidAgentTests(unittest.TestCase):
         self.assertFalse(tool_is_error(response))
         self.assertIn("hello from droid", tool_text(response))
         command = calls[0][0][0]
+        self.assertEqual(server_http.DROID_CMD, command[0])
+        self.assertEqual(["exec", "--auto", "medium", "--file"], command[1:5])
         self.assertEqual(
-            [
-                "cmd.exe",
-                "/c",
-                server_http.DROID_CMD,
-                "exec",
-                "--auto",
-                "medium",
-                "say hi",
-                "--cwd",
-                "C:/tmp",
-                "--skip-permissions-unsafe",
-                "--output-format",
-                "text",
-            ],
-            command,
+            ["--cwd", "C:/tmp", "--output-format", "text"],
+            command[6:],
         )
+        self.assertNotIn("--skip-permissions-unsafe", command)
+        self.assertNotIn("say hi", command)
         self.assertEqual("C:/tmp", calls[0][1]["cwd"])
 
 
@@ -4101,8 +4095,247 @@ class CodexSurfaceTests(unittest.TestCase):
                 response, calls = self._invoke(name, arguments)
                 self.assertFalse(tool_is_error(response), tool_text(response))
                 command = calls[0][0][0]
-                self.assertEqual(server_http.CODEX_CMD, command[2])
-                self.assertEqual(expected, command[3:3 + len(expected)])
+                self.assertEqual(server_http.CODEX_CMD, command[0])
+                self.assertEqual(expected, command[1:1 + len(expected)])
+
+
+class AgentCliRobustnessTests(unittest.TestCase):
+    MULTILINE_TASK = "全程用繁中\n讀取 notes.txt\n回報它有幾行\n最後一行寫 DONE"
+
+    def _capture(self, completed):
+        calls = []
+
+        def fake_run_agent_command(*args, **kwargs):
+            calls.append((args, kwargs))
+            return completed
+
+        return calls, patch.object(server_http, "run_agent_command", fake_run_agent_command)
+
+    # --- bug 1: multi-line task delivery -------------------------------------
+    def test_codex_agent_sends_full_multiline_task_on_stdin(self):
+        completed = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout="ok\n", stderr="")
+        calls, patcher = self._capture(completed)
+        with patcher:
+            output, is_error = server_http.run_codex_task(self.MULTILINE_TASK, "C:/tmp")
+        self.assertFalse(is_error, output)
+        argv = calls[0][0][0]
+        self.assertEqual("-", argv[-1])
+        self.assertFalse(any("\n" in arg for arg in argv), argv)
+        self.assertEqual(self.MULTILINE_TASK, calls[0][1]["input_text"])
+
+    def test_codex_agent_output_file_is_cleaned_up(self):
+        seen = {}
+
+        def fake_run_agent_command(argv, cwd, **kwargs):
+            out_path = argv[argv.index("--output-last-message") + 1]
+            seen["path"] = out_path
+            Path(out_path).write_text("4 lines", encoding="utf-8")
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+        with patch.object(server_http, "run_agent_command", fake_run_agent_command):
+            output, is_error = server_http.run_codex_task(self.MULTILINE_TASK, "C:/tmp")
+        self.assertEqual(("4 lines", False), (output, is_error))
+        self.assertFalse(os.path.exists(seen["path"]))
+
+    def test_run_agent_command_delivers_multiline_stdin_to_real_process(self):
+        import sys as _sys
+        script = "import sys; data = sys.stdin.read(); print(len(data.splitlines())); print(data.splitlines()[-1])"
+        result = server_http.run_agent_command(
+            [_sys.executable, "-c", script], cwd=tempfile.gettempdir(), input_text=self.MULTILINE_TASK
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(["4", "最後一行寫 DONE"], result.stdout.strip().splitlines())
+
+    def test_droid_agent_writes_full_task_to_temp_file_and_cleans_it(self):
+        seen = {}
+
+        def fake_run_agent_command(argv, cwd, **kwargs):
+            prompt_path = argv[argv.index("--file") + 1]
+            seen["path"] = prompt_path
+            seen["content"] = Path(prompt_path).read_text(encoding="utf-8")
+            seen["argv"] = argv
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="done\n", stderr="")
+
+        with patch.object(server_http, "run_agent_command", fake_run_agent_command):
+            output, is_error = server_http.run_droid_task(self.MULTILINE_TASK, "C:/tmp")
+        self.assertEqual(("done", False), (output, is_error))
+        self.assertEqual(self.MULTILINE_TASK, seen["content"])
+        self.assertFalse(os.path.exists(seen["path"]))
+        self.assertFalse(any("\n" in arg for arg in seen["argv"]))
+
+    def test_copilot_multiline_through_plain_cmd_is_rotatable_not_truncated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            shim = Path(tmp) / "copilot.cmd"
+            shim.write_text("@echo off\r\nC:\\tools\\copilot-real.exe %*\r\n", encoding="utf-8")
+            calls, patcher = self._capture(None)
+            with patcher, patch.object(server_http, "COPILOT_CMD", str(shim)):
+                output, is_error = server_http.run_copilot_task(self.MULTILINE_TASK, "C:/tmp")
+        self.assertTrue(is_error)
+        self.assertEqual([], calls)
+        self.assertEqual("cli_incompatible", server_http.summarize_error_reason(output))
+        self.assertTrue(server_http.should_fallback("copilot_agent", output, True))
+
+    # --- bug 2: deterministic binary resolution ------------------------------
+    def _make_bins(self, tmp, names):
+        paths = {}
+        for name in names:
+            path = Path(tmp) / name
+            path.write_text("stub", encoding="utf-8")
+            paths[name] = str(path)
+        return paths
+
+    def test_resolver_prefers_exe_and_never_returns_extensionless_shim(self):
+        with tempfile.TemporaryDirectory() as edgaros, tempfile.TemporaryDirectory() as npm:
+            a = self._make_bins(edgaros, ["codex.cmd", "codex.exe"])
+            b = self._make_bins(npm, ["codex", "codex.cmd"])
+            known = [b["codex"], b["codex.cmd"], a["codex.cmd"], a["codex.exe"]]
+            with patch.dict(os.environ, {"CODEX_CMD": ""}), patch.object(server_http.shutil, "which", return_value=None):
+                self.assertEqual(
+                    a["codex.exe"],
+                    server_http.resolve_agent_cli("codex", "CODEX_CMD", known, is_windows=True),
+                )
+                self.assertEqual(
+                    b["codex.cmd"],
+                    server_http.resolve_agent_cli("codex", "CODEX_CMD", known[:3], is_windows=True),
+                )
+                self.assertEqual(
+                    "codex",
+                    server_http.resolve_agent_cli("codex", "CODEX_CMD", [b["codex"]], is_windows=True),
+                )
+
+    def test_resolver_env_override_wins_when_it_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bins = self._make_bins(tmp, ["codex.cmd", "codex.exe"])
+            with patch.dict(os.environ, {"CODEX_CMD": bins["codex.cmd"]}):
+                self.assertEqual(
+                    bins["codex.cmd"],
+                    server_http.resolve_agent_cli("codex", "CODEX_CMD", [bins["codex.exe"]], is_windows=True),
+                )
+            with patch.dict(os.environ, {"CODEX_CMD": str(Path(tmp) / "missing.exe")}):
+                self.assertEqual(
+                    bins["codex.exe"],
+                    server_http.resolve_agent_cli("codex", "CODEX_CMD", [bins["codex.exe"]], is_windows=True),
+                )
+
+    def test_build_cli_argv_runs_exe_directly(self):
+        self.assertEqual(
+            [r"C:\bin\codex.exe", "exec", "-"],
+            server_http.build_cli_argv(r"C:\bin\codex.exe", ["exec", "-"]),
+        )
+
+    def test_build_cli_argv_unwraps_npm_shim_to_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+            script.parent.mkdir(parents=True)
+            script.write_text("// codex", encoding="utf-8")
+            node = Path(tmp) / "node.exe"
+            node.write_text("stub", encoding="utf-8")
+            shim = Path(tmp) / "codex.cmd"
+            shim.write_text(
+                '@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  '
+                '"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n',
+                encoding="utf-8",
+            )
+            argv = server_http.build_cli_argv(str(shim), ["exec", "line1\nline2"])
+        self.assertEqual(str(node), argv[0])
+        self.assertTrue(argv[1].endswith("codex.js"), argv)
+        self.assertEqual(["exec", "line1\nline2"], argv[2:])
+
+    def test_build_cli_argv_plain_cmd_uses_cmd_without_autorun(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            shim = Path(tmp) / "tool.cmd"
+            shim.write_text("@echo off\r\nC:\\tools\\real.exe %*\r\n", encoding="utf-8")
+            self.assertEqual(
+                ["cmd.exe", "/d", "/c", str(shim), "login", "status"],
+                server_http.build_cli_argv(str(shim), ["login", "status"]),
+            )
+            with self.assertRaises(server_http.CliArgumentError):
+                server_http.build_cli_argv(str(shim), ["a\nb"])
+
+    def test_codex_login_status_reports_stderr_and_resolved_path(self):
+        completed = subprocess.CompletedProcess(
+            args=["codex"], returncode=0, stdout="", stderr="Logged in using ChatGPT\n"
+        )
+        calls, patcher = self._capture(completed)
+        with patcher:
+            response = server_http.handle_tools_call(
+                req_id=1, params={"name": "codex_login_status", "arguments": {}}
+            )
+        text = tool_text(response)
+        self.assertFalse(tool_is_error(response), text)
+        self.assertIn("Logged in using ChatGPT", text)
+        self.assertIn(f"codex_cmd: {server_http.CODEX_CMD}", text)
+
+    def test_codex_missing_binary_is_reported_and_rotatable(self):
+        def raise_missing(*args, **kwargs):
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+
+        with patch.object(server_http, "run_agent_command", raise_missing):
+            output, is_error = server_http.run_codex_task("hi", "C:/tmp")
+        self.assertTrue(is_error)
+        self.assertIn("codex command not found", output)
+        self.assertEqual("cli_missing", server_http.summarize_error_reason(output))
+
+    # --- bug 3: droid flag set ------------------------------------------------
+    def test_droid_exec_args_never_combine_auto_and_skip_permissions(self):
+        for level in ("", "low", "medium", "high", "bogus"):
+            with self.subTest(level=level), patch.dict(os.environ, {"DROID_AUTO_LEVEL": level}):
+                args = server_http.droid_exec_args("C:/tmp/p.md", "C:/tmp")
+                self.assertNotIn("--skip-permissions-unsafe", args)
+                self.assertEqual(1, args.count("--auto"))
+                self.assertIn(args[args.index("--auto") + 1], ("low", "medium", "high"))
+                self.assertEqual("C:/tmp/p.md", args[args.index("--file") + 1])
+
+    # --- routing gap: quota / rate-limit rotation -----------------------------
+    def test_quota_and_rate_limit_errors_are_rotatable(self):
+        cases = {
+            "Error: You have exceeded your monthly quota. Please upgrade.": "quota_exceeded",
+            "[stderr]\n402 You have exceeded your monthly quota for premium requests": "quota_exceeded",
+            "insufficient_quota": "quota_exceeded",
+            "Usage limit reached, try again later": "quota_exceeded",
+            "HTTP 429 Too Many Requests": "rate_limited",
+            "rate limit exceeded for this model": "rate_limited",
+            "Rate-limited by upstream": "rate_limited",
+        }
+        for text, reason in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(reason, server_http.summarize_error_reason(text))
+                for tool in ("copilot_agent", "droid_agent", "codex_agent"):
+                    self.assertTrue(server_http.should_fallback(tool, text, True), tool)
+        self.assertFalse(server_http.should_fallback("copilot_agent", "fatal error", True))
+
+    def test_smart_agent_rotates_past_copilot_monthly_quota(self):
+        calls = []
+
+        def copilot(task, wd):
+            calls.append(("copilot_agent", task))
+            return "Error: You have exceeded your monthly quota.", True
+
+        def droid(task, wd):
+            calls.append(("droid_agent", task))
+            return "Invalid flags: something else", True
+
+        def codex(task, wd):
+            calls.append(("codex_agent", task))
+            return "4 lines", False
+
+        with patch.object(server_http, "run_copilot_task", copilot), \
+             patch.object(server_http, "run_droid_task", droid), \
+             patch.object(server_http, "run_codex_task", codex):
+            output, is_error, attempts = server_http.run_smart_agent(self.MULTILINE_TASK, "C:/tmp")
+        # Droid's generic failure stops the chain; quota on Copilot must not.
+        self.assertEqual(["copilot_agent", "droid_agent"], [c[0] for c in calls])
+        self.assertEqual("quota_exceeded", attempts[0]["reason"])
+        self.assertTrue(all(task == self.MULTILINE_TASK for _, task in calls))
+
+        calls.clear()
+        with patch.object(server_http, "run_copilot_task", copilot), \
+             patch.object(server_http, "run_droid_task", lambda t, w: (calls.append(("droid_agent", t)), ("HTTP 429 Too Many Requests", True))[1]), \
+             patch.object(server_http, "run_codex_task", codex):
+            output, is_error, attempts = server_http.run_smart_agent(self.MULTILINE_TASK, "C:/tmp")
+        self.assertEqual((output, is_error), ("4 lines", False))
+        self.assertEqual(["copilot_agent", "droid_agent", "codex_agent"], [a["tool"] for a in attempts])
+        self.assertEqual(["quota_exceeded", "rate_limited", ""], [a["reason"] for a in attempts])
 
 
 if __name__ == "__main__":

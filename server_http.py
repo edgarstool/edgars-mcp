@@ -160,11 +160,121 @@ def resolve_cli(
     return cmd_name
 
 
+_WINDOWS_LAUNCHABLE_EXTS = (".exe", ".cmd", ".bat")
+_CLI_EXT_RANK = {".exe": 0, ".cmd": 1, ".bat": 1}
+
+
+def resolve_agent_cli(
+    cmd_name: str,
+    env_var: str | None = None,
+    known_paths: list[str] | None = None,
+    *,
+    is_windows: bool | None = None,
+) -> str:
+    """Deterministic resolver for agent CLIs (codex / copilot / droid / ollama).
+
+    Order: existing env override > existing known path or PATH hit, ranked
+    .exe before .cmd/.bat (stable by listing order) > bare name.
+    On Windows an extensionless file (e.g. npm's POSIX ``codex`` shim) is never
+    returned, because cmd.exe / CreateProcess cannot launch it and fails with
+    "The system cannot find the file specified."
+    """
+    if is_windows is None:
+        is_windows = os.name == "nt"
+    if env_var:
+        override = os.getenv(env_var, "").strip()
+        if override and os.path.isfile(override):
+            return override
+
+    candidates: list[str] = list(known_paths or [])
+    if is_windows:
+        for ext in _WINDOWS_LAUNCHABLE_EXTS:
+            found = shutil.which(cmd_name + ext)
+            if found:
+                candidates.append(found)
+    else:
+        found = shutil.which(cmd_name)
+        if found:
+            candidates.append(found)
+
+    ranked: list[tuple[int, int, str]] = []
+    for index, path in enumerate(candidates):
+        if not path or not os.path.isfile(path):
+            continue
+        ext = os.path.splitext(path)[1].lower()
+        if is_windows and ext not in _WINDOWS_LAUNCHABLE_EXTS:
+            continue
+        ranked.append((_CLI_EXT_RANK.get(ext, 2), index, path))
+    if ranked:
+        ranked.sort()
+        return ranked[0][2]
+    return cmd_name
+
+
+_NPM_SHIM_JS_RE = re.compile(r'"%dp0%\\([^"%]+\.(?:js|mjs|cjs))"', re.IGNORECASE)
+
+
+def _npm_shim_node_argv(cmd_path: str) -> list[str] | None:
+    """Unwrap an npm cmd-shim (.cmd) into ``[node, script.js]`` when possible.
+
+    Running node directly keeps arguments intact (cmd.exe would cut a
+    multi-line argument at the first newline and re-parse metacharacters).
+    """
+    try:
+        text = Path(cmd_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = _NPM_SHIM_JS_RE.search(text)
+    if not match:
+        return None
+    shim_dir = os.path.dirname(cmd_path)
+    script = os.path.join(shim_dir, *match.group(1).split("\\"))
+    if not os.path.isfile(script):
+        return None
+    node = os.path.join(shim_dir, "node.exe")
+    if not os.path.isfile(node):
+        node = shutil.which("node.exe") or shutil.which("node") or ""
+    if not node:
+        return None
+    return [node, script]
+
+
+class CliArgumentError(ValueError):
+    """An argument cannot be passed safely to the resolved CLI."""
+
+
+def build_cli_argv(cmd_path: str, args: list[str]) -> list[str]:
+    """Build a shell-free argv for an agent CLI.
+
+    .exe / bare names run directly. npm .cmd shims run as ``node script.js``.
+    Any other .cmd/.bat goes through ``cmd.exe /d /c``; because cmd.exe ends a
+    command at a newline, multi-line arguments are refused instead of being
+    silently truncated (pass long prompts via stdin or a file).
+    """
+    ext = os.path.splitext(cmd_path)[1].lower()
+    if ext in (".cmd", ".bat"):
+        node_argv = _npm_shim_node_argv(cmd_path)
+        if node_argv:
+            return [*node_argv, *args]
+        for arg in args:
+            if "\r" in arg or "\n" in arg:
+                raise CliArgumentError(
+                    f"cli_incompatible: {os.path.basename(cmd_path)} runs through cmd.exe, "
+                    "which cannot pass a multi-line argument"
+                )
+        return ["cmd.exe", "/d", "/c", cmd_path, *args]
+    return [cmd_path, *args]
+
+
 QMD_KNOWN_PATHS = [
     r"C:\Users\EdgarsTool\AppData\Roaming\npm\qmd.cmd",
     r"C:\Users\EdgarsTool\AppData\Roaming\npm\qmd.ps1",
 ]
-CODEX_KNOWN_PATHS = [r"C:\Users\EdgarsTool\AppData\Roaming\npm\codex.cmd"]
+CODEX_KNOWN_PATHS = [
+    r"C:\Users\EdgarsTool\AppData\Local\EdgarOS\bin\codex.exe",
+    r"C:\Users\EdgarsTool\AppData\Local\EdgarOS\bin\codex.cmd",
+    r"C:\Users\EdgarsTool\AppData\Roaming\npm\codex.cmd",
+]
 COPILOT_KNOWN_PATHS = [r"C:\Users\EdgarsTool\AppData\Roaming\npm\copilot.cmd"]
 DROID_KNOWN_PATHS = [r"C:\Users\EdgarsTool\bin\droid.exe"]
 OLLAMA_KNOWN_PATHS = [r"C:\Users\EdgarsTool\AppData\Local\Programs\Ollama\ollama.exe"]
@@ -378,10 +488,10 @@ BROWSER_VISIBLE_TOOL_NAMES = {
 }
 _mcp_auth_kind: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_auth_kind", default="unknown")
 
-CODEX_CMD = resolve_cli("codex", "CODEX_CMD", CODEX_KNOWN_PATHS)
-COPILOT_CMD = resolve_cli("copilot", "COPILOT_CMD", COPILOT_KNOWN_PATHS)
-DROID_CMD = resolve_cli("droid", "DROID_CMD", DROID_KNOWN_PATHS)
-OLLAMA_CMD = resolve_cli("ollama", "OLLAMA_CMD", OLLAMA_KNOWN_PATHS)
+CODEX_CMD = resolve_agent_cli("codex", "CODEX_CMD", CODEX_KNOWN_PATHS)
+COPILOT_CMD = resolve_agent_cli("copilot", "COPILOT_CMD", COPILOT_KNOWN_PATHS)
+DROID_CMD = resolve_agent_cli("droid", "DROID_CMD", DROID_KNOWN_PATHS)
+OLLAMA_CMD = resolve_agent_cli("ollama", "OLLAMA_CMD", OLLAMA_KNOWN_PATHS)
 QMD_CMD = resolve_cli("qmd", "QMD_CMD", QMD_KNOWN_PATHS)
 def _client_ollama_host(raw: str) -> str:
     """Turn a bind-all OLLAMA_HOST into a client address.
@@ -2905,6 +3015,7 @@ def run_agent_command(
     cwd: str,
     *,
     env_overrides: dict[str, str | None] | None = None,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     if env_overrides:
@@ -2914,14 +3025,22 @@ def run_agent_command(
             else:
                 env[key] = value
 
+    run_kwargs: dict = {}
+    if input_text is None:
+        run_kwargs["stdin"] = subprocess.DEVNULL
+    else:
+        run_kwargs["input"] = input_text
     return subprocess.run(
         command,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=AGENT_TIMEOUT_SECONDS,
         cwd=cwd,
         env=env,
         shell=False,
+        **run_kwargs,
     )
 
 
@@ -2943,6 +3062,10 @@ def finalize_agent_output(
         if output:
             sections.append(f"[stdout]\n{output}")
         output = "\n".join(sections).strip()
+
+    if not output and result.returncode == 0 and stderr_text:
+        # Some CLIs (e.g. `codex login status`) report on stderr even on success.
+        output = stderr_text
 
     if not output:
         output = f"{fallback_label} exited with code {result.returncode} (no output)"
@@ -3162,18 +3285,17 @@ def run_codex_task(task: str, working_dir: str, options: dict | None = None) -> 
     os.close(tmp_fd)
 
     try:
-        argv = [
-            "cmd.exe",
-            "/c",
-            CODEX_CMD,
+        args = [
             "exec",
             "--ephemeral",
             "--skip-git-repo-check",
             "--cd", working_dir,
         ]
-        _extend_codex_exec_flags(argv, options)
-        argv.extend(["--output-last-message", tmp_path, task])
-        result = run_agent_command(argv, cwd=working_dir)
+        _extend_codex_exec_flags(args, options)
+        # "-" makes `codex exec` read the full (multi-line) task from stdin.
+        args.extend(["--output-last-message", tmp_path, "-"])
+        argv = build_cli_argv(CODEX_CMD, args)
+        result = run_agent_command(argv, cwd=working_dir, input_text=task)
         log(f"codex_agent: exit_code={result.returncode}")
 
         output = ""
@@ -3190,6 +3312,8 @@ def run_codex_task(task: str, working_dir: str, options: dict | None = None) -> 
         )
     except subprocess.TimeoutExpired:
         return f"codex_agent timed out after {AGENT_TIMEOUT_SECONDS} seconds", True
+    except FileNotFoundError:
+        return f"Error: codex command not found at {CODEX_CMD}", True
     except ValueError as exc:
         return f"Error: {exc}", True
     except Exception as exc:
@@ -3205,19 +3329,11 @@ def run_copilot_task(task: str, working_dir: str) -> tuple[str, bool]:
     log(f"copilot_agent: task={task!r} workdir={working_dir!r}")
 
     try:
-        result = run_agent_command(
-            [
-                "cmd.exe",
-                "/c",
-                COPILOT_CMD,
-                "-p",
-                task,
-                "-C",
-                working_dir,
-                "--allow-all-tools",
-            ],
-            cwd=working_dir,
+        argv = build_cli_argv(
+            COPILOT_CMD,
+            ["-p", task, "-C", working_dir, "--allow-all-tools"],
         )
+        result = run_agent_command(argv, cwd=working_dir)
         log(f"copilot_agent: exit_code={result.returncode}")
 
         return finalize_agent_output(
@@ -3226,30 +3342,43 @@ def run_copilot_task(task: str, working_dir: str) -> tuple[str, bool]:
         )
     except subprocess.TimeoutExpired:
         return f"copilot_agent timed out after {AGENT_TIMEOUT_SECONDS} seconds", True
+    except CliArgumentError as exc:
+        return f"Error: {exc}", True
     except FileNotFoundError:
         return f"Error: copilot command not found at {COPILOT_CMD}", True
     except Exception as exc:
         return f"Failed to run GitHub Copilot: {exc}", True
 
 
+_DROID_AUTO_LEVELS = ("low", "medium", "high")
+
+
+def droid_exec_args(prompt_file: str, working_dir: str) -> list[str]:
+    """`droid exec` flags. `--auto` and `--skip-permissions-unsafe` are mutually
+    exclusive in droid, so only `--auto <level>` is ever sent."""
+    level = os.getenv("DROID_AUTO_LEVEL", "medium").strip().lower() or "medium"
+    if level not in _DROID_AUTO_LEVELS:
+        level = "medium"
+    return [
+        "exec",
+        "--auto", level,
+        "--file", prompt_file,
+        "--cwd", working_dir,
+        "--output-format", "text",
+    ]
+
+
 def run_droid_task(task: str, working_dir: str) -> tuple[str, bool]:
     log(f"droid_agent: task={task!r} workdir={working_dir!r}")
 
+    prompt_path = ""
     try:
+        # Multi-line prompts go through a temp file (`droid exec --file`).
+        fd, prompt_path = tempfile.mkstemp(suffix=".md", prefix="droid_prompt_")
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(task)
         result = run_agent_command(
-            [
-                "cmd.exe",
-                "/c",
-                DROID_CMD,
-                "exec",
-                "--auto", "medium",
-                task,
-                "--cwd",
-                working_dir,
-                "--skip-permissions-unsafe",
-                "--output-format",
-                "text",
-            ],
+            build_cli_argv(DROID_CMD, droid_exec_args(prompt_path, working_dir)),
             cwd=working_dir,
         )
         log(f"droid_agent: exit_code={result.returncode}")
@@ -3264,16 +3393,33 @@ def run_droid_task(task: str, working_dir: str) -> tuple[str, bool]:
         return f"Error: droid command not found at {DROID_CMD}", True
     except Exception as exc:
         return f"Failed to run Factory Droid: {exc}", True
+    finally:
+        if prompt_path:
+            try:
+                os.unlink(prompt_path)
+            except OSError:
+                pass
+
+
+_QUOTA_ERROR_RE = re.compile(
+    r"quota[^\n]{0,40}\b(exceed|exhaust|reached|limit)"
+    r"|\b(exceed\w*|exhaust\w*|reached|hit|over|used up)\b[^\n]{0,40}\bquota"
+    r"|insufficient_quota|terminalquotaerror|usage limit|out of credits"
+    r"|credit balance is too low|retry in"
+)
+_RATE_LIMIT_RE = re.compile(r"\b429\b|rate[ _-]?limit|too many requests")
 
 
 def summarize_error_reason(output: str) -> str:
     lowered = (output or "").lower()
-    if "quota exceeded" in lowered or "terminalquotaerror" in lowered or "retry in" in lowered:
+    if _QUOTA_ERROR_RE.search(lowered):
         return "quota_exceeded"
+    if _RATE_LIMIT_RE.search(lowered):
+        return "rate_limited"
+    if "cli_incompatible" in lowered:
+        return "cli_incompatible"
     if "timed out" in lowered or "timeout" in lowered:
         return "timeout"
-    if "429" in lowered:
-        return "rate_limited"
     if "connection aborted" in lowered or "context canceled" in lowered:
         return "connection_aborted"
     if "internal error" in lowered or "unexpected critical error" in lowered:
@@ -3293,6 +3439,7 @@ _TRANSIENT_FALLBACK_REASONS = frozenset({
     "upstream_error",
     "account_ineligible",
     "cli_missing",
+    "cli_incompatible",
 })
 
 
@@ -3307,7 +3454,7 @@ def should_fallback(tool_name: str, output: str, is_error: bool) -> bool:
     reason = summarize_error_reason(output)
     # Continue fallback on CLI incompatibility, account ineligibility, missing cmd, quota/rate, timeout, transient upstream.
     # Only stop for genuine task/content failures (where another model would repeat the same bad task).
-    if reason in {"account_ineligible", "cli_missing", "quota_exceeded", "rate_limited", "timeout", "connection_aborted", "upstream_error"}:
+    if reason in {"account_ineligible", "cli_missing", "cli_incompatible", "quota_exceeded", "rate_limited", "timeout", "connection_aborted", "upstream_error"}:
         return True
     if tool_name in {"copilot_agent", "droid_agent"}:
         return reason in _TRANSIENT_FALLBACK_REASONS
@@ -3757,7 +3904,7 @@ def handle_codex_agent(req_id, arguments: dict) -> dict:
 
 
 def _run_codex_cli(argv: list[str], working_dir: str, *, redact: bool = False) -> tuple[str, bool]:
-    result = run_agent_command(["cmd.exe", "/c", CODEX_CMD, *argv], cwd=working_dir)
+    result = run_agent_command(build_cli_argv(CODEX_CMD, argv), cwd=working_dir)
     output, is_error = finalize_agent_output(result, fallback_label="Codex")
     if redact:
         output = _redact_secret_text(output)
@@ -3821,6 +3968,7 @@ def handle_codex_surface(req_id, name: str, arguments: dict) -> dict:
             output, is_error = _run_codex_cli(["doctor", "--json"], working_dir, redact=True)
         elif name == "codex_login_status":
             output, is_error = _run_codex_cli(["login", "status"], working_dir, redact=True)
+            output = f"codex_cmd: {CODEX_CMD}\n{output}"
         elif name == "codex_mcp_list":
             output, is_error = _run_codex_cli(["mcp", "list"], working_dir)
         else:
@@ -3829,6 +3977,8 @@ def handle_codex_surface(req_id, name: str, arguments: dict) -> dict:
         output, is_error = f"Error: {exc}", True
     except subprocess.TimeoutExpired:
         output, is_error = f"{name} timed out after {AGENT_TIMEOUT_SECONDS} seconds", True
+    except FileNotFoundError:
+        output, is_error = f"Error: codex command not found at {CODEX_CMD}", True
     except Exception as exc:
         output, is_error = f"Failed to run Codex: {exc}", True
     return make_response(req_id, make_tool_text_response(output, is_error=is_error))
@@ -5851,7 +6001,7 @@ def run_ollama_task(task: str, model: str, working_dir: str) -> tuple[str, bool]
     log(f"ollama_agent: task={task!r} model={model!r} workdir={working_dir!r}")
     try:
         result = run_agent_command(
-            ["cmd.exe", "/c", OLLAMA_CMD, "run", model, task],
+            build_cli_argv(OLLAMA_CMD, ["run", model, task]),
             cwd=working_dir,
         )
         log(f"ollama_agent: exit_code={result.returncode}")

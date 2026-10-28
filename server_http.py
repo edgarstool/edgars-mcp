@@ -333,6 +333,14 @@ class HandcraftServerConfig:
     descope_audience: str = ""
     descope_resource_server_id: str = ""  # agentic RS id (e.g. RS3…)
     auth_server_url: str = ""  # override AS issuer (prefer Descope agentic)
+    # Isolated native EDGAR issuer verification is opt-in. The JWKS contains
+    # PUBLIC signing keys only and is pinned by the controller/AS deployment.
+    # The live JWKS refresh/introspection design needs separate acceptance.
+    edgar_native_as_enabled: bool = False
+    edgar_native_as_issuer: str = ""
+    edgar_native_as_audience: str = ""
+    edgar_native_as_jwks_json: str = ""
+    edgar_native_as_required_scope: str = "mcp:read"
     honcho_mcp_facade_token: str = ""
     honcho_api_key: str = ""
     honcho_user_name: str = "Edgar"
@@ -3004,9 +3012,51 @@ def fetch_descope_as_metadata(config: HandcraftServerConfig) -> dict | None:
         return None
 
 
+def verify_edgar_native_access_token(token: str, config: "HandcraftServerConfig") -> bool:
+    """Verify an EDGAR-issued JWT against explicitly pinned public JWKS.
+
+    No provider passthrough, no trust in unverified token header URLs, and
+    fail closed on empty issuer/audience/key configuration.  This verifies
+    offline signature/claims, not grant revocation or per-tool permissions.
+    """
+    if jwt is None or not token:
+        return False
+    issuer = config.edgar_native_as_issuer
+    audience = config.edgar_native_as_audience
+    if not (issuer.startswith("https://") and audience.startswith("https://")
+            and config.edgar_native_as_jwks_json):
+        return False
+    try:
+        keys = json.loads(config.edgar_native_as_jwks_json).get("keys", [])
+        header = jwt.get_unverified_header(token)
+        kid = header.get("kid")
+        if header.get("alg") != "RS256" or not isinstance(kid, str) or not kid:
+            return False
+        # Select only a trusted pinned key; do not follow jku/x5u from tokens.
+        matching = [k for k in keys
+                    if isinstance(k, dict) and k.get("kid") == kid
+                    and k.get("kty") == "RSA" and k.get("use", "sig") == "sig"]
+        if len(matching) != 1:
+            return False
+        key = jwt.PyJWK.from_dict(matching[0]).key
+        claims = jwt.decode(token, key, algorithms=["RS256"],
+                            issuer=issuer, audience=audience,
+                            options={"require": ["iss", "sub", "aud", "exp", "iat", "jti"]})
+        allowed_scope = config.edgar_native_as_required_scope
+        scopes = claims.get("scope")
+        return (isinstance(scopes, str)
+                and (not allowed_scope or allowed_scope in scopes.split()))
+    except (ValueError, TypeError, KeyError, jwt.PyJWTError):
+        return False
+
+
 def bearer_token_is_authorized(
     token: str, static_token: str, config: "HandcraftServerConfig | None" = None
 ) -> bool:
+    # Explicit native mode is fail closed: do not silently fall back to a
+    # static token, Descope identity token, or old in-memory OAuth bearer.
+    if config is not None and config.edgar_native_as_enabled:
+        return verify_edgar_native_access_token(token, config)
     if static_token and hmac.compare_digest(token, static_token):
         return True
     if config is not None and config.descope_enabled:

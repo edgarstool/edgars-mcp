@@ -36,7 +36,8 @@ import string
 import datetime
 import zipfile
 from html import escape as html_escape
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Callable
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -335,7 +336,7 @@ class HandcraftServerConfig:
     auth_server_url: str = ""  # override AS issuer (prefer Descope agentic)
     # Isolated native EDGAR issuer verification is opt-in. The JWKS contains
     # PUBLIC signing keys only and is pinned by the controller/AS deployment.
-    # The live JWKS refresh/introspection design needs separate acceptance.
+    # Native mode also requires a controller-injected trusted introspector.
     edgar_native_as_enabled: bool = False
     edgar_native_as_issuer: str = ""
     edgar_native_as_audience: str = ""
@@ -349,6 +350,12 @@ class HandcraftServerConfig:
     honcho_mcp_hostname: str = "honcho-mcp.edgars.tools"
     honcho_chatgpt_gateway_enabled: bool = False
     honcho_chatgpt_write_enabled: bool = False
+    # No URL/env discovery or implicit network client. The trusted adapter must
+    # authenticate to the AS, enforce its own timeout and return fresh status
+    # for this exact token on every call. Never cache positive active results.
+    edgar_native_as_introspect: Callable[[str], dict] | None = field(
+        default=None, repr=False, compare=False,
+    )
 
     @property
     def public_hostname(self) -> str:
@@ -3012,19 +3019,23 @@ def fetch_descope_as_metadata(config: HandcraftServerConfig) -> dict | None:
         return None
 
 
-def verify_edgar_native_access_token(token: str, config: "HandcraftServerConfig") -> bool:
+def verify_edgar_native_access_token(
+    token: str, config: "HandcraftServerConfig", *, required_scope: str = "",
+) -> bool:
     """Verify an EDGAR-issued JWT against explicitly pinned public JWKS.
 
     No provider passthrough, no trust in unverified token header URLs, and
-    fail closed on empty issuer/audience/key configuration.  This verifies
-    offline signature/claims, not grant revocation or per-tool permissions.
+    fail closed on empty trust configuration or unavailable introspection.
+    Offline signature/claims are checked before the trusted callback; neither
+    caller-supplied claims nor token header URLs can select that callback.
     """
     if jwt is None or not token:
         return False
     issuer = config.edgar_native_as_issuer
     audience = config.edgar_native_as_audience
     if not (issuer.startswith("https://") and audience.startswith("https://")
-            and config.edgar_native_as_jwks_json):
+            and config.edgar_native_as_jwks_json
+            and callable(config.edgar_native_as_introspect)):
         return False
     try:
         keys = json.loads(config.edgar_native_as_jwks_json).get("keys", [])
@@ -3044,9 +3055,23 @@ def verify_edgar_native_access_token(token: str, config: "HandcraftServerConfig"
                             options={"require": ["iss", "sub", "aud", "exp", "iat", "jti"]})
         allowed_scope = config.edgar_native_as_required_scope
         scopes = claims.get("scope")
-        return (isinstance(scopes, str)
-                and (not allowed_scope or allowed_scope in scopes.split()))
+        if not (isinstance(scopes, str)
+                and (not allowed_scope or allowed_scope in scopes.split())
+                and (not required_scope or required_scope in scopes.split())):
+            return False
     except (ValueError, TypeError, KeyError, jwt.PyJWTError):
+        return False
+
+    try:
+        status = config.edgar_native_as_introspect(token)
+        # Require a literal boolean and bind the AS response to the signed
+        # identity/resource/grant, rather than accepting a truthy "active".
+        return (isinstance(status, dict) and status.get("active") is True
+                and all(name in claims and status.get(name) == claims[name]
+                        for name in ("iss", "sub", "aud", "exp", "iat", "scope", "client_id")))
+    except Exception:
+        # An unavailable/misconfigured AS must never restore offline-only auth.
+        # Do not log callback exceptions: they can contain credentials/tokens.
         return False
 
 
@@ -5090,6 +5115,20 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         if not self._validate_streamable_http_metadata(msg):
             return
 
+        # Native tools/call is conservatively write-gated, even for echo.
+        # Recheck fresh AS activity immediately before dispatch, never infer
+        # permission from unsigned client claims or the tool's hints.
+        if self.server.config.edgar_native_as_enabled and msg.get("method") == "tools/call":
+            token = self.headers.get("Authorization", "")[7:].strip()
+            if not verify_edgar_native_access_token(
+                token, self.server.config, required_scope="mcp:write",
+            ):
+                self._send_mcp_unauthorized(
+                    error="invalid_token",
+                    description="Native token is inactive or lacks required tools/call scope.",
+                )
+                return
+
         # ── Dispatch ──────────────────────────────────────────────────────────
         auth_kind = self._detect_mcp_auth_kind()
         auth_token = _mcp_auth_kind.set(auth_kind)
@@ -5536,6 +5575,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     def _mcp_auth_required(self, resource_path: str = MCP_PATH) -> bool:
         config = self.server.config
+        if config.edgar_native_as_enabled and resource_path == MCP_PATH:
+            return True
         if self._requires_cloudflare_access_for_request(resource_path):
             return True
         if self._builtin_oauth_enabled_for_request():
@@ -5649,6 +5690,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     def _requires_cloudflare_access_for_request(self, path: str) -> bool:
         config = self.server.config
+        if config.edgar_native_as_enabled and path == MCP_PATH:
+            return False
         if not config.cloudflare_access_enabled:
             return False
         if not self._request_targets_base_hostname():

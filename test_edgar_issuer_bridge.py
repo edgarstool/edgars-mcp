@@ -36,6 +36,9 @@ def native_token(tmp_path):
         database=str(tmp_path / "edg478.db"), signing_key=pem,
     ))
     app.state.store.register_client("edg478-client", [CALLBACK], "none", None)
+    introspection_secret = secrets.token_urlsafe(32)
+    app.state.store.register_client("edg478-rs", [CALLBACK],
+                                    "client_secret_post", introspection_secret)
     client = TestClient(app, base_url=ISSUER, follow_redirects=False)
     session = app.state.store.create_session("edg478-subject")
     client.cookies.set("__Host-edgar-session", session,
@@ -68,6 +71,14 @@ def native_token(tmp_path):
     claims = jwt.decode(token, app.state.public_key, algorithms=["RS256"],
                         audience=RESOURCE, issuer=ISSUER)
     assert claims["scope"] == "mcp:read"
+    def introspect(access_token):
+        response = client.post("/introspect", data={
+            "client_id": "edg478-rs", "client_secret": introspection_secret,
+            "token": access_token,
+        })
+        response.raise_for_status()
+        return response.json()
+
     config = server_http.HandcraftServerConfig(
         mcp_api_token="", base_url="https://rs.edg478.test",
         auth_server_url=ISSUER, descope_enabled=False,
@@ -76,6 +87,7 @@ def native_token(tmp_path):
         edgar_native_as_audience=RESOURCE,
         edgar_native_as_jwks_json=json.dumps(client.get("/jwks.json").json()),
         edgar_native_as_required_scope="mcp:read",
+        edgar_native_as_introspect=introspect,
     )
     return token, config, pem
 

@@ -6,6 +6,7 @@ HTTP. A seeded synthetic session bypasses login, not authorize/consent/PKCE.
 
 import base64
 import hashlib
+import http.client
 from html.parser import HTMLParser
 import importlib
 import json
@@ -39,10 +40,11 @@ PUBLIC_CLIENT = "edg478-tcp-public"
 RS_CLIENT = "edg478-tcp-confidential"
 
 
-def _serve_native_as(listener, pipe, database, pem, secret):
+def _serve_native_as(listener, pipe, database, pem, secret, dcr_enabled=False):
     """Spawn target: create the real app and all credentials only in the fixture."""
     app = create_app(Config(
         issuer=ISSUER, resource=RESOURCE, database=database, signing_key=pem,
+        dcr_enabled=dcr_enabled,
     ))
     store = app.state.store
     store.register_client(PUBLIC_CLIENT, [CALLBACK], "none", None)
@@ -109,13 +111,13 @@ class NativeTCP:
             edgar_native_as_introspect=self.adapter(secret),
         )
 
-    def issue(self, scope="mcp:read mcp:write"):
+    def issue(self, scope="mcp:read mcp:write", client_id=PUBLIC_CLIENT):
         verifier = secrets.token_urlsafe(40)
         challenge = base64.urlsafe_b64encode(
             hashlib.sha256(verifier.encode()).digest()
         ).rstrip(b"=").decode()
         authorization = self.client.get("/authorize", params={
-            "client_id": PUBLIC_CLIENT, "response_type": "code",
+            "client_id": client_id, "response_type": "code",
             "redirect_uri": CALLBACK, "resource": RESOURCE, "scope": scope,
             "state": "edg478-tcp-state", "code_challenge": challenge,
             "code_challenge_method": "S256",
@@ -138,7 +140,7 @@ class NativeTCP:
         query = parse_qs(redirect.query)
         assert query["state"] == ["edg478-tcp-state"]
         exchanged = self.client.post("/token", data={
-            "grant_type": "authorization_code", "client_id": PUBLIC_CLIENT,
+            "grant_type": "authorization_code", "client_id": client_id,
             "code": query["code"][0], "redirect_uri": CALLBACK,
             "code_verifier": verifier, "resource": RESOURCE,
         })
@@ -162,7 +164,7 @@ class NativeTCP:
 
 
 @pytest.fixture
-def native_tcp(tmp_path, monkeypatch):
+def native_tcp(tmp_path, monkeypatch, request):
     # No inherited provider flags, credentials, proxies or production config.
     for name in tuple(os.environ):
         monkeypatch.delenv(name)
@@ -181,7 +183,7 @@ def native_tcp(tmp_path, monkeypatch):
     port = listener.getsockname()[1]
     process = context.Process(
         target=_serve_native_as,
-        args=(listener, child, str(tmp_path / "as.sqlite3"), pem, secret),
+        args=(listener, child, str(tmp_path / "as.sqlite3"), pem, secret, bool(getattr(request, "param", False))),
     )
     try:
         process.start()
@@ -222,6 +224,82 @@ def native_tcp(tmp_path, monkeypatch):
         for suffix in ("", "-wal", "-shm"):
             (tmp_path / f"as.sqlite3{suffix}").unlink(missing_ok=True)
 
+
+
+@pytest.mark.parametrize("native_tcp", [True], indirect=True)
+def test_dynamic_registered_chatgpt_like_client_reaches_real_mcp(native_tcp, tmp_path):
+    """Real register->client_id->consent/PKCE->token->MCP tools, no static client ID."""
+    discovery = native_tcp.client.get("/.well-known/oauth-authorization-server")
+    assert discovery.status_code == 200
+    assert discovery.json()["registration_endpoint"] == ISSUER + "/register"
+    registration = native_tcp.client.post("/register", json={
+        "redirect_uris": [CALLBACK], "token_endpoint_auth_method": "none",
+        "client_name": "EDG-478 synthetic remote MCP client",
+    })
+    assert registration.status_code == 201
+    client_id = registration.json()["client_id"]
+    assert client_id and client_id != PUBLIC_CLIENT
+    assert "client_secret" not in registration.json()
+    # Reproduces the owner's browser symptom: missing client_id is
+    # rejected, whereas the identifier returned by DCR can authorize.
+    assert native_tcp.client.get("/authorize", params={
+        "response_type": "code", "redirect_uri": CALLBACK, "resource": RESOURCE,
+        "scope": "mcp:read", "code_challenge": "a" * 43,
+        "code_challenge_method": "S256",
+    }).status_code == 400
+    assert native_tcp.client.post("/register", json={
+        "redirect_uris": ["http://untrusted.edg478.test/receive"],
+        "token_endpoint_auth_method": "none",
+    }).status_code == 400
+
+    # An unregistered callback must be rejected before consent.
+    assert native_tcp.client.get("/authorize", params={
+        "client_id": client_id, "response_type": "code",
+        "redirect_uri": "https://wrong.edg478.test/callback",
+        "resource": RESOURCE, "scope": "mcp:read mcp:write",
+        "code_challenge": "a" * 43, "code_challenge_method": "S256",
+    }).status_code == 400
+
+    token = native_tcp.issue(client_id=client_id)
+    assert native_tcp.claims(token)["client_id"] == client_id
+    assert native_tcp.introspect(token).json()["active"] is True
+    with running_mcp(native_tcp.config()) as address:
+        conn = http.client.HTTPConnection(*address, timeout=5)
+        try:
+            conn.request("GET", "/.well-known/oauth-protected-resource/mcp")
+            prm = conn.getresponse()
+            prm_status = prm.status
+            prm_body = prm.read()
+        finally:
+            conn.close()
+        assert prm_status == 200, f"Resource metadata missing: {prm_status}"
+        metadata = json.loads(prm_body)
+        assert metadata["resource"] == RESOURCE
+        assert metadata["authorization_servers"] == [ISSUER]
+        listed = rpc(address, token)
+        called = rpc(address, token, "tools/call", {
+            "name": "echo", "arguments": {"message": "dcr-client-id-issued"},
+        })
+        assert listed[0] == called[0] == 200
+        assert any(t["name"] == "echo" for t in listed[2]["result"]["tools"])
+        assert called[2]["result"]["content"][0]["text"] == "echo: dcr-client-id-issued"
+        revoked = native_tcp.client.post("/revoke", data={
+            "client_id": client_id, "token": token, "token_type_hint": "access_token",
+        })
+        assert revoked.status_code == 200
+        assert native_tcp.introspect(token).json() == {"active": False}
+        assert_unauthorized(rpc(address, token))
+        assert_unauthorized(rpc(address, token, "tools/call", {
+            "name": "echo", "arguments": {"message": "must-be-denied"},
+        }))
+    print("DCR_REAL_HTTP_EVIDENCE " + json.dumps({
+        "registered_client_id_present": bool(client_id),
+        "same_client_id_in_signed_token": True,
+        "live_tools_list": listed[0], "live_tools_call": called[0],
+        "revoked_access_denied": True,
+        "dcr_enabled_in_sandbox_only": True,
+        "production_changed": False,
+    }, sort_keys=True))
 
 def test_cross_process_same_unexpired_jwt_revoked(native_tcp, tmp_path):
     token = native_tcp.issue()
